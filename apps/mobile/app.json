@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "MyAlgoDesk",
+    "slug": "myalgodesk-mobile",
+    "version": "1.0.0",
+    "scheme": "nraialgo",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "in.myalgodesk.mobile"
+    },
+    "android": {
+      "package": "in.myalgodesk.mobile",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#0f172a"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-splash-screen",
+      "expo-status-bar",
+      "expo-web-browser"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+# Normalise on commit: the build machines for EAS and CI are Linux, and a CRLF
+# gradlew fails there with "$'\r': command not found".
+* text=auto eol=lf
+
+*.bat text eol=crlf
+
+*.png binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.aiff binary
+*.wav binary
+*.pdf binary

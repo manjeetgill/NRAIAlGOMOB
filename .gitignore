@@ -1,0 +1,29 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+
+# stale backup of the pre-SDK-58 manifests; not source
+.sdk51-backup/
+
+# generated Android project artifacts (the android/ sources themselves are tracked)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.hprof
+*.cxx/
+
+# build outputs and signing material
+*.apk
+*.aab
+*.keystore
+*.jks
+!apps/mobile/android/app/debug.keystore
+
+# local environment overrides must never be committed
+.env
+.env.*
+
+.DS_Store

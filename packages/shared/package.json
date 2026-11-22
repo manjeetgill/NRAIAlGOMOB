@@ -1,0 +1,19 @@
+{
+  "name": "@nraialgo/shared",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.104.0",
+    "zod": "^3.24.2",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "typescript": "^5.9.3"
+  }
+}

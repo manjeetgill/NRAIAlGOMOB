@@ -1,0 +1,19 @@
+{
+  "name": "nraialgo-mobile",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "start": "npm run start --workspace @nraialgo/mobile",
+    "typecheck": "npm run typecheck --workspace @nraialgo/mobile"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
