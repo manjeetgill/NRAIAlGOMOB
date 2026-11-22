@@ -8,10 +8,12 @@
   ],
   "scripts": {
     "start": "npm run start --workspace @nraialgo/mobile",
-    "typecheck": "npm run typecheck --workspace @nraialgo/mobile"
+    "typecheck": "npm run typecheck --workspace @nraialgo/mobile",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.1"
   },
   "engines": {
     "node": ">=20.0.0"
