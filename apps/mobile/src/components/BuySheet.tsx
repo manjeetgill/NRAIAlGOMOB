@@ -27,11 +27,10 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   const { resolvedTheme } = useTheme();
   const { localState, setLocalState, isSubmitting, validationError, config } = ticket;
 
-  const { data: quote } = useEquityQuote(localState.exchange, localState.symbol, true);
-
   // An option's two-way price is the ladder's own, carried in on the press; the single-symbol read is
-  // a shares endpoint and has nothing to say about an NFO contract.
+  // a shares endpoint and has nothing to say about an NFO contract - prod answers it with a refusal.
   const fromChain = !!config?.book;
+  const { data: quote } = useEquityQuote(localState.exchange, localState.symbol, !fromChain);
   const ask = fromChain ? config?.book?.ask ?? null : quote?.ask ?? null;
   const bid = fromChain ? config?.book?.bid ?? null : quote?.bid ?? null;
   // The price the press arrived with, kept apart from the editable limit field so "last" never comes
@@ -104,7 +103,7 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
           <View style={styles.handle} />
           <View style={styles.header}>
             <View>
-              <Text style={styles.symbol}>{localState.symbol}</Text>
+              <Text style={styles.symbol}>{config?.label ?? localState.symbol}</Text>
               <Text style={styles.meta}>
                 {`${localState.exchange}${quote?.name && quote.name !== localState.symbol ? ` · ${quote.name}` : ""}` +
                   (lastTouch ? ` · last ${formatNumber(lastTouch)}${!fromChain && quote?.at ? ` on ${quote.at.slice(0, 10)}` : ""}` : "")}

@@ -11,6 +11,7 @@ import { View, Text, FlatList, RefreshControl, StyleSheet, ActivityIndicator, To
 import { useRealtimeQuotes } from "@/hooks/useRealtimeQuotes";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
+import { BuySheet } from "@/components/BuySheet";
 import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/utils";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
@@ -38,10 +39,11 @@ export default function PortfolioScreen() {
   const holdings = useMemo(() => iciciHoldings(account ?? {}), [account]);
 
   // Use unified order ticket hook
+  const ticket = useOrderTicket();
   const {
     open: openOrderTicket,
     fromPosition,
-  } = useOrderTicket();
+  } = ticket;
 
   // Get symbols for real-time quotes
   const symbols = data?.map(p => p.symbol) ?? [];
@@ -376,6 +378,10 @@ export default function PortfolioScreen() {
       </View>
 
       {tab === "positions" ? renderPositions() : renderHoldings()}
+
+      {/* Mounted only while a ticket is open, exactly as on the watchlist: the row press below builds a
+          ticket from that position, and a sheet nobody renders is a press that answers nothing. */}
+      {ticket.visible ? <BuySheet ticket={ticket} /> : null}
 
       {/* The ticket stays reachable from both tabs, exactly as it was from the single screen. */}
       <TouchableOpacity style={styles.fab} onPress={() => handleOpenTicket()} accessibilityLabel="New order">

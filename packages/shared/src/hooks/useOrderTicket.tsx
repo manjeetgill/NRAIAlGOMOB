@@ -37,6 +37,9 @@ export interface OrderTicketConfig {
   triggerPrice?: number;
   validity?: "DAY" | "IOC";
   tag?: string;
+  /** What the ticket prints as its title. The symbol field holds the token prod places, which for an option
+   *  is the broker's master code and is not what a trader recognises. */
+  label?: string;
   // Context for UI
   source?: "option-chain" | "global-search" | "basket" | "positions" | "watchlist" | "terminal" | "manual";
   basketId?: string;
@@ -260,6 +263,7 @@ export function useOrderTicket() {
     const label = `${underlying} ${expiry} ${strike} ${right}`;
     open({
       symbol: contract?.symbol || label,
+      label,
       exchange: contract?.exchange || "NFO",
       product: "NRML",
       side,
