@@ -951,10 +951,10 @@ export function iciciOpenPositions(payload: IciciAccountPayload): OpenPosition[]
       const action = String(row.action ?? "").trim().toUpperCase();
       const side: OpenPosition["side"] = action.startsWith("B") ? "BUY" : action.startsWith("S") ? "SELL" : "OTHER";
       const quantity = Math.abs(toNumber(row.quantity) ?? 0);
-      const isOption = /^(call|put|ce|pe)$/i.test(String(row.right ?? ""));
-      const symbol = [row.stock_code, ...(isOption ? [row.strike_price, row.right] : [])]
-        .filter(value => value != null && String(value) !== "")
-        .join(" ");
+      // ICICI's own code already names the strike and the side, and it is the token /v1/orders places,
+      // so a row keeps exactly what the broker sent. Appending strike and right again produced a label
+      // with spaces in it, which is the one form the order ticket's contract refuses.
+      const symbol = String(row.stock_code ?? "").trim();
       const markedPaise = toNumber(row.marked_pnl_paise);
       return {
         symbol: symbol || "Unavailable",

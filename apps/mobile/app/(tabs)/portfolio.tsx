@@ -32,8 +32,9 @@ export default function PortfolioScreen() {
   const { data, isLoading, isError, refetch } = useOpenPositions();
   // The account response itself is read for its state: which section the broker could fill, which it
   // could not, and the reason it gave. The rows still come from the mapped hooks.
-  const { data: account } = useIciciAccount();
+  const { data: account, refetch: refetchAccount } = useIciciAccount();
 
+  const positions = data ?? [];
   const positionsState = iciciAccountSection(account, "portfoliopositions");
   const holdingsState = iciciAccountSection(account, "portfolioholdings");
   const holdings = useMemo(() => iciciHoldings(account ?? {}), [account]);
@@ -46,7 +47,7 @@ export default function PortfolioScreen() {
   } = ticket;
 
   // Get symbols for real-time quotes
-  const symbols = data?.map(p => p.symbol) ?? [];
+  const symbols = positions.map(p => p.symbol);
   const { isConnected } = useRealtimeQuotes(symbols, true);
 
   const colors = resolvedTheme === "dark"
@@ -98,9 +99,9 @@ export default function PortfolioScreen() {
     fab: { position: "absolute", bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brand?.["600"] || "#0284c7", alignItems: "center", justifyContent: "center", elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   });
 
-  const priced = data?.filter(p => p.unrealizedPnl !== null) ?? [];
+  const priced = positions.filter(p => p.unrealizedPnl !== null);
   const totalUnrealized = priced.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
-  const unpricedCount = (data?.length ?? 0) - priced.length;
+  const unpricedCount = positions.length - priced.length;
 
   const valuedHoldings = holdings.filter(holding => holding.marketValue !== null);
   const totalMarketValue = valuedHoldings.reduce((sum, holding) => sum + (holding.marketValue ?? 0), 0);
@@ -108,8 +109,11 @@ export default function PortfolioScreen() {
   const totalHoldingPnl = pnlHoldings.reduce((sum, holding) => sum + (holding.unrealizedPnl ?? 0), 0);
   const unvaluedCount = holdings.length - valuedHoldings.length;
 
-  // Prod's own words for a list it could not fill. A cold snapshot is not an empty account, and
-  // saying so is the difference between "waiting" and a number the owner cannot trust.
+  // Prod's own words for a list it could not refresh. They label the rows; they never replace them.
+  // A degraded section still carries the broker's last confirmed book, and a screen that hid those
+  // rows would answer "where is my book?" with a blank while the same rows sit in the response.
+  // The notice is therefore only for a list that has nothing in it, and the banner is for everything
+  // the server did not call ready.
   const blocked = (state: { kind: string }) => state.kind === "cold" || state.kind === "degraded" || state.kind === "unavailable";
 
   const notice = (state: { kind: string; reason: string | null }, noun: string) => (
@@ -117,10 +121,17 @@ export default function PortfolioScreen() {
       <Text style={styles.emptyText}>
         {state.reason ?? `${noun} could not be read from the broker.`}
       </Text>
-      <TouchableOpacity style={styles.retry} onPress={() => { refetch(); }}>
+      <TouchableOpacity style={styles.retry} onPress={() => { refetch(); refetchAccount(); }}>
         <Text style={styles.retryText}>Tap to try again</Text>
       </TouchableOpacity>
     </View>
+  );
+
+  const banner = (state: { kind: string; reason: string | null }, noun: string) => (
+    <Text style={styles.staleLine}>
+      {state.reason ?? `${noun} shows the broker's last saved values.`}
+      {account?.asOf ? ` Saved ${new Date(account.asOf).toLocaleString()}.` : ""}
+    </Text>
   );
 
   const handleOpenTicket = (position?: OpenPosition) => {
@@ -155,9 +166,9 @@ export default function PortfolioScreen() {
       );
     }
 
-    if (blocked(positionsState)) return notice(positionsState, "Positions");
+    if (positions.length === 0 && blocked(positionsState)) return notice(positionsState, "Positions");
 
-    if (!data?.length) {
+    if (positions.length === 0) {
       return (
         <View style={[styles.empty, { flex: 1 }]}>
           <Text style={styles.emptyText}>No open positions</Text>
@@ -168,12 +179,12 @@ export default function PortfolioScreen() {
     return (
       <>
         <Text style={[styles.subtitle, { paddingHorizontal: 16, paddingTop: 12 }]}>
-          {data.length} position{data.length !== 1 ? "s" : ""} • Unrealized P&L: {formatRupees(totalUnrealized, { signed: true })}
+          {positions.length} position{positions.length !== 1 ? "s" : ""} • Unrealized P&L: {formatRupees(totalUnrealized, { signed: true })}
           {unpricedCount > 0 ? ` (${unpricedCount} without a broker cost, excluded)` : ""}
         </Text>
-        {positionsState.kind === "stale" ? <Text style={styles.staleLine}>{positionsState.reason}</Text> : null}
+        {positionsState.kind === "ready" ? null : banner(positionsState, "Positions")}
         <FlatList
-          data={data}
+          data={positions}
           keyExtractor={(item, index) => `${item.broker}:${item.account}:${item.symbol}:${item.expiry ?? ""}:${index}`}
           renderItem={({ item }) => (
             <TouchableOpacity
@@ -230,7 +241,7 @@ export default function PortfolioScreen() {
             </TouchableOpacity>
           )}
           refreshControl={
-            <RefreshControl refreshing={false} onRefresh={() => { refetch(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
+            <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
           }
           contentContainerStyle={styles.listContent}
           ListFooterComponent={
@@ -263,9 +274,9 @@ export default function PortfolioScreen() {
       );
     }
 
-    if (blocked(holdingsState)) return notice(holdingsState, "Holdings");
+    if (holdings.length === 0 && blocked(holdingsState)) return notice(holdingsState, "Holdings");
 
-    if (!holdings.length) {
+    if (holdings.length === 0) {
       return (
         <View style={[styles.empty, { flex: 1 }]}>
           <Text style={styles.emptyText}>No holdings</Text>
@@ -279,7 +290,7 @@ export default function PortfolioScreen() {
           {holdings.length} holding{holdings.length !== 1 ? "s" : ""} • Market value: {formatRupees(totalMarketValue)} • Unrealized P&L: {formatRupees(totalHoldingPnl, { signed: true })}
           {unvaluedCount > 0 ? ` (${unvaluedCount} without a broker price, excluded)` : ""}
         </Text>
-        {holdingsState.kind === "stale" ? <Text style={styles.staleLine}>{holdingsState.reason}</Text> : null}
+        {holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")}
         <FlatList
           data={holdings}
           keyExtractor={(item, index) => `${item.accountId}:${item.exchange}:${item.symbol}:${index}`}
@@ -337,7 +348,7 @@ export default function PortfolioScreen() {
             </View>
           )}
           refreshControl={
-            <RefreshControl refreshing={false} onRefresh={() => { refetch(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
+            <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
           }
           contentContainerStyle={styles.listContent}
           ListFooterComponent={
@@ -360,7 +371,7 @@ export default function PortfolioScreen() {
         <View style={styles.liveIndicator}>
           <View style={[styles.liveDot, { backgroundColor: isConnected ? colors.live : colors.muted }]} />
           <Text style={[styles.liveText, { color: isConnected ? colors.live : colors.muted }]}>
-            {isConnected ? "LIVE" : data?.length ? "CONNECTING" : "NOT LIVE"}
+            {isConnected ? "LIVE" : positions.length ? "CONNECTING" : "NOT LIVE"}
           </Text>
         </View>
       </View>

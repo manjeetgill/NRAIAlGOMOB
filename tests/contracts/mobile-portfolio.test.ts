@@ -147,3 +147,53 @@ it("reads both tabs from one account route so they cannot disagree for the same 
   expect(account).toContain(accountPath);
   expect(openPositions).not.toContain("/v1/hub/positions");
 });
+
+// Measured on production 2026-11-23 00:05 IST with the broker session past its daily bound: the route
+// answered 38 position rows marked degraded ("Last confirmed broker section; refresh failed.") and 133
+// holding rows marked available. The web desk rendered both; the app showed a reason and hid the book.
+const saved = (rows: unknown[]) => ({
+  accountId: "AG297134",
+  asOf: "2026-11-22T17:57:49Z",
+  stale: true,
+  staleReason: "A required account section could not refresh; showing its last saved values.",
+  sections: {
+    portfoliopositions: { status: "degraded", reason: "Last confirmed broker section; refresh failed. ", asOf: "2026-11-22T17:57:49Z", rows },
+    portfolioholdings: { status: "available", asOf: "2026-11-22T17:53:00Z", rows: [{ stock_code: "ITC", quantity: "100", average_price: "279.20", current_market_price: "281.50" }] },
+  },
+}) as unknown as IciciAccountPayload;
+
+it("keeps the rows a degraded position section carried, because prod still sends them", () => {
+  const positions = iciciOpenPositions(saved([{ stock_code: "NIFTY26NOV25000CE", quantity: "65", action: "BUY", right: "CE", strike_price: "25000", average_price: "120.35", ltp: "98.10" }]));
+  expect(positions.map(p => p.symbol)).toEqual(["NIFTY26NOV25000CE"]);
+  expect(iciciAccountSection(saved([]), "portfoliopositions")).toEqual({
+    kind: "degraded",
+    reason: "Last confirmed broker section; refresh failed. ",
+  });
+});
+
+it("keeps holdings from the same saved answer", () => {
+  expect(iciciHoldings(saved([])).map(h => h.symbol)).toEqual(["ITC"]);
+});
+
+it("names a position by the token prod's order contract accepts", () => {
+  const [position] = iciciOpenPositions(saved([{ stock_code: "NIFTY26NOV25000CE", quantity: "65", action: "BUY", right: "CE", strike_price: "25000" }]));
+  expect(position.symbol).toMatch(/^[A-Z0-9&_-]{1,40}$/);
+});
+
+it("shows a degraded or stale book with prod's reason over it instead of in place of it", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
+  // Only a list with nothing in it may fall back to the notice; a state word never hides rows that arrived.
+  expect(screen).toContain('if (positions.length === 0 && blocked(positionsState)) return notice(positionsState, "Positions")');
+  expect(screen).toContain('if (holdings.length === 0 && blocked(holdingsState)) return notice(holdingsState, "Holdings")');
+  expect(screen).toContain('positionsState.kind === "ready" ? null : banner(positionsState, "Positions")');
+  expect(screen).toContain('holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")');
+  expect(screen).not.toContain("if (blocked(positionsState)) return notice");
+  expect(screen).not.toContain("if (blocked(holdingsState)) return notice");
+});
+
+it("retries both lists, since a notice about holdings cannot be cleared by refetching positions", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
+  expect(screen).toContain("const { data: account, refetch: refetchAccount } = useIciciAccount();");
+  expect(screen.match(/refetch\(\); refetchAccount\(\)/g)).toHaveLength(3);
+});
+
