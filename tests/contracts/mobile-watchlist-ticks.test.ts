@@ -67,6 +67,26 @@ it("shows a ticked price without inventing a daily move the list never gave a cl
   expect(marked[0].changePct).toBeNull();
 });
 
+it("uses the closing print the tick itself carried, which is why a live list is not left with no change figure", () => {
+  const marked = markWatchlist(
+    [row({ close: null, change: null, changePct: null })],
+    [{ ...tick("instrument:v1:NSE:EQ:ITC:CASH", 300), previousClose: 279.2 }],
+  );
+  expect(marked[0].close).toBe(279.2);
+  expect(marked[0].change).toBe(20.8);
+  expect(marked[0].changePct).toBe(7.45);
+});
+
+it("prefers the exchange's close on the tick over the one the list was read with", () => {
+  // A list read before the open carries yesterday's close; the frame carries the session the tick was stamped
+  // in. The server's own figure for that tick is the one a change may be measured against.
+  const marked = markWatchlist(
+    [row({ close: 270 })],
+    [{ ...tick("instrument:v1:NSE:EQ:ITC:CASH", 300), previousClose: 279.2 }],
+  );
+  expect(marked[0].change).toBe(20.8);
+});
+
 it("prices the whole page, not only the row that happens to match first", () => {
   const marked = markWatchlist(
     [row({ symbol: "ITC" }), row({ symbol: "RELIANCE", ltp: 1400, close: 1390, change: 10, changePct: 0.72 })],
@@ -74,6 +94,11 @@ it("prices the whole page, not only the row that happens to match first", () => 
   );
   expect(marked.map(item => item.ltp)).toEqual([300, 1500]);
   expect(marked.map(item => item.live)).toEqual([true, true]);
+});
+
+it("carries the closing print off the wire instead of dropping it with the rest of the frame", () => {
+  const feed = readFileSync(resolve("packages/shared/src/api/websocket.ts"), "utf8");
+  expect(feed).toContain("previousClose: positiveNumber(quote.previousClose)");
 });
 
 it("subscribes the rendered list off the stream instead of only re-reading it", () => {

@@ -34,6 +34,12 @@ export interface QuoteTick {
   source: string | null;
   broker: string;
   subscriptionId: string;
+  /**
+   * The exchange's previous close sent with this tick, when the broker's frame carried one. A screen may
+   * measure a day's change against it; it is never filled in from another source, because a change computed
+   * against the wrong close is a wrong number, not a fuller one.
+   */
+  previousClose?: number | null;
 }
 
 export interface FeedSnapshot {
@@ -58,6 +64,7 @@ interface WireQuote {
   dataStatus?: string;
   priceStatus?: string;
   priceSource?: string;
+  previousClose?: number | string | null;
   fresh?: boolean;
 }
 
@@ -89,6 +96,11 @@ function quoteKey(quote: WireQuote): string {
   return JSON.stringify([quote.broker ?? "", quote.accountId ?? "", quote.subscriptionId ?? ""]);
 }
 
+function positiveNumber(value: number | string | null | undefined): number | null {
+  const number = typeof value === "string" ? Number(value.trim()) : value;
+  return typeof number === "number" && Number.isFinite(number) && number > 0 ? number : null;
+}
+
 function toTick(quote: WireQuote, id: string): QuoteTick {
   const at = Date.parse(quote.exchangeTime ?? "");
   return {
@@ -100,6 +112,7 @@ function toTick(quote: WireQuote, id: string): QuoteTick {
     source: quote.priceSource ?? quote.broker ?? null,
     broker: quote.broker ?? "",
     subscriptionId: quote.subscriptionId ?? "",
+    previousClose: positiveNumber(quote.previousClose),
   };
 }
 

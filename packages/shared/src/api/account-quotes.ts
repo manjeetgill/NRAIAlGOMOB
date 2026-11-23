@@ -183,10 +183,12 @@ export function markHoldings<T extends { symbol: string; exchange: string; quant
 /**
  * Watchlist rows with the stream's prices marked in.
  *
- * A list row's `close` is prod's previous close and the server's own change is `ltp - close`, both rounded to
- * two paise (services/watchlist.py `quote_rows`), so a fresh tick re-derives the day's figures with prod's
- * arithmetic. A list that was never given a previous close keeps the figures it came with: subtracting a tick
- * from nothing would print a daily move the exchange never priced.
+ * The day's figures are measured against a previous close the server named, never one this app inferred: the
+ * tick's own closing print first, since that is the exchange's figure for the session the tick was stamped in,
+ * then the close the list was read with. Prod computes the pair the same way - `change` is `ltp - close`
+ * rounded to two paise (services/watchlist.py `quote_rows`) - so a ticked row carries the same arithmetic as
+ * the read it replaced. A row with neither keeps the figures it came with rather than printing a move
+ * measured against nothing.
  */
 export function markWatchlist<T extends { exchange: string; symbol: string; ltp: number | null; close: number | null; change: number | null; changePct: number | null }>(
   rows: readonly T[],
@@ -195,11 +197,12 @@ export function markWatchlist<T extends { exchange: string; symbol: string; ltp:
   const ticks = byId(quotes);
   return rows.map((row) => {
     const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null });
-    const price = id ? usable(ticks.get(id)) : null;
+    const hit = id ? ticks.get(id) : undefined;
+    const price = hit ? usable(hit) : null;
     if (price === null) return { ...row, live: false };
-    const previous = row.close;
+    const previous = hit?.previousClose ?? row.close;
     if (typeof previous !== "number" || !Number.isFinite(previous) || previous <= 0) return { ...row, ltp: price, live: true };
     const change = Math.round((price - previous) * 100) / 100;
-    return { ...row, ltp: price, change, changePct: Math.round((change / previous) * 10000) / 100, live: true };
+    return { ...row, ltp: price, close: previous, change, changePct: Math.round((change / previous) * 10000) / 100, live: true };
   });
 }
