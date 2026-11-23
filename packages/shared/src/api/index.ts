@@ -140,6 +140,13 @@ export {
   type Marked,
 } from "./account-quotes";
 
+export {
+  nextSort,
+  sortRows,
+  type SortColumn,
+  type SortState,
+} from "./table-sort";
+
 // Create default client and hooks for convenience
 let api: ApiHooks | null = null;
 

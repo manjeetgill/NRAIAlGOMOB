@@ -1,16 +1,22 @@
 /**
- * Portfolio Screen - the owner's ICICI book, split the way the web splits it
+ * Portfolio Screen - the owner's ICICI book, split the way the web splits it and set as a table
  *
  * Positions are what is being traded now; Holdings are the delivery stock sitting in the account.
  * Both come out of the same account response, so the two tabs can never be looking at different
  * moments, and both read prod's own state words rather than guessing why a list is empty.
+ *
+ * Each tab is one row per holding instead of a card, because a card showed three positions and the
+ * book has dozens. Every figure the cards carried is still on the row - the account it belongs to and
+ * the day's percentage moved into the line under the numbers they describe - and a tap on a column
+ * heading puts the largest or the worst of that figure at the top.
  */
 
 import React, { useMemo, useState } from "react";
-import { View, Text, FlatList, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
+import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
+import { SortableTable } from "@/components/SortableTable";
 import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/utils";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
@@ -21,9 +27,15 @@ import {
   iciciHoldings,
   markHoldings,
   markPositions,
+  nextSort,
+  sortRows,
   streamIdFor,
   useQuoteFeed,
+  type Holding,
+  type Marked,
   type OpenPosition,
+  type SortColumn,
+  type SortState,
 } from "@nraialgo/shared/api";
 
 const TABS = [
@@ -32,6 +44,64 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+type PositionRow = OpenPosition & Marked;
+type HoldingRow = Holding & Marked;
+
+// A column is about 50dp wide, so an absent figure gets the shortest words that still say who owes it:
+// the broker did not send it, and no other row's price stands in for it.
+const NO_COST = "no cost";
+const NO_PRICE = "no price";
+const NO_PNL = "no P&L";
+const NO_CHANGE = "no change";
+
+/** A price keeps its paise while it is small enough to need them, and drops them once it is a contract's index value. */
+function priceText(value: number): string {
+  return Math.abs(value) >= 10000 ? formatNumber(value, 0) : formatNumber(value, 2);
+}
+
+/** A sum of rupees in a narrow column, in the lakhs and crores the owner reads on the web desk. */
+function sumText(value: number): string {
+  const magnitude = Math.abs(value);
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  if (magnitude >= 1e7) return `${sign}${formatNumber(magnitude / 1e7, 2)}Cr`;
+  if (magnitude >= 1e5) return `${sign}${formatNumber(magnitude / 1e5, 2)}L`;
+  return `${sign}${formatNumber(magnitude, magnitude >= 1000 ? 0 : 2)}`;
+}
+
+const pnlPercent = (row: PositionRow): number | null =>
+  row.unrealizedPnl === null || row.entryPrice === null || row.quantity === 0
+    ? null
+    : (row.unrealizedPnl / (row.entryPrice * row.quantity)) * 100;
+
+const POSITION_COLUMNS: SortColumn<PositionRow>[] = [
+  { key: "symbol", label: "Symbol", width: 84, value: (row) => row.symbol },
+  { key: "side", label: "Side", width: 44, value: (row) => row.side },
+  { key: "quantity", label: "Qty", width: 40, numeric: true, value: (row) => row.quantity },
+  { key: "entry", label: "Entry ₹", width: 58, numeric: true, value: (row) => row.entryPrice },
+  { key: "current", label: "Current price ₹", width: 62, numeric: true, value: (row) => row.markPrice },
+  { key: "unrealized", label: "P&L ₹", width: 54, numeric: true, value: (row) => row.unrealizedPnl },
+  { key: "pnlPercent", label: "P&L %", width: 52, numeric: true, value: pnlPercent },
+];
+
+const HOLDING_COLUMNS: SortColumn<HoldingRow>[] = [
+  { key: "symbol", label: "Symbol", width: 84, value: (row) => row.symbol },
+  { key: "quantity", label: "Qty", width: 40, numeric: true, value: (row) => row.quantity },
+  { key: "average", label: "Average ₹", width: 58, numeric: true, value: (row) => row.averagePrice },
+  { key: "current", label: "Current price ₹", width: 62, numeric: true, value: (row) => row.currentPrice },
+  { key: "value", label: "Value ₹", width: 54, numeric: true, value: (row) => row.marketValue },
+  { key: "unrealized", label: "P&L ₹", width: 54, numeric: true, value: (row) => row.unrealizedPnl },
+  { key: "today", label: "Today ₹", width: 50, numeric: true, value: (row) => row.todayPnl },
+];
+
+/** Which order the table is in, in the words a trader can read off the subtitle when the heading has scrolled by. */
+function sortLine<Row>(columns: readonly SortColumn<Row>[], sort: SortState | null): string {
+  const column = columns.find((entry) => entry.key === sort?.key);
+  if (!column) return "in the order the broker sent them";
+  const order = column.numeric
+    ? sort?.descending ? "highest first" : "lowest first"
+    : sort?.descending ? "Z to A" : "A to Z";
+  return `sorted by ${column.label.replace(" ₹", "")}, ${order}`;
+}
 
 export default function PortfolioScreen() {
   const { useOpenPositions, useIciciAccount } = useApi();
@@ -79,15 +149,23 @@ export default function PortfolioScreen() {
   const ticking = positions.some((row) => row.live) || holdings.some((row) => row.live);
   const isConnected = feed.connected;
 
+  // One tap on a heading sorts by that column, the next tap turns it around. The two tabs keep their own
+  // order, so reading a sorted book never reorders the other one behind the trader's back.
+  const [positionSort, setPositionSort] = useState<SortState | null>(null);
+  const [holdingSort, setHoldingSort] = useState<SortState | null>(null);
+  const positionRows = useMemo(() => sortRows(positions, POSITION_COLUMNS, positionSort), [positions, positionSort]);
+  const holdingRows = useMemo(() => sortRows(holdings, HOLDING_COLUMNS, holdingSort), [holdings, holdingSort]);
+
   const colors = resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", live: "#22c55e", accent: "#38bdf8", brand: { "600": "#38bdf8" } }
     : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", live: "#16a34a", accent: "#0284c7", brand: { "600": "#0284c7" } };
+  const theme = { card: colors.card, text: colors.text, muted: colors.muted, border: colors.border, accent: colors.accent };
 
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
     title: { fontSize: 24, fontWeight: "700", color: colors.text },
-    subtitle: { fontSize: 14, color: colors.muted, marginTop: 4 },
+    subtitle: { fontSize: 13, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
     liveIndicator: { flexDirection: "row", alignItems: "center", gap: 6 },
     liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.live },
     liveText: { fontSize: 12, fontWeight: "600", color: colors.live },
@@ -96,40 +174,26 @@ export default function PortfolioScreen() {
     tabButtonActive: { backgroundColor: colors.accent },
     tabLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
     tabLabelActive: { color: "#ffffff" },
-    listContent: { padding: 16, paddingBottom: 100 },
-    card: {
-      backgroundColor: colors.card,
-      borderRadius: 12,
-      padding: 16,
-      marginBottom: 12,
-      borderWidth: 1,
-      borderColor: colors.border,
-    },
-    row: { flexDirection: "row", justifyContent: "space-between" },
-    symbol: { fontSize: 16, fontWeight: "600", color: colors.text },
-    holdingName: { fontSize: 12, color: colors.muted, marginTop: 2 },
-    side: { fontSize: 12, fontWeight: "600", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-    sideBuy: { backgroundColor: "rgba(34,197,94,0.15)", color: "#22c55e" },
-    sideSell: { backgroundColor: "rgba(239,68,68,0.15)", color: "#ef4444" },
-    sideOther: { backgroundColor: "rgba(100,116,139,0.2)", color: colors.muted },
-    detailRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
-    detailLabel: { fontSize: 13, color: colors.muted },
-    detailValue: { fontSize: 13, fontWeight: "500", color: colors.text },
     // A price that arrived on the stream is drawn differently from one the broker merely saved, so the
     // trader never has to guess whether the number in front of them is the market or a snapshot.
     streamValue: { color: colors.accent },
-    dimValue: { fontSize: 13, fontWeight: "500", color: colors.muted },
+    dimValue: { color: colors.muted, fontSize: 11 },
+    buyValue: { color: "#22c55e" },
+    sellValue: { color: "#ef4444" },
     pnlPositive: { color: "#22c55e" },
     pnlNegative: { color: "#ef4444" },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
     emptyText: { fontSize: 16, color: colors.muted, textAlign: "center" },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
-    staleLine: { fontSize: 12, color: colors.muted, paddingHorizontal: 16, paddingTop: 10 },
+    staleLine: { fontSize: 12, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
     retry: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent },
     retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
     fab: { position: "absolute", bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brand?.["600"] || "#0284c7", alignItems: "center", justifyContent: "center", elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   });
+
+  const pnlStyle = (value: number | null) =>
+    value === null ? styles.dimValue : value >= 0 ? styles.pnlPositive : styles.pnlNegative;
 
   const priced = positions.filter(p => p.unrealizedPnl !== null);
   const totalUnrealized = priced.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
@@ -140,6 +204,11 @@ export default function PortfolioScreen() {
   const pnlHoldings = holdings.filter(holding => holding.unrealizedPnl !== null);
   const totalHoldingPnl = pnlHoldings.reduce((sum, holding) => sum + (holding.unrealizedPnl ?? 0), 0);
   const unvaluedCount = holdings.length - valuedHoldings.length;
+
+  // Where a row's rupees came from, once for the whole list instead of once per row: the book is read from one
+  // account response, so repeating it down a column answered nothing and cost the table its narrowest column.
+  const positionSource = [...new Set(savedPositions.map((row) => `${row.broker} ${row.account}`))].join(", ");
+  const holdingSource = [...new Set(savedHoldings.map((row) => row.accountId))].join(", ");
 
   // Prod's own words for a list it could not refresh. They label the rows; they never replace them.
   // A degraded section still carries the broker's last confirmed book, and a screen that hid those
@@ -181,6 +250,56 @@ export default function PortfolioScreen() {
     }
   };
 
+  const positionCell = (item: PositionRow, column: SortColumn<PositionRow>) => {
+    switch (column.key) {
+      case "side":
+        return { text: item.side, style: item.side === "BUY" ? styles.buyValue : item.side === "SELL" ? styles.sellValue : styles.dimValue };
+      case "quantity":
+        return { text: formatNumber(item.quantity, 0) };
+      case "entry":
+        return { text: item.entryPrice === null ? NO_COST : priceText(item.entryPrice), style: item.entryPrice === null ? styles.dimValue : undefined };
+      case "current":
+        return {
+          text: item.markPrice === null ? NO_PRICE : priceText(item.markPrice),
+          style: item.markPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined,
+        };
+      case "unrealized":
+        return { text: item.unrealizedPnl === null ? NO_PNL : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
+      case "pnlPercent": {
+        const percent = pnlPercent(item);
+        return { text: percent === null ? NO_PNL : formatPercent(percent), style: pnlStyle(percent) };
+      }
+      default:
+        return { text: item.symbol };
+    }
+  };
+
+  const holdingCell = (item: HoldingRow, column: SortColumn<HoldingRow>) => {
+    switch (column.key) {
+      case "symbol":
+        return { text: item.symbol, sub: item.name };
+      case "quantity":
+        return { text: formatNumber(item.quantity, 0) };
+      case "average":
+        return { text: item.averagePrice === null ? NO_COST : priceText(item.averagePrice), style: item.averagePrice === null ? styles.dimValue : undefined };
+      case "current":
+        return {
+          text: item.currentPrice === null ? NO_PRICE : priceText(item.currentPrice),
+          style: item.currentPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined,
+          sub: item.changePercent === null ? NO_CHANGE : formatPercent(item.changePercent),
+          subStyle: pnlStyle(item.changePercent),
+        };
+      case "value":
+        return { text: item.marketValue === null ? NO_PRICE : sumText(item.marketValue), style: item.marketValue === null ? styles.dimValue : undefined };
+      case "unrealized":
+        return { text: item.unrealizedPnl === null ? NO_PNL : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
+      case "today":
+        return { text: item.todayPnl === null ? NO_PRICE : sumText(item.todayPnl), style: pnlStyle(item.todayPnl) };
+      default:
+        return { text: item.symbol };
+    }
+  };
+
   const renderPositions = () => {
     if (isLoading && !account) {
       return (
@@ -210,73 +329,24 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        <Text style={[styles.subtitle, { paddingHorizontal: 16, paddingTop: 12 }]}>
-          {positions.length} position{positions.length !== 1 ? "s" : ""} • Unrealized P&L: {formatRupees(totalUnrealized, { signed: true })}
+        <Text style={styles.subtitle}>
+          {positions.length} position{positions.length !== 1 ? "s" : ""} on {positionSource} • Unrealized P&L: {formatRupees(totalUnrealized, { signed: true })} • {sortLine(POSITION_COLUMNS, positionSort)}
           {unpricedCount > 0 ? ` (${unpricedCount} without a broker cost, excluded)` : ""}
         </Text>
         {positionsState.kind === "ready" ? null : banner(positionsState, "Positions")}
-        <FlatList
-          data={positions}
-          keyExtractor={(item, index) => `${item.broker}:${item.account}:${item.symbol}:${item.expiry ?? ""}:${index}`}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.card}
-              onPress={() => handleOpenTicket(item)}
-              activeOpacity={0.8}
-            >
-              <View style={styles.row}>
-                <Text style={styles.symbol}>{item.symbol}</Text>
-                <Text style={[styles.side, item.side === "BUY" ? styles.sideBuy : item.side === "SELL" ? styles.sideSell : styles.sideOther]}>
-                  {item.side}
-                </Text>
-              </View>
-
-              <View style={styles.detailRow}>
-                <View>
-                  <Text style={styles.detailLabel}>Qty</Text>
-                  <Text style={styles.detailValue}>{formatNumber(item.quantity)}</Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Entry</Text>
-                  <Text style={item.entryPrice === null ? styles.dimValue : styles.detailValue}>
-                    {item.entryPrice === null ? "No broker cost" : formatRupees(item.entryPrice)}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Current price</Text>
-                  <Text style={[styles.detailValue, item.markPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined]}>
-                    {item.markPrice === null ? "No broker price" : formatRupees(item.markPrice)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.detailRow}>
-                <View>
-                  <Text style={styles.detailLabel}>Unrealized</Text>
-                  <Text style={[styles.detailValue, item.unrealizedPnl === null ? styles.dimValue : item.unrealizedPnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-                    {item.unrealizedPnl === null ? "No broker P&L" : formatRupees(item.unrealizedPnl, { signed: true })}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>P&L %</Text>
-                  <Text style={[styles.detailValue, item.unrealizedPnl === null ? styles.dimValue : item.unrealizedPnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-                    {item.unrealizedPnl === null || item.entryPrice === null || item.quantity === 0
-                      ? "No broker P&L"
-                      : formatPercent((item.unrealizedPnl / (item.entryPrice * item.quantity)) * 100)}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Broker</Text>
-                  <Text style={styles.detailValue}>{item.broker} • {item.account}</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          )}
+        <SortableTable
+          rows={positionRows}
+          columns={POSITION_COLUMNS}
+          sort={positionSort}
+          onSort={(column) => setPositionSort(nextSort(column, positionSort))}
+          cell={positionCell}
+          keyOf={(item, index) => `${item.broker}:${item.account}:${item.symbol}:${item.expiry ?? ""}:${index}`}
+          onRowPress={handleOpenTicket}
+          theme={theme}
           refreshControl={
             <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
           }
-          contentContainerStyle={styles.listContent}
-          ListFooterComponent={
+          footer={
             <View style={styles.totalRow}>
               <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>Total Unrealized P&L</Text>
               <Text style={{ fontSize: 14, fontWeight: "600", color: totalUnrealized >= 0 ? "#22c55e" : "#ef4444" }}>
@@ -318,72 +388,23 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        <Text style={[styles.subtitle, { paddingHorizontal: 16, paddingTop: 12 }]}>
-          {holdings.length} holding{holdings.length !== 1 ? "s" : ""} • Market value: {formatRupees(totalMarketValue)} • Unrealized P&L: {formatRupees(totalHoldingPnl, { signed: true })}
+        <Text style={styles.subtitle}>
+          {holdings.length} holding{holdings.length !== 1 ? "s" : ""} on {holdingSource} • Market value: {formatRupees(totalMarketValue)} • Unrealized P&L: {formatRupees(totalHoldingPnl, { signed: true })} • {sortLine(HOLDING_COLUMNS, holdingSort)}
           {unvaluedCount > 0 ? ` (${unvaluedCount} without a broker price, excluded)` : ""}
         </Text>
         {holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")}
-        <FlatList
-          data={holdings}
-          keyExtractor={(item, index) => `${item.accountId}:${item.exchange}:${item.symbol}:${index}`}
-          renderItem={({ item }) => (
-            <View style={styles.card}>
-              <View style={styles.row}>
-                <View style={{ flex: 1, paddingRight: 8 }}>
-                  <Text style={styles.symbol}>{item.symbol}</Text>
-                  {item.name ? <Text style={styles.holdingName} numberOfLines={1}>{item.name}</Text> : null}
-                </View>
-                <Text style={[styles.detailValue, item.changePercent === null ? styles.dimValue : item.changePercent >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-                  {item.changePercent === null ? "No broker change" : formatPercent(item.changePercent)}
-                </Text>
-              </View>
-
-              <View style={styles.detailRow}>
-                <View>
-                  <Text style={styles.detailLabel}>Quantity</Text>
-                  <Text style={styles.detailValue}>{formatNumber(item.quantity)}</Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Average price</Text>
-                  <Text style={item.averagePrice === null ? styles.dimValue : styles.detailValue}>
-                    {item.averagePrice === null ? "No broker cost" : formatRupees(item.averagePrice)}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Current price</Text>
-                  <Text style={[styles.detailValue, item.currentPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined]}>
-                    {item.currentPrice === null ? "No broker price" : formatRupees(item.currentPrice)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.detailRow}>
-                <View>
-                  <Text style={styles.detailLabel}>Market value</Text>
-                  <Text style={item.marketValue === null ? styles.dimValue : styles.detailValue}>
-                    {item.marketValue === null ? "No broker price" : formatRupees(item.marketValue)}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Unrealized P&L</Text>
-                  <Text style={[styles.detailValue, item.unrealizedPnl === null ? styles.dimValue : item.unrealizedPnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-                    {item.unrealizedPnl === null ? "No broker P&L" : formatRupees(item.unrealizedPnl, { signed: true })}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.detailLabel}>Today's change</Text>
-                  <Text style={[styles.detailValue, item.todayPnl === null ? styles.dimValue : item.todayPnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-                    {item.todayPnl === null ? "No broker price" : formatRupees(item.todayPnl, { signed: true })}
-                  </Text>
-                </View>
-              </View>
-            </View>
-          )}
+        <SortableTable
+          rows={holdingRows}
+          columns={HOLDING_COLUMNS}
+          sort={holdingSort}
+          onSort={(column) => setHoldingSort(nextSort(column, holdingSort))}
+          cell={holdingCell}
+          keyOf={(item, index) => `${item.accountId}:${item.exchange}:${item.symbol}:${index}`}
+          theme={theme}
           refreshControl={
             <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
           }
-          contentContainerStyle={styles.listContent}
-          ListFooterComponent={
+          footer={
             <View style={styles.totalRow}>
               <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>Total Unrealized P&L</Text>
               <Text style={{ fontSize: 14, fontWeight: "600", color: totalHoldingPnl >= 0 ? "#22c55e" : "#ef4444" }}>
