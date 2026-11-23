@@ -464,6 +464,35 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  /**
+   * The exchange-facing underlying behind each broker contract code the book holds.
+   *
+   * A position row's `stock_code` is ICICI's own token (RELIND, NIFFIN), which is not the name the quote stream
+   * subscribes by and cannot be derived from it. Prod answers from the day-cached derivatives master: no broker
+   * session, no account read. Codes the master does not list come back unknown and are never guessed into an id.
+   */
+  const useContractUnderlyings = (codes: readonly string[], options?: Omit<UseQueryOptions<Record<string, string>, ApiError>, "queryKey" | "queryFn">) => {
+    const sorted = [...new Set(codes)].sort();
+    return useQuery({
+      queryKey: ["option-chain", "contract-underlyings", sorted.join(",")] as const,
+      queryFn: async () => {
+        const body = await client.get<{ items?: { code?: string; underlying?: string }[] }>("/v1/option-chain/contract-underlyings", {
+          params: { codes: sorted.join(",") },
+        });
+        const map: Record<string, string> = {};
+        for (const item of body?.items ?? []) {
+          const code = String(item?.code ?? "").trim().toUpperCase();
+          const underlying = String(item?.underlying ?? "").trim().toUpperCase();
+          if (code && underlying) map[code] = underlying;
+        }
+        return map;
+      },
+      enabled: sorted.length > 0,
+      staleTime: 60 * 60 * 1000,
+      ...options,
+    });
+  };
+
   const useStrategyAnalysis = (params: QueryParams, options?: UseQueryOptions<StrategyAnalysis, ApiError>) => {
     return useQuery({
       queryKey: queryKeys.optionChain.analysis(params),
@@ -686,6 +715,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useOptionChain,
     useOptionChains,
     useChainUnderlyings,
+    useContractUnderlyings,
     useStrategyAnalysis,
     // Orders
     useOrderIntents,
@@ -862,6 +892,10 @@ export interface OpenPosition {
   product: string;
   exchange: string;
   expiry: string | null;
+  // The two halves of a derivative's identity the broker sends beside its code. Together with the underlying
+  // name they are what a canonical stream subscription is built from; a cash row carries neither.
+  strike: string | null;
+  right: string | null;
 }
 
 interface IciciPositionRow {
@@ -968,6 +1002,8 @@ export function iciciOpenPositions(payload: IciciAccountPayload): OpenPosition[]
         product: String(row.product_type ?? "Unavailable"),
         exchange: String(row.exchange_code ?? "Unavailable"),
         expiry: row.expiry_date == null ? null : String(row.expiry_date),
+        strike: row.strike_price == null ? null : String(row.strike_price),
+        right: row.right == null ? null : String(row.right),
       };
     });
 }

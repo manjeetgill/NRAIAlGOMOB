@@ -3,9 +3,14 @@
  *
  * Everything here is prod data: the built-in lists NSE publishes, the user's own five lists, and the
  * search that adds to them. The index strip that used to head this screen is on every screen now.
+ *
+ * A REST read prices the list once, so a row that only ever comes from one is a number from the moment that
+ * read happened. The prices that move are the ones this screen subscribes to on prod's tick stream, by the
+ * canonical id the stream parses for that exchange and symbol; only a price the server published as fresh
+ * marks a row, and a marked row says so in its own colour.
  */
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,9 +23,20 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { BUILTIN_LISTS, queryKeys, type BuiltinListName, type WatchlistInfo, type WatchlistRow } from "@nraialgo/shared/api";
+import {
+  BUILTIN_LISTS,
+  markWatchlist,
+  queryKeys,
+  streamIdFor,
+  useQuoteFeed,
+  type BuiltinListName,
+  type Marked,
+  type WatchlistInfo,
+  type WatchlistRow,
+} from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatNumber } from "@nraialgo/shared/utils";
+import { useAuthStore } from "@nraialgo/shared/stores";
 import { BuySheet } from "@/components/BuySheet";
 import { WatchlistManager } from "@/components/WatchlistManager";
 import { useTheme } from "@/components/ThemeProvider";
@@ -35,6 +51,10 @@ export default function WatchlistScreen() {
     useAddToWatchlist, useRemoveFromWatchlist, useCreateWatchlist } = useApi();
   const { resolvedTheme } = useTheme();
   const ticket = useOrderTicket();
+  // The stream is a signed-in, per-workspace connection: registered while it can answer, never while it
+  // would be refused, and one socket for the whole app rather than one per screen.
+  const { isAuthenticated, user, accessToken } = useAuthStore();
+  const authenticated = isAuthenticated || !!user || !!accessToken;
 
   const [tab, setTab] = useState<Tab>({ kind: "predefined" });
   const [builtin, setBuiltin] = useState<BuiltinListName>("nifty_50");
@@ -187,13 +207,29 @@ export default function WatchlistScreen() {
     : "Loading the index strip";
 
   const rows = tab.kind === "predefined" ? builtins?.items ?? [] : saved?.items ?? [];
+  // Watchlist rows are cash instruments, so each one's stream id comes straight from the exchange and symbol
+  // prod sent beside it. An exchange the stream does not publish builds no id and is never subscribed: one
+  // subscription the server cannot parse closes the socket for the whole app, not just this row.
+  const instruments = useMemo(() => [...new Set(rows.map((row) => streamIdFor({
+    exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null,
+  })).filter((id): id is string => !!id))].sort(), [rows]);
+  const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
+  const liveRows = useMemo(() => markWatchlist(rows, feed.quotes), [rows, feed.quotes]);
+  const ticking = liveRows.some(row => row.live);
   // Prod returns a list's symbols before it has finished pricing them, so an empty price here
   // usually means "still being read" rather than "this stock has no price". Say which.
   const pricesPending = (tab.kind === "predefined" ? builtins?.pricesPending : saved?.pricesPending) === true;
   const busy = tab.kind === "predefined" ? !builtins && !builtinError : !saved && !savedError;
   const pages = builtins?.total && builtins.pageSize ? Math.ceil(builtins.total / builtins.pageSize) : 1;
+  // A socket that is open but has sent no usable price is not a quiet market the app can prove, so the line
+  // says which of the three states this list is in instead of leaving one word to cover all of them. An empty
+  // list subscribes to nothing, so it gets no stream word at all.
+  const streamWord = instruments.length === 0
+    ? null
+    : ticking ? "ticking" : feed.connected ? "waiting for ticks" : "no live stream";
+  const listLine = pricesPending ? `${statusLine} · prices for this list are still arriving` : statusLine;
 
-  const renderRow = ({ item }: { item: WatchlistRow }) => {
+  const renderRow = ({ item }: { item: WatchlistRow & Marked }) => {
     const already = inList.has(`${item.exchange}:${item.symbol}`);
     return (
       <TouchableOpacity
@@ -296,9 +332,7 @@ export default function WatchlistScreen() {
         </View>
       )}
 
-      <Text style={styles.status}>
-        {pricesPending ? `${statusLine} · prices for this list are still arriving` : statusLine}
-      </Text>
+      <Text style={styles.status}>{streamWord ? `${listLine} · ${streamWord}` : listLine}</Text>
       {savedError || builtinError ? (
         <Text style={styles.error}>{String((savedError ?? builtinError)?.message ?? "The watchlist could not be read.")}</Text>
       ) : null}
@@ -329,7 +363,7 @@ export default function WatchlistScreen() {
         </View>
       ) : (
         <FlatList
-          data={rows}
+          data={liveRows}
           keyExtractor={item => `${item.exchange}:${item.symbol}`}
           renderItem={renderRow}
           ListFooterComponent={

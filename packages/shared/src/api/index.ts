@@ -130,6 +130,16 @@ export {
   type LiveCandles,
 } from "./live-candles";
 
+export {
+  streamIdFor,
+  derivativeCodes,
+  markPositions,
+  markHoldings,
+  markWatchlist,
+  type RowIdentity,
+  type Marked,
+} from "./account-quotes";
+
 // Create default client and hooks for convenience
 let api: ApiHooks | null = null;
 

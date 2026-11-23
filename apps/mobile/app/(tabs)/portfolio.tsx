@@ -8,14 +8,23 @@
 
 import React, { useMemo, useState } from "react";
 import { View, Text, FlatList, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
-import { useRealtimeQuotes } from "@/hooks/useRealtimeQuotes";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
 import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/utils";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
-import { iciciAccountSection, iciciHoldings, type OpenPosition } from "@nraialgo/shared/api";
+import { useAuthStore } from "@nraialgo/shared/stores";
+import {
+  derivativeCodes,
+  iciciAccountSection,
+  iciciHoldings,
+  markHoldings,
+  markPositions,
+  streamIdFor,
+  useQuoteFeed,
+  type OpenPosition,
+} from "@nraialgo/shared/api";
 
 const TABS = [
   { id: "positions", label: "Positions" },
@@ -34,10 +43,10 @@ export default function PortfolioScreen() {
   // could not, and the reason it gave. The rows still come from the mapped hooks.
   const { data: account, refetch: refetchAccount } = useIciciAccount();
 
-  const positions = data ?? [];
+  const savedPositions = useMemo(() => data ?? [], [data]);
+  const savedHoldings = useMemo(() => iciciHoldings(account ?? {}), [account]);
   const positionsState = iciciAccountSection(account, "portfoliopositions");
   const holdingsState = iciciAccountSection(account, "portfolioholdings");
-  const holdings = useMemo(() => iciciHoldings(account ?? {}), [account]);
 
   // Use unified order ticket hook
   const ticket = useOrderTicket();
@@ -46,9 +55,29 @@ export default function PortfolioScreen() {
     fromPosition,
   } = ticket;
 
-  // Get symbols for real-time quotes
-  const symbols = positions.map(p => p.symbol);
-  const { isConnected } = useRealtimeQuotes(symbols, true);
+  // Tick by tick, on both lists. The stream subscribes by canonical contract ids, and a derivative's id needs
+  // the underlying name behind ICICI's own contract code - RELIND is RELIANCE, and a prefix cannot decide
+  // that - so the codes are resolved from prod's derivatives master first. An id that cannot be built
+  // completely is never sent, because one subscription the server cannot parse closes the socket for the
+  // whole app. Only a price the server published as fresh marks a row.
+  const { isAuthenticated, user, accessToken } = useAuthStore();
+  const authenticated = isAuthenticated || !!user || !!accessToken;
+  const { useContractUnderlyings } = useApi();
+  const codes = useMemo(() => derivativeCodes(savedPositions), [savedPositions]);
+  const { data: resolved } = useContractUnderlyings(codes);
+  const underlyings = useMemo(() => resolved ?? {}, [resolved]);
+  const instruments = useMemo(() => [...new Set([
+    ...savedPositions.map((row) => streamIdFor(row, underlyings[row.symbol.trim().toUpperCase()] ?? null)),
+    ...savedHoldings.map((row) => streamIdFor({
+      exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null,
+    })),
+  ].filter((id): id is string => !!id))].sort(), [savedPositions, savedHoldings, underlyings]);
+  const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
+  const positions = useMemo(() => markPositions(savedPositions, feed.quotes, underlyings), [savedPositions, feed.quotes, underlyings]);
+  const holdings = useMemo(() => markHoldings(savedHoldings, feed.quotes), [savedHoldings, feed.quotes]);
+
+  const ticking = positions.some((row) => row.live) || holdings.some((row) => row.live);
+  const isConnected = feed.connected;
 
   const colors = resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", live: "#22c55e", accent: "#38bdf8", brand: { "600": "#38bdf8" } }
@@ -86,6 +115,9 @@ export default function PortfolioScreen() {
     detailRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
     detailLabel: { fontSize: 13, color: colors.muted },
     detailValue: { fontSize: 13, fontWeight: "500", color: colors.text },
+    // A price that arrived on the stream is drawn differently from one the broker merely saved, so the
+    // trader never has to guess whether the number in front of them is the market or a snapshot.
+    streamValue: { color: colors.accent },
     dimValue: { fontSize: 13, fontWeight: "500", color: colors.muted },
     pnlPositive: { color: "#22c55e" },
     pnlNegative: { color: "#ef4444" },
@@ -212,7 +244,7 @@ export default function PortfolioScreen() {
                 </View>
                 <View>
                   <Text style={styles.detailLabel}>Current price</Text>
-                  <Text style={item.markPrice === null ? styles.dimValue : styles.detailValue}>
+                  <Text style={[styles.detailValue, item.markPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined]}>
                     {item.markPrice === null ? "No broker price" : formatRupees(item.markPrice)}
                   </Text>
                 </View>
@@ -319,7 +351,7 @@ export default function PortfolioScreen() {
                 </View>
                 <View>
                   <Text style={styles.detailLabel}>Current price</Text>
-                  <Text style={item.currentPrice === null ? styles.dimValue : styles.detailValue}>
+                  <Text style={[styles.detailValue, item.currentPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined]}>
                     {item.currentPrice === null ? "No broker price" : formatRupees(item.currentPrice)}
                   </Text>
                 </View>
@@ -369,9 +401,9 @@ export default function PortfolioScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Portfolio</Text>
         <View style={styles.liveIndicator}>
-          <View style={[styles.liveDot, { backgroundColor: isConnected ? colors.live : colors.muted }]} />
-          <Text style={[styles.liveText, { color: isConnected ? colors.live : colors.muted }]}>
-            {isConnected ? "LIVE" : positions.length ? "CONNECTING" : "NOT LIVE"}
+          <View style={[styles.liveDot, { backgroundColor: ticking ? colors.live : colors.muted }]} />
+          <Text style={[styles.liveText, { color: ticking ? colors.live : colors.muted }]}>
+            {ticking ? "LIVE" : !authenticated ? "SIGN IN" : isConnected ? "NO TICKS" : "CONNECTING"}
           </Text>
         </View>
       </View>
