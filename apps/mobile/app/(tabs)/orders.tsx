@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useMemo } from "react";
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl, SectionList } from "react-native";
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
