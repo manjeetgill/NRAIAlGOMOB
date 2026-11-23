@@ -99,11 +99,11 @@ it("still shows every figure the cards carried", () => {
   expect(screen).toContain("savedHoldings.map((row) => row.accountId)");
 });
 
-it("says so in words when the broker sent no figure, and never prints a dash for one", () => {
-  expect(screen).toContain('const NO_COST = "no cost"');
-  expect(screen).toContain('const NO_PRICE = "no price"');
-  expect(screen).toContain('const NO_PNL = "no P&L"');
-  expect(screen).toContain('const NO_CHANGE = "no change"');
+it("leaves a cell blank when the broker sent no figure, so the row stays narrow", () => {
+  expect(screen).not.toContain('const NO_COST');
+  expect(screen).not.toContain('const NO_PRICE');
+  expect(screen).not.toContain('const NO_PNL');
+  expect(screen).not.toContain('const NO_CHANGE');
   expect(screen).not.toMatch(/text: "-"/);
 });
 

@@ -47,13 +47,6 @@ type TabId = (typeof TABS)[number]["id"];
 type PositionRow = OpenPosition & Marked;
 type HoldingRow = Holding & Marked;
 
-// A column is about 50dp wide, so an absent figure gets the shortest words that still say who owes it:
-// the broker did not send it, and no other row's price stands in for it.
-const NO_COST = "no cost";
-const NO_PRICE = "no price";
-const NO_PNL = "no P&L";
-const NO_CHANGE = "no change";
-
 /** A price keeps its paise while it is small enough to need them, and drops them once it is a contract's index value. */
 function priceText(value: number): string {
   return Math.abs(value) >= 10000 ? formatNumber(value, 0) : formatNumber(value, 2);
@@ -257,17 +250,17 @@ export default function PortfolioScreen() {
       case "quantity":
         return { text: formatNumber(item.quantity, 0) };
       case "entry":
-        return { text: item.entryPrice === null ? NO_COST : priceText(item.entryPrice), style: item.entryPrice === null ? styles.dimValue : undefined };
+        return { text: item.entryPrice === null ? "" : priceText(item.entryPrice), style: item.entryPrice === null ? styles.dimValue : undefined };
       case "current":
         return {
-          text: item.markPrice === null ? NO_PRICE : priceText(item.markPrice),
+          text: item.markPrice === null ? "" : priceText(item.markPrice),
           style: item.markPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined,
         };
       case "unrealized":
-        return { text: item.unrealizedPnl === null ? NO_PNL : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
+        return { text: item.unrealizedPnl === null ? "" : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
       case "pnlPercent": {
         const percent = pnlPercent(item);
-        return { text: percent === null ? NO_PNL : formatPercent(percent), style: pnlStyle(percent) };
+        return { text: percent === null ? "" : formatPercent(percent), style: pnlStyle(percent) };
       }
       default:
         return { text: item.symbol };
@@ -281,20 +274,20 @@ export default function PortfolioScreen() {
       case "quantity":
         return { text: formatNumber(item.quantity, 0) };
       case "average":
-        return { text: item.averagePrice === null ? NO_COST : priceText(item.averagePrice), style: item.averagePrice === null ? styles.dimValue : undefined };
+        return { text: item.averagePrice === null ? "" : priceText(item.averagePrice), style: item.averagePrice === null ? styles.dimValue : undefined };
       case "current":
         return {
-          text: item.currentPrice === null ? NO_PRICE : priceText(item.currentPrice),
+          text: item.currentPrice === null ? "" : priceText(item.currentPrice),
           style: item.currentPrice === null ? styles.dimValue : item.live ? styles.streamValue : undefined,
-          sub: item.changePercent === null ? NO_CHANGE : formatPercent(item.changePercent),
+          sub: item.changePercent === null ? "" : formatPercent(item.changePercent),
           subStyle: pnlStyle(item.changePercent),
         };
       case "value":
-        return { text: item.marketValue === null ? NO_PRICE : sumText(item.marketValue), style: item.marketValue === null ? styles.dimValue : undefined };
+        return { text: item.marketValue === null ? "" : sumText(item.marketValue), style: item.marketValue === null ? styles.dimValue : undefined };
       case "unrealized":
-        return { text: item.unrealizedPnl === null ? NO_PNL : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
+        return { text: item.unrealizedPnl === null ? "" : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
       case "today":
-        return { text: item.todayPnl === null ? NO_PRICE : sumText(item.todayPnl), style: pnlStyle(item.todayPnl) };
+        return { text: item.todayPnl === null ? "" : sumText(item.todayPnl), style: pnlStyle(item.todayPnl) };
       default:
         return { text: item.symbol };
     }
