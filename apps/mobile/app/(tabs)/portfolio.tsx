@@ -86,16 +86,6 @@ const HOLDING_COLUMNS: SortColumn<HoldingRow>[] = [
   { key: "today", label: "Today ₹", width: 50, numeric: true, value: (row) => row.todayPnl },
 ];
 
-/** Which order the table is in, in the words a trader can read off the subtitle when the heading has scrolled by. */
-function sortLine<Row>(columns: readonly SortColumn<Row>[], sort: SortState | null): string {
-  const column = columns.find((entry) => entry.key === sort?.key);
-  if (!column) return "in the order the broker sent them";
-  const order = column.numeric
-    ? sort?.descending ? "highest first" : "lowest first"
-    : sort?.descending ? "Z to A" : "A to Z";
-  return `sorted by ${column.label.replace(" ₹", "")}, ${order}`;
-}
-
 export default function PortfolioScreen() {
   const { useOpenPositions, useIciciAccount } = useApi();
   const { resolvedTheme } = useTheme();
@@ -190,18 +180,10 @@ export default function PortfolioScreen() {
 
   const priced = positions.filter(p => p.unrealizedPnl !== null);
   const totalUnrealized = priced.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
-  const unpricedCount = positions.length - priced.length;
 
-  const valuedHoldings = holdings.filter(holding => holding.marketValue !== null);
-  const totalMarketValue = valuedHoldings.reduce((sum, holding) => sum + (holding.marketValue ?? 0), 0);
   const pnlHoldings = holdings.filter(holding => holding.unrealizedPnl !== null);
   const totalHoldingPnl = pnlHoldings.reduce((sum, holding) => sum + (holding.unrealizedPnl ?? 0), 0);
-  const unvaluedCount = holdings.length - valuedHoldings.length;
 
-  // Where a row's rupees came from, once for the whole list instead of once per row: the book is read from one
-  // account response, so repeating it down a column answered nothing and cost the table its narrowest column.
-  const positionSource = [...new Set(savedPositions.map((row) => `${row.broker} ${row.account}`))].join(", ");
-  const holdingSource = [...new Set(savedHoldings.map((row) => row.accountId))].join(", ");
 
   // Prod's own words for a list it could not refresh. They label the rows; they never replace them.
   // A degraded section still carries the broker's last confirmed book, and a screen that hid those
@@ -262,8 +244,12 @@ export default function PortfolioScreen() {
         const percent = pnlPercent(item);
         return { text: percent === null ? "" : formatPercent(percent), style: pnlStyle(percent) };
       }
-      default:
-        return { text: item.symbol };
+      default: {
+        const optionDetails = item.strike && item.expiry
+          ? `${item.strike} ${item.right ?? ""} ${item.expiry}`.trim()
+          : undefined;
+        return { text: item.symbol, sub: optionDetails };
+      }
     }
   };
 
@@ -322,10 +308,6 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        <Text style={styles.subtitle}>
-          {positions.length} position{positions.length !== 1 ? "s" : ""} on {positionSource} • Unrealized P&L: {formatRupees(totalUnrealized, { signed: true })} • {sortLine(POSITION_COLUMNS, positionSort)}
-          {unpricedCount > 0 ? ` (${unpricedCount} without a broker cost, excluded)` : ""}
-        </Text>
         {positionsState.kind === "ready" ? null : banner(positionsState, "Positions")}
         <SortableTable
           rows={positionRows}
@@ -381,10 +363,6 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        <Text style={styles.subtitle}>
-          {holdings.length} holding{holdings.length !== 1 ? "s" : ""} on {holdingSource} • Market value: {formatRupees(totalMarketValue)} • Unrealized P&L: {formatRupees(totalHoldingPnl, { signed: true })} • {sortLine(HOLDING_COLUMNS, holdingSort)}
-          {unvaluedCount > 0 ? ` (${unvaluedCount} without a broker price, excluded)` : ""}
-        </Text>
         {holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")}
         <SortableTable
           rows={holdingRows}

@@ -93,10 +93,6 @@ it("still shows every figure the cards carried", () => {
   ]) {
     expect(screen, field).toContain(field);
   }
-  // The account each row trades under survived the card: once above the list, since every row of one
-  // broker response carries the same one and a column of repeats would only cost width.
-  expect(screen).toContain("${row.broker} ${row.account}");
-  expect(screen).toContain("savedHoldings.map((row) => row.accountId)");
 });
 
 it("leaves a cell blank when the broker sent no figure, so the row stays narrow", () => {
@@ -117,9 +113,4 @@ it("draws the heading and its figures from one column list, so a label never sit
   expect(table).toContain("widths[index]");
   expect(table).toContain("widths[columnIndex]");
   expect(table).toContain("onPress={() => onSort(column)}");
-});
-
-it("states the order the table is in above the rows, where it stays after the heading scrolls by", () => {
-  expect(screen).toContain("sortLine(POSITION_COLUMNS, positionSort)");
-  expect(screen).toContain("sortLine(HOLDING_COLUMNS, holdingSort)");
 });
