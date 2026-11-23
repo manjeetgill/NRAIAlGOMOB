@@ -69,6 +69,7 @@ export const queryKeys = {
     quote: (exchange: string, symbol: string) => ["orders", "quote", exchange, symbol] as const,
     destinations: () => ["orders", "destinations"] as const,
     snapshot: (clientId: string) => ["orders", "snapshot", clientId] as const,
+    gtt: () => ["orders", "gtt"] as const,
   },
 
   // Market Data
@@ -587,6 +588,19 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  const useGttOrders = (options?: UseQueryOptions<GttOrder[], ApiError>) => {
+    return useQuery({
+      queryKey: queryKeys.orders.gtt(),
+      queryFn: async () => {
+        const response = await client.get<{ gtts: GttOrder[] }>("/v1/orders/gtt");
+        return response.gtts;
+      },
+      staleTime: 5 * 1000,
+      refetchInterval: 10 * 1000,
+      ...options,
+    });
+  };
+
   // ===== MARKET DATA =====
   const useMarketQuotes = (symbols: string[], options?: UseQueryOptions<MarketQuote[], ApiError>) => {
     return useQuery({
@@ -724,6 +738,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useOrderSnapshot,
     useEquityQuote,
     useOrderDestinations,
+    useGttOrders,
     // Market
     useMarketQuotes,
     useIndices,
@@ -1273,6 +1288,20 @@ export interface OrderLine {
   averagePrice?: number;
   status: string;
   orderId?: string;
+}
+
+export interface GttOrder {
+  id: string;
+  draft_id: string | null;
+  provider: string;
+  account_id: string;
+  order_spec: Record<string, unknown>;
+  trigger_price: string;
+  state: "requested" | "placing" | "active" | "triggered" | "expired" | "cancelled" | "cancel_requested" | "cancelling" | "unknown";
+  broker_gtt_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /**

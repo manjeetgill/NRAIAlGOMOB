@@ -75,6 +75,7 @@ export {
   type PayoffPoint,
   type OrderIntent,
   type OrderLine,
+  type GttOrder,
   type PlaceOrderRequest,
   type PlaceOrderLine,
   type OptionDraftLeg,
@@ -129,6 +130,17 @@ export {
   type ChartBucket,
   type LiveCandles,
 } from "./live-candles";
+
+export {
+  strikeIds,
+  watchBand,
+  tickByInstrument,
+  tickWord,
+  tickBeats,
+  liveSide,
+  type Band,
+  type LiveSide,
+} from "./chain-ticks";
 
 export {
   streamIdFor,
