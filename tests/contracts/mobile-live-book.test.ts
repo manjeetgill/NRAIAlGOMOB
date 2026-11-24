@@ -135,6 +135,9 @@ it("subscribes the book by instrument id, and covers both tabs", () => {
 
 it("says which price came off the stream instead of leaving the trader to guess", () => {
   const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
-  expect(screen).toContain("{ticking ? \"LIVE\" : !authenticated ? \"SIGN IN\" : isConnected ? \"NO TICKS\" : \"CONNECTING\"}");
   expect(screen).toContain("item.live ? styles.streamValue : undefined");
+  // The screen-level LIVE/NO TICKS/CONNECTING banner said the same thing for every row at once and cost
+  // the book a heading plus a status line, so the per-cell marking is the only feed state kept.
+  expect(screen).not.toContain("NO TICKS");
+  expect(screen).not.toContain("CONNECTING");
 });

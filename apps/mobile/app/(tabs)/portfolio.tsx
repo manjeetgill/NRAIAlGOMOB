@@ -129,9 +129,6 @@ export default function PortfolioScreen() {
   const positions = useMemo(() => markPositions(savedPositions, feed.quotes, underlyings), [savedPositions, feed.quotes, underlyings]);
   const holdings = useMemo(() => markHoldings(savedHoldings, feed.quotes), [savedHoldings, feed.quotes]);
 
-  const ticking = positions.some((row) => row.live) || holdings.some((row) => row.live);
-  const isConnected = feed.connected;
-
   // One tap on a heading sorts by that column, the next tap turns it around. The two tabs keep their own
   // order, so reading a sorted book never reorders the other one behind the trader's back.
   const [positionSort, setPositionSort] = useState<SortState | null>(null);
@@ -146,13 +143,8 @@ export default function PortfolioScreen() {
 
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
-    header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
-    title: { fontSize: 24, fontWeight: "700", color: colors.text },
     subtitle: { fontSize: 13, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
-    liveIndicator: { flexDirection: "row", alignItems: "center", gap: 6 },
-    liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.live },
-    liveText: { fontSize: 12, fontWeight: "600", color: colors.live },
-    tabContainer: { flexDirection: "row", backgroundColor: colors.card, marginHorizontal: 16, marginTop: 12, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
+    tabContainer: { flexDirection: "row", backgroundColor: colors.card, marginHorizontal: 16, marginTop: 16, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
     tabButton: { flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 6 },
     tabButtonActive: { backgroundColor: colors.accent },
     tabLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
@@ -390,16 +382,6 @@ export default function PortfolioScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Portfolio</Text>
-        <View style={styles.liveIndicator}>
-          <View style={[styles.liveDot, { backgroundColor: ticking ? colors.live : colors.muted }]} />
-          <Text style={[styles.liveText, { color: ticking ? colors.live : colors.muted }]}>
-            {ticking ? "LIVE" : !authenticated ? "SIGN IN" : isConnected ? "NO TICKS" : "CONNECTING"}
-          </Text>
-        </View>
-      </View>
-
       <View style={styles.tabContainer}>
         {TABS.map((entry) => (
           <TouchableOpacity
