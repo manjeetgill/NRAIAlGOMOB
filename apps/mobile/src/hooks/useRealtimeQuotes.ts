@@ -18,7 +18,8 @@ import {
 import { useAuthStore } from "@nraialgo/shared/stores";
 
 export function useRealtimeQuotes(symbols: string[], enabled = true) {
-  const { accessToken } = useAuthStore();
+  const { accessToken, isAuthenticated, user } = useAuthStore();
+  const authenticated = isAuthenticated || !!user || !!accessToken;
   const lastQuotesRef = useRef<Map<string, QuoteTick>>(new Map());
 
   // Only NSE cash symbols and NSE indices are published tick by tick, so the rest never reach the socket.
@@ -34,23 +35,29 @@ export function useRealtimeQuotes(symbols: string[], enabled = true) {
     // position is a wrong number, not a fresher one.
     const exchange = tick.id.split(":")[2];
     const price = tickBarInput(tick)?.price;
-    if (!symbol || price === undefined) return;
-    lastQuotesRef.current.set(symbol, tick);
+    if (price === undefined) return;
+    if (symbol) lastQuotesRef.current.set(symbol, tick);
+    lastQuotesRef.current.set(tick.id, tick);
+    if (tick.subscriptionId) lastQuotesRef.current.set(tick.subscriptionId, tick);
 
     // Update positions cache if symbol is in open positions. The query stores itself under the
     // broker-scoped key, so patching the bare ["positions","open"] never reached a rendered row.
     queryClient.setQueryData(["positions", "open", "all"], (old: any[]) => {
       if (!old) return old;
-      return old.map((p) => (p.symbol === symbol && p.exchange === exchange
-        ? {
-            ...p,
-            markPrice: price,
-            // Without a broker cost there is no basis to mark against, so the P&L stays unreported.
-            unrealizedPnl: typeof p.entryPrice === "number"
-              ? (price - p.entryPrice) * p.quantity * (p.side === "BUY" ? 1 : -1)
-              : p.unrealizedPnl,
-          }
-        : p));
+      return old.map((p) => {
+        const symbolMatch = (symbol && p.symbol === symbol && (!exchange || p.exchange === exchange))
+          || (p.symbol && tick.id.includes(`:${encodeURIComponent(p.symbol)}:`))
+          || (tick.subscriptionId && p.symbol && tick.subscriptionId.includes(`|${p.symbol}|`));
+        if (!symbolMatch) return p;
+        return {
+          ...p,
+          markPrice: price,
+          // Without a broker cost there is no basis to mark against, so the P&L stays unreported.
+          unrealizedPnl: typeof p.entryPrice === "number"
+            ? (price - p.entryPrice) * p.quantity * (p.side === "BUY" ? 1 : -1)
+            : p.unrealizedPnl,
+        };
+      });
     });
   }, []);
 
@@ -60,7 +67,7 @@ export function useRealtimeQuotes(symbols: string[], enabled = true) {
 
   const stream = useQuotesStream({
     symbols: instruments,
-    enabled: enabled && instruments.length > 0 && !!accessToken,
+    enabled: enabled && authenticated,
     onMessage: updateCache,
     onError: handleError,
   });

@@ -11,7 +11,7 @@
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import type { BasketSummary } from "@nraialgo/shared/api";
+import { isLiveRun, type Basket } from "@nraialgo/shared/api";
 import { formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
@@ -43,13 +43,13 @@ const money = (value: number | null | undefined): string =>
 const signed = (value: number): string => `${value >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(value))}`;
 
 /** The newest timestamp the record itself carries: a booked exit, or when the basket opened. */
-function newestStamp(basket: BasketSummary): string | null {
+function newestStamp(basket: Basket): string | null {
   const stamps = [basket.openedAt ?? null, ...basket.legs.map(leg => leg.exitAt ?? null)]
     .filter((value): value is string => typeof value === "string" && value !== "");
   return stamps.length ? (stamps.sort().at(-1) as string) : null;
 }
 
-function rowFor(basket: BasketSummary): HistoryRow {
+function rowFor(basket: Basket): HistoryRow {
   const first = basket.legs[0];
   const legs = basket.legs.length;
   return {
@@ -67,10 +67,10 @@ function rowFor(basket: BasketSummary): HistoryRow {
   };
 }
 
-function matches(basket: BasketSummary, tab: TabId): boolean {
+function matches(basket: Basket, tab: TabId): boolean {
   if (tab === "closed") return basket.status === "closed";
   // Paper runs are automated, but their money is simulated, so this tab names only what the broker ran.
-  if (tab === "automated") return basket.kind === "automated";
+  if (tab === "automated") return isLiveRun(basket);
   if (tab === "single") return basket.legs.length === 1;
   return true;
 }

@@ -29,10 +29,10 @@ export const queryKeys = {
     brokers: () => ["auth", "brokers"] as const,
   },
 
-  // Baskets
+  // Baskets. Prod serves the whole desk from GET /v1/baskets - there is no single-basket read, so a
+  // write invalidates the list it came from rather than a detail key nothing can fetch.
   baskets: {
     all: (source?: string) => ["baskets", source ?? "all"] as const,
-    detail: (id: string) => ["baskets", "detail", id] as const,
     history: (params?: QueryParams) => ["baskets", "history", params] as const,
   },
 
@@ -59,7 +59,10 @@ export const queryKeys = {
   optionChain: {
     chain: (underlying: string, expiry: string) => ["option-chain", "chain", underlying, expiry || "auto"] as const,
     underlyings: () => ["option-chain", "underlyings"] as const,
-    analysis: (params: QueryParams) => ["option-chain", "analysis", params] as const,
+    // The analysis body is the key: the server answers a POST, and two different baskets must never
+    // share one cached curve.
+    analysis: (body: StrategyAnalysisRequest) => ["option-chain", "analysis", body] as const,
+    margin: (body: MarginRequest) => ["option-chain", "margin", body] as const,
   },
 
   // Orders
@@ -222,6 +225,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   // ===== BASKETS =====
+  // One read answers the whole desk: every basket arrives with its legs, marks, booked P&L, close charges
+  // and the payoff contracts, so opening a basket costs the phone nothing extra.
   const useBaskets = (source?: string, options?: UseQueryOptions<BasketListResponse, ApiError>) => {
     return useQuery({
       queryKey: queryKeys.baskets.all(source),
@@ -232,23 +237,14 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
-  const useBasketDetail = (id: string, options?: UseQueryOptions<BasketDetail, ApiError>) => {
-    return useQuery({
-      queryKey: queryKeys.baskets.detail(id),
-      queryFn: () => client.get<BasketDetail>(`/v1/baskets/${id}`),
-      enabled: !!id,
-      staleTime: 5 * 1000,
-      ...options,
-    });
-  };
+  const invalidateBaskets = () => qc.invalidateQueries({ queryKey: ["baskets"] });
 
-  const useExitLeg = (options?: UseMutationOptions<void, ApiError, ExitLegRequest>) => {
+  /** The leg is named by its contract identity, which is what the basket row carries. */
+  const useExitLeg = (options?: UseMutationOptions<ExitLegResult, ApiError, ExitLegRequest>) => {
     return useMutation({
-      mutationFn: ({ basketId, ...body }) => client.post(`/v1/baskets/${basketId}/legs/exit`, body),
-      onSuccess: (_, { basketId }) => {
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.detail(basketId) });
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.all() });
-      },
+      mutationFn: ({ basketId, instrumentId, ...body }) =>
+        client.post<ExitLegResult>(`/v1/baskets/${basketId}/legs/${instrumentId}/exit`, body),
+      onSuccess: invalidateBaskets,
       ...options,
     });
   };
@@ -256,10 +252,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useRecordExitPrice = (options?: UseMutationOptions<void, ApiError, RecordExitPriceRequest>) => {
     return useMutation({
       mutationFn: ({ basketId, ...body }) => client.post(`/v1/baskets/${basketId}/legs/exit-price`, body),
-      onSuccess: (_, { basketId }) => {
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.detail(basketId) });
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.all() });
-      },
+      onSuccess: invalidateBaskets,
       ...options,
     });
   };
@@ -267,10 +260,25 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useRemoveLeg = (options?: UseMutationOptions<void, ApiError, RemoveLegRequest>) => {
     return useMutation({
       mutationFn: ({ basketId, ...body }) => client.post(`/v1/baskets/${basketId}/legs/remove`, body),
-      onSuccess: (_, { basketId }) => {
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.detail(basketId) });
-        qc.invalidateQueries({ queryKey: queryKeys.baskets.all() });
-      },
+      onSuccess: invalidateBaskets,
+      ...options,
+    });
+  };
+
+  const useCloseBasket = (options?: UseMutationOptions<CloseBasketResult, ApiError, CloseBasketRequest>) => {
+    return useMutation({
+      mutationFn: ({ basketId, ...body }) =>
+        client.post<CloseBasketResult>(`/v1/baskets/${basketId}/close`, body),
+      onSuccess: invalidateBaskets,
+      ...options,
+    });
+  };
+
+  /** Un-groups a basket from the desk. The broker's book is untouched; the row simply stops being listed. */
+  const useDeleteBasket = (options?: UseMutationOptions<void, ApiError, string>) => {
+    return useMutation({
+      mutationFn: (basketId: string) => client.delete(`/v1/baskets/${basketId}`),
+      onSuccess: invalidateBaskets,
       ...options,
     });
   };
@@ -494,13 +502,31 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
-  const useStrategyAnalysis = (params: QueryParams, options?: UseQueryOptions<StrategyAnalysis, ApiError>) => {
+  /**
+   * The server's own basket model: it inverts each leg's volatility from the price sent, so it answers
+   * the T+0 curve, the probability of profit and the greeks that no client arithmetic can honestly give.
+   * A POST, because the leg set travels in the body, and re-read on a timer rather than on every tick -
+   * one call prices the whole basket, and the desk is already pacing the chain read underneath it.
+   */
+  const useStrategyAnalysis = (body: StrategyAnalysisRequest | null, options?: UseQueryOptions<StrategyAnalysis, ApiError>) => {
     return useQuery({
-      queryKey: queryKeys.optionChain.analysis(params),
-      queryFn: () => client.get<StrategyAnalysis>("/v1/strategy-analysis", { params }),
-      enabled: Object.keys(params).length > 0,
-      staleTime: 2 * 1000,
-      refetchInterval: 3 * 1000,
+      queryKey: queryKeys.optionChain.analysis(body as StrategyAnalysisRequest),
+      queryFn: () => client.post<StrategyAnalysis>("/v1/strategy-analysis", body),
+      enabled: !!body,
+      staleTime: 5 * 1000,
+      refetchInterval: 15 * 1000,
+      ...options,
+    });
+  };
+
+  /** What the exchange would need in the margin account for this leg set, from the published margin parameters. */
+  const usePlanningMargin = (body: MarginRequest | null, options?: UseQueryOptions<MarginEstimate, ApiError>) => {
+    return useQuery({
+      queryKey: queryKeys.optionChain.margin(body as MarginRequest),
+      queryFn: () => client.post<MarginEstimate>("/v1/planning-margin", body),
+      enabled: !!body,
+      staleTime: 30 * 1000,
+      refetchInterval: 60 * 1000,
       ...options,
     });
   };
@@ -711,10 +737,11 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useLogout,
     // Baskets
     useBaskets,
-    useBasketDetail,
     useExitLeg,
     useRecordExitPrice,
     useRemoveLeg,
+    useCloseBasket,
+    useDeleteBasket,
     useBackfillExits,
     // Positions
     useOpenPositions,
@@ -734,6 +761,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useChainUnderlyings,
     useContractUnderlyings,
     useStrategyAnalysis,
+    usePlanningMargin,
     // Orders
     useOrderIntents,
     usePlaceOrder,
@@ -792,26 +820,19 @@ export type LoginResponse =
   | { mfaRequired?: false; email: string; mfaEnrollmentRequired: boolean };
 
 export interface BasketListResponse {
-  baskets: BasketSummary[];
+  baskets: Basket[];
+  /** Prod's own sentence about where these rows came from and which source failed to load. */
   basis: string;
-  unattributed: UnattributedPosition[];
+  /** Prod leaves this empty: an ungrouped position is worked out by the desk from the broker book. */
+  unattributed: UnattributedLeg[];
 }
 
-export interface BasketSummary {
-  id: string;
-  name: string;
-  kind: "automated" | "paper" | "manual" | "named";
-  provider?: string;
-  account?: string;
-  status: "open" | "closed" | "working";
-  realized: number;
-  legs: BasketLegSummary[];
-  openedAt?: string;
-  payoffLegs: PayoffLeg[];
-}
-
-export interface BasketLegSummary {
+/** One leg of a recorded basket, exactly as the server's BasketOut sends it. */
+export interface BasketLeg {
+  instrumentId: string;
   symbol: string;
+  exchange: string;
+  product: string;
   side: "BUY" | "SELL";
   quantity: number;
   entryPrice: number;
@@ -819,45 +840,115 @@ export interface BasketLegSummary {
   markPrice?: number | null;
   lots: number;
   lotSize: number;
+  role?: string | null;
   exited: number;
   bookedPnl?: number | null;
   pending: boolean;
+  /** Where an exit price came from when it was not this app's own order: the broker trade book or a price the trader typed. */
   exitSource?: string | null;
   exitAt?: string | null;
   exitNote?: string | null;
   bookedBasis?: string | null;
 }
 
+/** The open option legs, as the payoff chart reads them. Empty when the contracts are not exactly known. */
 export interface PayoffLeg {
-  symbol: string;
-  side: "BUY" | "SELL";
-  quantity: number;
-  entryPrice: number;
-  strike: number;
-  expiry: string;
-  right: "CE" | "PE";
+  instrumentId: string;
   underlying: string;
+  symbol: string;
+  expiry: string;
+  strike: string;
+  right: "CE" | "PE";
+  /** Lowercase here, unlike BasketLeg.side. */
+  action: "buy" | "sell";
+  lots: number;
+  lotSize: number;
+  entryPrice: string;
 }
 
-export interface UnattributedPosition {
+/** What a basket still has working at the broker, when the basket came from one live order ticket. */
+export interface BasketWorking {
+  label: string;
+  filled: number;
+  total: number;
+}
+
+/** An estimated close's cost, or the reason this app cannot estimate it yet. Money arrives as strings. */
+export interface BasketCharges {
+  available: boolean;
+  uncountedLots: number;
+  total?: string | null;
+  turnover?: string;
+  fills?: number;
+  lines?: Record<string, string>;
+  reason?: string;
+  basis?: string;
+}
+
+/** BasketOut. `kind` is 'order' | 'run' | 'manual' | 'paper'; a 'run' is live unless the provider says paper. */
+export interface Basket {
+  id: string;
+  name: string;
+  kind: string;
+  sourceRef?: string | null;
+  underlying: string;
+  expiry: string;
+  spot: number;
+  tau: number;
+  legs: BasketLeg[];
+  margin: number;
+  account: string;
+  provider: string;
+  attribution: string;
+  realized: number;
+  status: string;
+  working?: BasketWorking | null;
+  tags: string[];
+  openedAt?: string | null;
+  closedAt?: string | null;
+  payoffLegs: PayoffLeg[];
+  warnings: string[];
+  charges?: BasketCharges | null;
+}
+
+/** A broker position the desk could not tie to any basket. */
+export interface UnattributedLeg {
+  instrumentId: string;
   symbol: string;
+  exchange: string;
+  product: string;
   side: "BUY" | "SELL";
   quantity: number;
   entryPrice: number;
-  markPrice: number;
-  broker: string;
-  account: string;
-}
-
-export interface BasketDetail extends BasketSummary {
-  warnings?: string[];
+  markPrice?: number | null;
+  lots: number;
+  lotSize: number;
 }
 
 export interface ExitLegRequest {
   basketId: string;
-  symbol: string;
-  quantity?: number;
-  price?: number;
+  instrumentId: string;
+  lots: number;
+  price: number;
+}
+
+export interface ExitLegResult {
+  success: boolean;
+  booked_pnl: number;
+  exit_price: number;
+  charges: number;
+  remaining_qty: number;
+}
+
+export interface CloseBasketRequest {
+  basketId: string;
+  prices?: Record<string, number>;
+}
+
+export interface CloseBasketResult {
+  success: boolean;
+  closed?: boolean;
+  realized?: number;
 }
 
 export interface RecordExitPriceRequest {
@@ -1249,24 +1340,114 @@ export interface UnderlyingList {
   underlyings: UnderlyingInfo[];
 }
 
-export interface StrategyAnalysis {
-  spot: number;
-  expiry: {
-    maxProfit: number | null;
-    maxLoss: number | null;
-    breakevens: number[];
-    payoff: PayoffPoint[];
-  };
-  frontExpiryCurve?: {
-    expiry: string;
-    points: PayoffPoint[];
-  }[];
+/** One leg of the POST body. The server model forbids unknown keys, so this list is the whole contract. */
+export interface StrategyAnalysisLeg {
+  action: "buy" | "sell";
+  right: "CE" | "PE";
+  exchange: "NSE" | "BSE";
+  strike: string;
+  expiry: string;
+  lots: number;
+  lotSize: number;
+  price: string;
+  entryPrice?: string;
+  /** The underlying price this option price was seen against. Without it there is no T+0 estimate. */
+  entrySpot?: string;
+  /** When that price was seen, with its offset. */
+  pricedAt?: string;
 }
 
-export interface PayoffPoint {
-  spot: number;
-  expiry: number | null;
-  intrinsic: number;
+export interface StrategyAnalysisRequest {
+  spot: string;
+  rate: number;
+  dividend: number;
+  spotShockPct?: number;
+  ivShiftPoints?: number;
+  legs: StrategyAnalysisLeg[];
+}
+
+export interface MarginRequestLeg {
+  underlying: string;
+  exchange: "NSE" | "BSE" | "UNKNOWN";
+  action: "buy" | "sell";
+  right: "CE" | "PE";
+  strike: string;
+  expiry: string;
+  lots: number;
+  lotSize: number;
+  price?: string;
+  spot?: string;
+  previousClose?: string;
+}
+
+export interface MarginRequest {
+  legs: MarginRequestLeg[];
+}
+
+/** Prod's StrategyAnalysis, field for field. Money and strikes are decimal strings; curve values are rupees. */
+export interface StrategyAnalysis {
+  spot: string;
+  assumptions: { ratePct: number; dividendPct: number };
+  curve: {
+    spots: number[];
+    /** The payoff at expiry, one value per `spots`. */
+    expiry: number[] | null;
+    /** The T+0 estimate, one value per `spots`. Null when the model could not calibrate the basket. */
+    today: number[] | null;
+    /** Expiry payoff less the entry charges. */
+    postTax?: number[];
+  };
+  expiry: {
+    available: boolean;
+    reason?: string;
+    /** Set when the legs expire on different dates: the curve is drawn at this, the earliest, date. */
+    basis?: "front-expiry";
+    settlement?: string;
+    maxProfit?: string | null;
+    maxProfitUnbounded?: boolean;
+    maxLoss?: string | null;
+    maxLossUnbounded?: boolean;
+    breakevens?: string[];
+    netDebit?: string;
+  };
+  /** Single-expiry strategies only. */
+  friction?: {
+    available: boolean;
+    turnover?: string;
+    lines?: Record<string, string>;
+    total?: string;
+    basis?: string;
+    postTax?: { maxProfit: string | null; maxLoss: string | null; breakevenShiftPoints: string | null; breakevens?: string[] };
+  };
+  greeks:
+    | { available: true; delta: number; gamma: number; theta: number; vega: number; rho?: number;
+        ivPct: number; basis: string; legs: { delta: number; theta: number; ivPct?: number }[] }
+    | { available: false; reason: string };
+  pop: { available: true; value: number; basis: string } | { available: false; reason: string };
+  scenario:
+    | { available: true; spot: number; spotShockPct: number; ivShiftPoints: number; pnlToday: number; pnlAtExpiry: number | null }
+    | { available: false; reason: string };
+}
+
+/**
+ * What /v1/planning-margin answers: the estimate, or the reason there is none. Every money value is a
+ * decimal string, and the endpoint takes at most eight legs.
+ */
+export interface MarginEstimate {
+  available: boolean;
+  amount?: string | null;
+  span?: string | null;
+  reason?: string | null;
+  stale?: boolean;
+  parameterDate?: string | null;
+  parameterFile?: string | null;
+  breakdown?: { riskRequirement?: string; exposure?: string; premium?: string };
+  label?: string;
+  method?: string;
+  brokerVerified?: boolean;
+  notes?: string[];
+  asOf?: string | null;
+  feedStatus?: string | null;
 }
 
 export interface OrderIntent {

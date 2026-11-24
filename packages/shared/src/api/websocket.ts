@@ -119,7 +119,7 @@ function toTick(quote: WireQuote, id: string): QuoteTick {
 function snapshotFor(ids: readonly string[]): FeedSnapshot {
   const set = new Set(ids);
   return {
-    quotes: [...published.values()].filter((q) => set.has(q.id)),
+    quotes: ids.length === 0 ? [...published.values()] : [...published.values()].filter((q) => set.has(q.id)),
     states,
     connected,
     asOf,
@@ -154,7 +154,7 @@ function accept(frame: WireFrame) {
   const quotes = Array.isArray(frame.quotes) ? frame.quotes : [];
   if (frame.mode !== "delta") published = new Map();
   for (const quote of quotes) {
-    const id = typeof quote.id === "string" ? quote.id : "";
+    const id = typeof quote.id === "string" && quote.id ? quote.id : quote.subscriptionId ?? "";
     const price = Number(quote.price);
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     published.set(quoteKey(quote), toTick(quote, id));
@@ -282,9 +282,10 @@ function useRegistration(symbols: readonly string[], enabled: boolean) {
   const [feed, setFeed] = useState<FeedSnapshot & { reason: FeedReason }>({ ...EMPTY_FEED, reason: null });
 
   useEffect(() => {
-    if (!enabled || !key) return;
+    if (!enabled) return;
     let active = true;
-    const stop = watchQuotes(key.split(","), (next) => {
+    const instruments = key ? key.split(",") : [];
+    const stop = watchQuotes(instruments, (next) => {
       if (active) setFeed({ ...next, reason });
     });
     return () => {
@@ -340,7 +341,7 @@ export function useQuotesStream(options: UseQuotesStreamOptions): UseQuotesStrea
 
   return {
     isConnected: feed.connected,
-    connectionState: feed.reason ? "refused" : feed.connected ? "connected" : ids.length ? "connecting" : "disconnected",
+    connectionState: feed.reason ? "refused" : feed.connected ? "connected" : "connecting",
     lastTick: feed.quotes.at(-1) ?? null,
     error,
   };

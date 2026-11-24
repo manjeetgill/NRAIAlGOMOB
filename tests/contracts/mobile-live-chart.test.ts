@@ -329,3 +329,31 @@ it("clears the published prices when the socket goes down, so no screen paints a
   socket.refuse(1006);
   expect(feeds.at(-1)).toEqual({ count: 0, connected: false });
 });
+
+it("returns all published quotes when a watcher subscribes with no specific instrument ids", async () => {
+  const { watchQuotes } = await loadSocket();
+  const feeds: { ids: string[]; connected: boolean }[] = [];
+  watchQuotes([], (feed) => feeds.push({ ids: feed.quotes.map((q) => q.id), connected: feed.connected }));
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  const stamp = "2026-11-17T04:30:00Z";
+  socket.frame({ mode: "snapshot", quotes: [wire(RELIANCE, 1400, stamp), wire(NIFTY, 24_500, stamp)] });
+  expect(feeds.at(-1)?.ids).toEqual([RELIANCE, NIFTY]);
+});
+
+it("accepts quotes when id is omitted but subscriptionId is present", async () => {
+  const { watchQuotes } = await loadSocket();
+  const feeds: { count: number; prices: number[] }[] = [];
+  watchQuotes([], (feed) => feeds.push({ count: feed.quotes.length, prices: feed.quotes.map((q) => q.price) }));
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  const stamp = "2026-11-17T04:30:00Z";
+  socket.frame({
+    mode: "snapshot",
+    quotes: [
+      { id: null, broker: "icici", accountId: "live", subscriptionId: "icici:NSE|ITC|CASH", price: 470.5, exchangeTime: stamp, fresh: true },
+    ],
+  });
+  expect(feeds.at(-1)?.count).toBe(1);
+  expect(feeds.at(-1)?.prices).toEqual([470.5]);
+});

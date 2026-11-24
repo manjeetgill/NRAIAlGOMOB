@@ -28,8 +28,9 @@ import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { chartFailureReason, chartPickerSections, queryKeys } from "@nraialgo/shared/api";
-import type { OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
+import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
+import BasketDesk from "@/components/BasketDesk";
 import { useApi } from "@/hooks/useApi";
 
 /** One staged leg, as the trader left it. The contract prod resolves it into is not this screen's business. */
@@ -39,6 +40,31 @@ interface Leg {
   right: "CE" | "PE";
   strike: string;
   lots: number;
+}
+
+/**
+ * An Adjust pressed on the Basket tab, held until the chain for that symbol has answered. Staging cannot
+ * happen in the press itself: the strikes are only meaningful against the ladder of the date the basket
+ * was bought on, and that read has not started yet when the symbol changes.
+ */
+interface Staging {
+  underlying: string;
+  expiry: string;
+  name: string;
+  legs: Array<Omit<Leg, "id">>;
+}
+
+/**
+ * The listed strike closest to the one the basket holds. A leg is clamped rather than dropped: losing a
+ * wing silently would send the naked half of a spread.
+ */
+function nearestStrike(ladder: readonly string[], strike: string): string {
+  const target = Number(strike);
+  if (!Number.isFinite(target)) return ladder[0];
+  return ladder.reduce(
+    (best, item) => (Math.abs(Number(item) - target) < Math.abs(Number(best) - target) ? item : best),
+    ladder[0],
+  );
 }
 
 /**
@@ -188,6 +214,8 @@ export default function SpreadBuilderScreen() {
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sentId, setSentId] = useState("");
+  const [tab, setTab] = useState<"builder" | "basket">("builder");
+  const [staging, setStaging] = useState<Staging | null>(null);
 
   const { data: destinations } = useOrderDestinations(true);
   const account = destinations?.accounts?.[0];
@@ -235,6 +263,72 @@ export default function SpreadBuilderScreen() {
     edit(() => []);
     setOptionChainUnderlying(name);
   };
+
+  /**
+   * Stage a live basket's own contracts here so it can be widened, narrowed or re-sent. Nothing is sent by
+   * this: the trader presses Execute. The legs come from the desk's exact contracts, not from the symbol
+   * strings, because a broker token and the contract the ladder lists are not always the same name.
+   */
+  const adjustFromBasket = (row: Basket) => {
+    setTab("builder");
+    const title = row.name?.trim() || row.underlying;
+    const contracts = row.payoffLegs;
+    if (!contracts.length) {
+      setStaging(null);
+      setNote(`${title}: the desk does not hold this basket’s exact contracts, so there is nothing to stage. Its legs at the broker are unchanged.`);
+      return;
+    }
+    const dates = [...new Set(contracts.map(leg => leg.expiry))];
+    if (dates.length > 1) {
+      setStaging(null);
+      setNote(`${title} spans ${dates.length} expiry dates. One press sends one date, so a calendar basket is worked from the web desk.`);
+      return;
+    }
+    setStaging({
+      underlying: row.underlying,
+      expiry: dates[0],
+      name: title,
+      legs: contracts.map(leg => ({
+        side: leg.action === "buy" ? "BUY" : "SELL",
+        right: leg.right,
+        strike: leg.strike,
+        lots: Math.max(1, leg.lots),
+      })),
+    });
+    if (row.underlying.toUpperCase() !== underlying.toUpperCase()) setOptionChainUnderlying(row.underlying);
+  };
+
+  // The basket's legs land only once the ladder they will be priced against has answered, on the date the
+  // basket was actually bought on. Before that the strikes of another date would be staged as if they were
+  // the held contracts, and an unlisted date means the held contracts no longer exist to adjust.
+  useEffect(() => {
+    if (!staging || !chain || chain.underlying.toUpperCase() !== staging.underlying.toUpperCase()) return;
+    if (!staging.expiry || !chain.expiries.includes(staging.expiry)) {
+      setStaging(null);
+      setNote(`${staging.expiry || "That expiry"} is no longer a listed ${staging.underlying} date, so its legs cannot be staged here. Nothing was sent.`);
+      return;
+    }
+    if (chain.expiry !== staging.expiry) {
+      setDate(staging.expiry);
+      return;
+    }
+    const ladder = chain.rows.filter(row => row.call || row.put).map(row => row.strike);
+    if (!ladder.length) {
+      setStaging(null);
+      setNote(`${staging.underlying} answered ${staging.expiry} with no strikes, so nothing could be staged.`);
+      return;
+    }
+    const listed = new Set(ladder.map(Number));
+    const moved = staging.legs.filter(leg => !listed.has(Number(leg.strike))).length;
+    setStaging(null);
+    edit(() => staging.legs.map((leg, index) => ({ ...leg, id: `adjust-${index}-${staging.expiry}`, strike: nearestStrike(ladder, leg.strike) })));
+    setBasket(staging.name);
+    setNote(
+      `${staging.name} staged with ${staging.legs.length} legs from ${staging.expiry}.` +
+      (moved ? ` ${moved} strike${moved === 1 ? "" : "s"} not on this ladder moved to the nearest listed one.` : "") +
+      " Pressing Execute sends these as new orders - it does not change or close what the broker already holds.",
+    );
+  }, [staging, chain]);
 
   const strikes = useMemo(
     () => (chain?.rows ?? []).filter(row => row.call || row.put).map(row => row.strike),
@@ -371,6 +465,11 @@ export default function SpreadBuilderScreen() {
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     body: { padding: 12, gap: 12 },
+    tabs: { flexDirection: "row", gap: 6 },
+    tab: { flex: 1, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, alignItems: "center" },
+    tabOn: { borderColor: colors.brand, backgroundColor: `${colors.brand}22` },
+    tabText: { fontSize: 13, fontWeight: "700", color: colors.muted },
+    tabTextOn: { color: colors.text },
     title: { fontSize: 17, fontWeight: "700", color: colors.text },
     meta: { fontSize: 12, color: colors.muted, marginTop: 2 },
     symbol: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
@@ -454,6 +553,19 @@ export default function SpreadBuilderScreen() {
     setSearch("");
   };
 
+  // The two halves of one desk: stage and send on Builder, read what is held on Basket. The builder keeps
+  // its own state across the switch, so a basket adjusted from the desk arrives with its legs still staged.
+  const tabs = (
+    <View style={styles.tabs}>
+      <TouchableOpacity style={[styles.tab, tab === "builder" && styles.tabOn]} onPress={() => setTab("builder")} accessibilityRole="tab" accessibilityState={{ selected: tab === "builder" }}>
+        <Text style={[styles.tabText, tab === "builder" && styles.tabTextOn]}>Builder</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.tab, tab === "basket" && styles.tabOn]} onPress={() => setTab("basket")} accessibilityRole="tab" accessibilityState={{ selected: tab === "basket" }}>
+        <Text style={[styles.tabText, tab === "basket" && styles.tabTextOn]}>Basket</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   const picker = (
     <Modal visible={symbolOpen} animationType="slide" onRequestClose={closePicker}>
       <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
@@ -511,9 +623,22 @@ export default function SpreadBuilderScreen() {
     </Modal>
   );
 
+  // The desk needs no chain read of its own: one /v1/baskets response carries the legs, the marks, the
+  // booked P&L and the contracts, so the Basket tab works even while this symbol's ladder is loading.
+  if (tab === "basket") {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={styles.body}>
+        {tabs}
+        <BasketDesk onAdjust={adjustFromBasket} />
+        {picker}
+      </ScrollView>
+    );
+  }
+
   if (!chain) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.body}>
+        {tabs}
         {header}
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} />
@@ -563,6 +688,7 @@ export default function SpreadBuilderScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.body}>
+      {tabs}
       {header}
 
       <FlatList

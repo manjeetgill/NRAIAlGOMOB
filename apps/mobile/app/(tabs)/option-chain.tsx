@@ -5,6 +5,9 @@
  * the picker is never left waiting on a second route. The date the desk last showed is kept on the
  * device, so a launch asks the broker for the contract the trader was actually looking at instead of
  * paying for the server's front expiry first and the month-end one after it.
+ *
+ * One ladder read costs the broker seconds, so the strikes on screen also go on the price stream the app
+ * already holds, and their premiums paint from the ticks that arrive between reads - see api/chain-ticks.ts.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -20,7 +23,23 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { nearestMonthlyExpiry, queryKeys, todayIST, type OptionRow, type UnderlyingInfo } from "@nraialgo/shared/api";
+import {
+  liveSide,
+  nearestMonthlyExpiry,
+  queryKeys,
+  strikeIds,
+  streamId,
+  tickBeats,
+  tickByInstrument,
+  tickWord,
+  todayIST,
+  useQuoteFeed,
+  watchBand,
+  type Band,
+  type OptionRow,
+  type QuoteTick,
+  type UnderlyingInfo,
+} from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
@@ -81,6 +100,15 @@ type ChainItem =
 
 const SELECTION_KEY = "nraialgo.chain-selection";
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Strikes held on the price stream beyond the ones actually on screen. Small enough that one band is a
+ * couple of dozen contracts, large enough that reading up and down the ladder does not re-subscribe.
+ */
+const BAND_PAD = 6;
+
+/** What no ticks means on the ladder: every number is the chain read's own, with its own label. */
+const NO_TICKS = new Map<string, QuoteTick>();
 
 /**
  * The contract the desk last showed, as far as the device can still remember it. A date that has already
@@ -165,6 +193,59 @@ export default function OptionChainScreen() {
     if (!chain) return;
     AsyncStorage.setItem(SELECTION_KEY, JSON.stringify({ underlying: chain.underlying, expiry: chain.expiry })).catch(() => {});
   }, [chain?.underlying, chain?.expiry]);
+
+  // One list either way: the strikes of the chosen date, or every listed date with its own heading and its
+  // own read, so a date that is still arriving or that failed shows that instead of vanishing. It is built
+  // here rather than in the render body because the price stream below subscribes by position in it.
+  const items = useMemo<ChainItem[]>(() => {
+    if (!chain) return [];
+    if (!allExpiries) {
+      return listedRows(chain.rows).map(row => ({ kind: "row" as const, key: `${chain.expiry}|${row.strike}`, expiry: chain.expiry, row }));
+    }
+    return chain.expiries.flatMap<ChainItem>((day, index) => {
+      const read = sections[index];
+      const heading: ChainItem = { kind: "section", key: `section-${day}`, expiry: day, lotSize: read?.data?.lotSize ?? null, readAt: read?.dataUpdatedAt ?? 0 };
+      if (!read?.data) {
+        return read?.isError
+          ? [heading, { kind: "failed" as const, key: `failed-${day}`, expiry: day, message: read.error.message }]
+          : [heading, { kind: "pending" as const, key: `pending-${day}`, expiry: day }];
+      }
+      return [heading, ...listedRows(read.data.rows).map(row => ({ kind: "row" as const, key: `${day}|${row.strike}`, expiry: day, row }))];
+    });
+  }, [chain, sections, allExpiries]);
+
+  // The ladder's own numbers arrive one broker read at a time, so between reads the screen would otherwise
+  // freeze. The strikes the trader is looking at go on the app's existing price stream, keyed by the
+  // identity each row already carries, and their premiums paint from the ticks that come back.
+  const itemsRef = useRef<ChainItem[]>(items);
+  itemsRef.current = items;
+  const [band, setBand] = useState<Band | null>(null);
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: readonly { index?: number | null }[] }) => {
+    const visible = viewableItems
+      .map(token => token.index)
+      .filter((index): index is number => typeof index === "number" && itemsRef.current[index]?.kind === "row");
+    // A band that already covers the screen answers with the same object, so reading the ladder costs no
+    // re-subscription; only scrolling a padded band out moves it.
+    setBand(current => watchBand(visible, itemsRef.current.length, current, BAND_PAD));
+  }).current;
+  const viewabilityConfig = useRef({ minimumViewTime: 250, viewAreaCoveragePercentThreshold: 20 }).current;
+
+  const ids = useMemo(() => {
+    if (!band) return [];
+    const rows = items.slice(band.from, band.to + 1).flatMap(item => (item.kind === "row" ? [item.row] : []));
+    // The spot the ladder is priced against is the first number on the screen, and it is one more id.
+    const spot = chain ? streamId(chain.underlying) : null;
+    return spot ? [...strikeIds(rows), spot] : strikeIds(rows);
+  }, [band, items, chain]);
+
+  // Off-hours the stream carries nothing for these contracts and the ladder is the closing prices the
+  // trader expects, so the screen asks for ticks only while the exchange is trading.
+  const feed = useQuoteFeed(ids, !!chain?.marketOpen && ids.length > 0);
+  const [ticks, setTicks] = useState<Map<string, QuoteTick>>(() => new Map());
+  useEffect(() => setTicks(current => tickByInstrument(feed.quotes, current)), [feed]);
+  // A dropped socket stops carrying prices; keeping its last tick on screen would leave an old number
+  // looking live while the chain read goes on refreshing underneath it.
+  const live = feed.connected ? ticks : NO_TICKS;
 
   // A desk opens at at-the-money, not on the cheapest far out-of-the-money strike at the top of the grid,
   // and it opens there once: re-centering on each poll would yank the list back while the trader reads a
@@ -316,12 +397,13 @@ export default function OptionChainScreen() {
         {tradeButton(onExpiry, row, right)}
       </>
     );
-    const ltp = amount(quote.ltp);
+    const price = liveSide(quote, live.get(quote.instrumentId));
     const oiChange = quote.oiChangePct;
     return (
       <>
-        {ltp === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(ltp)}</Text>}
+        {price === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(price.price)}</Text>}
         <Text style={styles.metaText} numberOfLines={1}>
+          {price?.word ? `${price.word}  ·  ` : ""}
           {quote.iv === null ? "No IV" : `IV ${formatNumber(quote.iv, 1)}%`}
           {quote.oi === null ? "" : `  ·  OI ${formatNumber(quote.oi, 0)}`}
           {oiChange !== null && oiChange !== 0 ? (
@@ -429,23 +511,11 @@ export default function OptionChainScreen() {
   }
 
   const spot = amount(chain.spot?.price);
-
-  // One list either way: the strikes of the chosen date, or every listed date with its own heading and
-  // its own read, so a date that is still arriving or that failed shows that instead of vanishing.
-  const liveRows = listedRows(chain.rows);
-  const items: ChainItem[] = !allExpiries
-    ? liveRows.map(row => ({ kind: "row", key: `${chain.expiry}|${row.strike}`, expiry: chain.expiry, row }))
-    : chain.expiries.flatMap<ChainItem>((day, index) => {
-        const read = sections[index];
-        const heading: ChainItem = { kind: "section", key: `section-${day}`, expiry: day, lotSize: read?.data?.lotSize ?? null, readAt: read?.dataUpdatedAt ?? 0 };
-        if (!read?.data) {
-          return read?.isError
-            ? [heading, { kind: "failed" as const, key: `failed-${day}`, expiry: day, message: read.error.message }]
-            : [heading, { kind: "pending" as const, key: `pending-${day}`, expiry: day }];
-        }
-
-        return [heading, ...listedRows(read.data.rows).map(row => ({ kind: "row" as const, key: `${day}|${row.strike}`, expiry: day, row }))];
-      });
+  // The spot is the number the ladder was priced from, so it moves on the same stream the strikes do.
+  const spotTick = live.get(streamId(chain.underlying) ?? "");
+  const currentSpot = spotTick && tickBeats(spotTick, chain.spot?.at) ? spotTick : null;
+  const shownSpot = currentSpot ? currentSpot.price : spot;
+  const spotWord = currentSpot ? tickWord(currentSpot) : null;
 
   // Where each line sits, built once per read. Rebuilt only when the list itself is replaced, because the
   // scroller asks for these numbers for every row it decides to mount.
@@ -528,11 +598,12 @@ export default function OptionChainScreen() {
 
         <View style={styles.spotRow}>
           <Text style={styles.spotLabel}>Spot</Text>
-          {spot === null ? (
+          {shownSpot === null ? (
             <Text style={styles.noPrice}>{QUALITY_WORD[chain.spot?.quality] ?? "no spot price"}</Text>
           ) : (
-            <Text style={styles.spotValue}>{formatNumber(spot)}</Text>
+            <Text style={styles.spotValue}>{formatNumber(shownSpot)}</Text>
           )}
+          {shownSpot !== null && spotWord ? <Text style={styles.spotLabel}>{spotWord}</Text> : null}
           <View style={[styles.statusDot, chain.marketOpen ? styles.dotLive : styles.dotClosed]} />
         </View>
 
@@ -556,6 +627,8 @@ export default function OptionChainScreen() {
           windowSize={7}
           removeClippedSubviews
           onContentSizeChange={centerOn}
+          onViewableItemsChanged={onViewableItemsChanged}
+          viewabilityConfig={viewabilityConfig}
           getItemLayout={(_, index) => ({ length: itemHeight(items[index]), offset: offsets[index], index })}
           renderItem={({ item }) => {
             if (item.kind === "section") {
