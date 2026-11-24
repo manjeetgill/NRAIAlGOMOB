@@ -13,6 +13,7 @@
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { newClientId } from "@nraialgo/shared/hooks";
 import type { ManagedRun, StrategyDraftSummary } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
@@ -36,6 +37,7 @@ const ruleTemplate = (draft: StrategyDraftSummary) => draft.strategySetup?.templ
 export default function AlgoLabScreen() {
   const { useManagedRuns, useStrategyDrafts, useLiveReadiness, useStartLiveCopy, useCloseRun } = useApi();
   const { resolvedTheme } = useTheme();
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabId>("running");
 
   const [startFor, setStartFor] = useState<StrategyDraftSummary | null>(null);
@@ -170,12 +172,15 @@ export default function AlgoLabScreen() {
     const pnl = run.pnl === null || run.pnl === undefined ? null : Number(run.pnl);
     return (
       <View key={run.id} style={styles.card}>
-        <View style={styles.rowHead}>
+        <TouchableOpacity style={styles.rowHead} onPress={() => router.push(`/algo-lab/detail?source=run&id=${encodeURIComponent(run.id)}&name=${encodeURIComponent(run.name)}`)} accessibilityRole="button" accessibilityLabel={`Open ${run.name}`}>
           <Text style={styles.name} numberOfLines={1}>{run.name}</Text>
-          <View style={[styles.badge, { backgroundColor: `${badgeColor(tone)}22` }]}>
-            <Text style={[styles.badgeText, { color: badgeColor(tone) }]}>{toneLabel[tone]}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <View style={[styles.badge, { backgroundColor: `${badgeColor(tone)}22` }]}>
+              <Text style={[styles.badgeText, { color: badgeColor(tone) }]}>{toneLabel[tone]}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.muted} />
           </View>
-        </View>
+        </TouchableOpacity>
         <Text style={styles.meta}>{`${run.status}${run.provider ? ` · ${run.provider}` : ""}${run.management_mode ? ` · ${run.management_mode}` : ""}`}</Text>
         {run.health?.detail ? <Text style={styles.detail}>{run.health.label ? `${run.health.label}: ${run.health.detail}` : run.health.detail}</Text> : null}
         {run.last_error ? <Text style={styles.error}>{run.last_error}</Text> : null}
@@ -265,10 +270,13 @@ export default function AlgoLabScreen() {
       <>
         {copies.map(draft => (
           <View key={draft.id} style={styles.card}>
-            <View style={styles.rowHead}>
+            <TouchableOpacity style={styles.rowHead} onPress={() => router.push(`/algo-lab/detail?source=draft&id=${encodeURIComponent(draft.id)}&name=${encodeURIComponent(draft.name)}`)} accessibilityRole="button" accessibilityLabel={`Open ${draft.name}`}>
               <Text style={styles.name} numberOfLines={1}>{draft.name}</Text>
-              <Text style={styles.meta}>{draft.underlying}</Text>
-            </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Text style={styles.meta}>{draft.underlying}</Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+              </View>
+            </TouchableOpacity>
             <Text style={styles.meta}>{`${ruleTemplate(draft)} · ${draft.legCount} legs · saved ${draft.updatedAt.slice(0, 10)}`}</Text>
             <TouchableOpacity style={styles.button} onPress={() => openStart(draft)} accessibilityRole="button" accessibilityLabel={`Start ${draft.name} live`}>
               <Text style={styles.buttonText}>Start live</Text>

@@ -98,6 +98,7 @@ export const queryKeys = {
     // /v1/strategy-drafts carries the saved strategy copies; /v1/algo-lab/drafts is not a real route.
     drafts: () => ["algo-lab", "drafts"] as const,
     strategyDrafts: () => ["strategy-drafts", "list"] as const,
+    draftDetail: (id: string) => ["strategy-drafts", "detail", id] as const,
     liveReadiness: () => ["scanner-automations", "live-readiness"] as const,
     strategies: (params?: QueryParams) => ["algo-lab", "strategies", params] as const,
   },
@@ -823,6 +824,20 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   /**
+   * One saved strategy's full plan (legs + reference spot), for the detail screen's payoff and editable
+   * rules. A foreign/archived id is 404, so a null id disables the read rather than asking for `/null`.
+   */
+  const useDraftDetail = (id: string | null, options?: Omit<UseQueryOptions<DraftDetail, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.algoLab.draftDetail(id ?? ""),
+      queryFn: () => client.get<DraftDetail>(`/v1/strategy-drafts/${encodeURIComponent(id as string)}`),
+      enabled: !!id,
+      staleTime: 15 * 1000,
+      ...options,
+    });
+  };
+
+  /**
    * Start one saved strategy copy live, exactly as the web desk does: an idempotent request reference,
    * the copy version it was reviewed against, and an explicit acknowledgement. Requires the X-Algo-Lab
    * header or prod refuses the write. Nothing here places an order the owner has not acknowledged.
@@ -845,6 +860,24 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       mutationFn: (runId) =>
         client.post<{ status: string }>(`/v1/algo-lab/engine/${encodeURIComponent(runId)}/close`, {}, { headers: { "X-Algo-Lab": "1" } }),
       onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.algoLab.engine() }),
+      ...options,
+    });
+  };
+
+  /**
+   * Save an editable settings change back to a saved strategy copy. Mirrors the web desk exactly:
+   * `PUT /v1/strategy-copies/{id}` with the version it was loaded at, the full merged config, and an
+   * optional name — all under X-Algo-Lab or prod refuses the write. A version that no longer matches is a
+   * 409 (someone edited it meanwhile); the caller refetches rather than forcing the save.
+   */
+  const useUpdateCopy = (options?: UseMutationOptions<StrategyDraftSummary, ApiError, { copyId: string; body: { draftVersion: string; config: Record<string, unknown>; name?: string } }>) => {
+    return useMutation({
+      mutationFn: ({ copyId, body }) =>
+        client.put<StrategyDraftSummary>(`/v1/strategy-copies/${encodeURIComponent(copyId)}`, body, { headers: { "X-Algo-Lab": "1" } }),
+      onSuccess: (_result, { copyId }) => {
+        qc.invalidateQueries({ queryKey: queryKeys.algoLab.draftDetail(copyId) });
+        qc.invalidateQueries({ queryKey: queryKeys.algoLab.strategyDrafts() });
+      },
       ...options,
     });
   };
@@ -928,9 +961,11 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useDrafts,
     useManagedRuns,
     useStrategyDrafts,
+    useDraftDetail,
     useLiveReadiness,
     useStartLiveCopy,
     useCloseRun,
+    useUpdateCopy,
     // Terminal
     useTerminalChart,
     // History
@@ -2050,6 +2085,10 @@ export interface ManagedRun {
   created_at?: string | null;
   health?: RunHealth | null;
   pending_order_states?: string[] | null;
+  /** The engine's frozen plan: `underlying` picks the ladder, `legs` are the priced contracts it entered. */
+  basket?: { underlying?: string; legs?: ManagedBasketLeg[] } | null;
+  /** The saved rules the engine manages this run by (targets, exits, wings) — read on the detail screen. */
+  rules?: Record<string, unknown> | null;
   positions?: {
     instrumentId: string;
     action: string;
@@ -2060,6 +2099,19 @@ export interface ManagedRun {
     entryPrice?: string | null;
     markPrice?: string | null;
   }[];
+}
+
+/** One leg of a running basket: the exact contract plus its saved lots, lot size and reference prices. */
+export interface ManagedBasketLeg {
+  instrumentId: string;
+  action: string;
+  right: string;
+  strike: string;
+  expiry: string;
+  lots: number;
+  lotSize?: number | null;
+  entryPrice?: string | null;
+  price?: string | null;
 }
 
 export interface ManagedRunsResponse {
@@ -2085,6 +2137,23 @@ export interface StrategyDraftSummary {
   createdAt: string;
   updatedAt: string;
   strategySetup?: StrategySetup | null;
+}
+
+/**
+ * `GET /v1/strategy-drafts/{id}` — the same summary plus the ordered legs the plan was priced against and
+ * the reference spot each was seen at. `updatedAt` stays the optimistic-lock version for a settings save.
+ */
+export interface DraftDetail extends StrategyDraftSummary {
+  legs?: {
+    instrumentId: string;
+    action: string;
+    right: string;
+    strike: string;
+    expiry: string;
+    lots: number;
+    lotSize?: number | null;
+    reference?: { price?: string | null; spot?: string | null; quality?: string | null; pricedAt?: string | null };
+  }[];
 }
 
 export interface LiveReadiness {
