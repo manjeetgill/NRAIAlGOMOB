@@ -27,6 +27,8 @@ const ROUTE_MAP: Record<string, (params: Record<string, string>) => string> = {
   "/watchlist": () => "/(tabs)/watchlist",
   "/orders": () => "/(tabs)/orders",
   "/option-chain": (params) => `/(tabs)/option-chain${params.symbol ? `?symbol=${params.symbol}` : ""}${params.expiry ? `&expiry=${params.expiry}` : ""}`,
+  // The per-stock Overview: the link carries the venue so the screen opens on the exchange it was read from.
+  "/stock": (params) => `/stock?exchange=${encodeURIComponent(params.exchange ?? "NSE")}&symbol=${encodeURIComponent(params.symbol ?? "")}`,
   // The chart desk is a top-level screen; the link predates it and must not point at a route that no longer exists.
   "/terminal": () => "/terminal-charts",
   "/basket": (params) => `/basket/${params.id}`,

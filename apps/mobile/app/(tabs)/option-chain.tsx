@@ -23,6 +23,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import {
   liveSide,
   nearestMonthlyExpiry,
@@ -160,6 +161,19 @@ export default function OptionChainScreen() {
 
   // An empty expiry is a question, not a missing value: the server returns its nearest listed expiry.
   const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying });
+
+  /**
+   * A press on a stock's "Option Chain" tab carries its symbol, and the deep link has always promised the
+   * same. It is applied once the saved selection has been read back, because that read lands a few
+   * milliseconds later and would otherwise quietly replace the underlying the trader just chose.
+   */
+  const seeded = String(useLocalSearchParams<{ symbol?: string }>().symbol ?? "").trim().toUpperCase();
+  const seedApplied = useRef(false);
+  useEffect(() => {
+    if (!resumed || !seeded || seedApplied.current) return;
+    seedApplied.current = true;
+    setOptionChainUnderlying(seeded);
+  }, [resumed, seeded, setOptionChainUnderlying]);
 
   // Every listed date of this underlying, each cached exactly as a single-expiry read would be. The hook
   // is called unconditionally and asked for nothing outside the all-expiries view.

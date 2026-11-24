@@ -1843,6 +1843,16 @@ export interface EquityQuote {
   at?: string | null;
   source?: string | null;
   depthMessage?: string | null;
+  // Prod sends these on the same read whenever the paced broker read has them, and omits a key it
+  // has no evidence for, so each one is optional rather than a zero the screen would have to hide.
+  high52?: number | null;
+  low52?: number | null;
+  averagePrice?: number | null;
+  quality?: QuoteQuality | null;
+  priceDate?: string | null;
+  depthAt?: string | null;
+  /** The five-level book the account's socket accepted, kept beside the price it was read with. */
+  depth?: { buy: DepthLevel[]; sell: DepthLevel[] } | null;
 }
 
 /**

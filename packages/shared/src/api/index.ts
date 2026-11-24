@@ -208,6 +208,19 @@ export {
   type SortState,
 } from "./table-sort";
 
+export {
+  depthBook,
+  rangePosition,
+  bookStamp,
+  quoteProvenance,
+  type QuoteLevel,
+  type OverviewQuote,
+  type Rung,
+  type Book,
+  type Stamp,
+  type Provenance,
+} from "./stock-overview";
+
 // Create default client and hooks for convenience
 let api: ApiHooks | null = null;
 

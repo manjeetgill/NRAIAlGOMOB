@@ -23,6 +23,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import {
   BUILTIN_LISTS,
   markWatchlist,
@@ -61,6 +62,7 @@ interface WatchlistRowItemProps {
   priceTone: (change: number | null) => string;
   signed: (value: number | null) => string;
   openBuy: (row: { exchange: string; symbol: string }, side?: "BUY" | "SELL", removable?: boolean) => void;
+  openOverview: (row: { exchange: string; symbol: string }) => void;
   addTo: (row: { exchange: string; symbol: string; name?: string }) => void;
 }
 
@@ -77,12 +79,14 @@ const WatchlistRowItem = React.memo(
     priceTone,
     signed,
     openBuy,
+    openOverview,
     addTo,
   }: WatchlistRowItemProps) {
     return (
       <TouchableOpacity
         style={styles.row}
-        onPress={() => (tabKind === "predefined" ? (already ? openBuy(item, "BUY", true) : addTo(item)) : openBuy(item, "BUY", true))}
+        onPress={() => openOverview(item)}
+        onLongPress={() => (tabKind === "predefined" ? (already ? openBuy(item, "BUY", true) : addTo(item)) : openBuy(item, "BUY", true))}
         disabled={addPending}
       >
         <View style={styles.left}>
@@ -136,6 +140,7 @@ export default function WatchlistScreen() {
   const { useIndices, useWatchlist, useBuiltinWatchlist, useEquitySearch,
     useAddToWatchlist, useRemoveFromWatchlist, useCreateWatchlist } = useApi();
   const { resolvedTheme } = useTheme();
+  const router = useRouter();
   const ticket = useOrderTicket();
   // The stream is a signed-in, per-workspace connection: registered while it can answer, never while it
   // would be refused, and one socket for the whole app rather than one per screen.
@@ -199,6 +204,7 @@ export default function WatchlistScreen() {
     },
     dropdownText: { fontSize: 14, fontWeight: "600", color: colors.text },
     option: { backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.border, paddingHorizontal: 16, paddingVertical: 12 },
+    searchRow: { flexDirection: "row", alignItems: "center", gap: 10 },
     optionText: { fontSize: 14, color: colors.text },
     search: {
       flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 8,
@@ -282,6 +288,12 @@ export default function WatchlistScreen() {
     });
   };
 
+  /** A press shows the stock first; the long press above still goes straight to the ticket, so the
+   *  fast path a trader uses on a list row is not lost behind the new screen. */
+  const openOverview = (row: { exchange: string; symbol: string }) => {
+    router.push(`/stock?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}&list=${listNumber}`);
+  };
+
   const createList = () =>
     create.mutate(undefined, {
       onSuccess: created => {
@@ -340,6 +352,7 @@ export default function WatchlistScreen() {
         priceTone={priceTone}
         signed={signed}
         openBuy={openBuy}
+        openOverview={openOverview}
         addTo={addTo}
       />
     );
@@ -412,11 +425,25 @@ export default function WatchlistScreen() {
       {debouncedSearch.length >= 2 && found?.results.length ? (
         <View>
           {found.results.map(hit => (
-            <TouchableOpacity key={`${hit.exchange}:${hit.symbol}`} style={styles.option} onPress={() => addTo(hit)} disabled={add.isPending}>
-              <Text style={styles.optionText}>
-                {hit.symbol} · {hit.exchange} · {inList.has(`${hit.exchange}:${hit.symbol}`) ? "already in this list" : "add to this list"}
-              </Text>
-            </TouchableOpacity>
+            <View key={`${hit.exchange}:${hit.symbol}`} style={[styles.option, styles.searchRow]}>
+              <TouchableOpacity style={{ flex: 1 }} onPress={() => openOverview(hit)} disabled={add.isPending}>
+                <Text style={styles.optionText}>{`${hit.symbol} · ${hit.exchange}`}</Text>
+              </TouchableOpacity>
+              {/* The add keeps its own button: a press on the name now opens the stock, so it can no
+                  longer also be the way a symbol gets into the list. */}
+              <TouchableOpacity
+                onPress={() => addTo(hit)}
+                disabled={add.isPending || inList.has(`${hit.exchange}:${hit.symbol}`)}
+                hitSlop={12}
+                accessibilityLabel={`Add ${hit.symbol} to this list`}
+              >
+                <Ionicons
+                  name={inList.has(`${hit.exchange}:${hit.symbol}`) ? "checkmark-circle" : "add-circle-outline"}
+                  size={22}
+                  color={inList.has(`${hit.exchange}:${hit.symbol}`) ? up : colors.brand}
+                />
+              </TouchableOpacity>
+            </View>
           ))}
         </View>
       ) : null}

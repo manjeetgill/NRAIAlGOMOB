@@ -1,0 +1,403 @@
+/**
+ * Stock Overview screen - what a tap on a symbol opens
+ *
+ * Every figure here is one the deployed backend already publishes on `GET /v1/equities/quote`: the price and
+ * the day's statics, and - when the account's socket holds that view - the five-level book. Nothing is
+ * estimated to fill a gap. A field the server omitted reads "not sent", and the read carries its own
+ * provenance badge, because a blank the trader cannot explain is worse than a short screen.
+ *
+ * The Buy and Sell buttons hand off to the shared order ticket exactly as the watchlist row does, so the
+ * ticket stays the one place an instruction is built and nothing places until its own button is pressed.
+ */
+
+import React, { useMemo, useState } from "react";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition } from "@nraialgo/shared/api";
+import { useOrderTicket } from "@nraialgo/shared/hooks";
+import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
+import { BuySheet } from "@/components/BuySheet";
+import { useTheme } from "@/components/ThemeProvider";
+import { useApi } from "@/hooks/useApi";
+
+/** Breeze shows five levels; a shallower book is drawn as the levels the socket actually filled. */
+const LADDER_ROWS = 5;
+
+export default function StockScreen() {
+  const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string }>();
+  const router = useRouter();
+  const { useEquityQuote, useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } = useApi();
+  const { resolvedTheme } = useTheme();
+  const ticket = useOrderTicket();
+
+  const symbol = String(params.symbol ?? "").trim().toUpperCase();
+  /** A notification can open this screen as the first route in the stack, where there is nothing to go
+   *  back to; the arrow then returns to the Watchlist instead of throwing an unhandled GO_BACK. */
+  const canGoBack = useCanGoBack();
+  const goBack = () => (canGoBack ? router.back() : router.replace("/(tabs)/watchlist"));
+  const [exchange, setExchange] = useState(() => String(params.exchange ?? "NSE").trim().toUpperCase() || "NSE");
+  // The list an add lands in is the one the press came from; a screen opened without one uses the first.
+  const listNumber = Math.max(1, Number(params.list ?? 1) || 1);
+  const held = Number(params.held);
+  const heldQty = Number.isFinite(held) && held !== 0 ? held : null;
+
+  // The other venue is the same endpoint asked with the other exchange, which is how Breeze's own switch works.
+  const other = exchange === "NSE" ? "BSE" : exchange === "BSE" ? "NSE" : null;
+
+  const { data: quote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0);
+  const { data: cross } = useEquityQuote(other ?? "NSE", symbol, !!other && symbol.length > 0);
+  // Membership only decides one chip's label, so the list is read once and left alone; the add and remove
+  // mutations write their own page back into this cache.
+  const { data: saved } = useWatchlist(listNumber, {
+    queryKey: queryKeys.watchlist.list(listNumber),
+    enabled: symbol.length > 0,
+    refetchInterval: false,
+  });
+  const add = useAddToWatchlist();
+  const drop = useRemoveFromWatchlist();
+
+  const colors = useMemo(() => resolvedTheme === "dark"
+    ? {
+      bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155",
+      brand: "#38bdf8", up: "#22c55e", down: "#ef4444", amber: "#f59e0b", track: "#0b1220",
+    }
+    : {
+      bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0",
+      brand: "#0284c7", up: "#16a34a", down: "#dc2626", amber: "#b45309", track: "#e2e8f0",
+    }, [resolvedTheme]);
+
+  const styles = useMemo(() => StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.bg },
+    head: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 },
+    headMain: { flex: 1 },
+    symbol: { fontSize: 17, fontWeight: "700", color: colors.text },
+    meta: { fontSize: 11, color: colors.muted, marginTop: 2 },
+    name: { fontSize: 11, color: colors.muted, marginTop: 3 },
+    priceBox: { alignItems: "flex-end" },
+    ltp: { fontSize: 19, fontWeight: "700", color: colors.text },
+    change: { fontSize: 13, marginTop: 2 },
+    badge: {
+      marginTop: 5, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5, borderWidth: 1,
+      borderColor: colors.border, flexDirection: "row", alignItems: "center", gap: 5, alignSelf: "flex-end",
+    },
+    badgeText: { fontSize: 10, fontWeight: "600", color: colors.muted },
+    dot: { width: 7, height: 7, borderRadius: 4 },
+    tabs: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: colors.border, paddingHorizontal: 6 },
+    tab: { paddingHorizontal: 12, paddingVertical: 11 },
+    tabOn: { borderBottomWidth: 2, borderBottomColor: colors.amber },
+    tabLabel: { fontSize: 13, fontWeight: "600", color: colors.muted },
+    tabLabelOn: { color: colors.text },
+    body: { padding: 14, gap: 12, paddingBottom: 22 },
+    chips: { flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" },
+    chip: {
+      flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 11, paddingVertical: 7,
+      borderRadius: 7, borderWidth: 1, borderColor: colors.amber,
+    },
+    chipGhost: { borderColor: colors.border },
+    chipText: { fontSize: 12, fontWeight: "600", color: colors.amber },
+    chipTextGhost: { color: colors.muted },
+    card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12 },
+    ladderHead: { flexDirection: "row", paddingBottom: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
+    ladderHeadQty: { width: 66, fontSize: 10, color: colors.muted },
+    ladderHeadPx: { flex: 1, fontSize: 10, color: colors.muted, textAlign: "center" },
+    ladderRow: { flexDirection: "row", alignItems: "center", paddingVertical: 3 },
+    ladderQty: { width: 66, fontSize: 13 },
+    ladderPx: { flex: 1, fontSize: 13, textAlign: "center" },
+    split: { flexDirection: "row", justifyContent: "space-between", marginTop: 10, marginBottom: 5 },
+    splitText: { fontSize: 11, color: colors.muted },
+    meter: { flexDirection: "row", height: 16, borderRadius: 4, overflow: "hidden", backgroundColor: colors.track },
+    meterBid: { backgroundColor: "#16a34a", justifyContent: "center", paddingHorizontal: 7 },
+    meterAsk: { backgroundColor: "#dc2626", justifyContent: "center", alignItems: "flex-end", paddingHorizontal: 7 },
+    meterText: { fontSize: 10, fontWeight: "700", color: "#ffffff" },
+    totals: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+    totalsText: { fontSize: 11, color: colors.muted },
+    stamp: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 9 },
+    stampText: { fontSize: 11, color: colors.muted },
+    reason: { fontSize: 11, color: colors.amber, marginTop: 7, lineHeight: 16 },
+    grid2: { flexDirection: "row", gap: 12 },
+    cell: { flex: 1 },
+    lab: { fontSize: 10, color: colors.muted },
+    val: { fontSize: 15, fontWeight: "600", color: colors.text, marginTop: 3 },
+    smallVal: { fontSize: 13, fontWeight: "600", color: colors.text, marginTop: 3 },
+    missing: { fontSize: 12, fontWeight: "600", color: colors.muted, marginTop: 5 },
+    range: { marginTop: 2 },
+    track: { height: 3, backgroundColor: colors.border, borderRadius: 2, marginTop: 14, marginBottom: 7 },
+    knob: { position: "absolute", top: -4, width: 11, height: 11, borderRadius: 6, backgroundColor: colors.text },
+    ends: { flexDirection: "row", justifyContent: "space-between" },
+    endText: { fontSize: 11, fontWeight: "600" },
+    stats: { flexDirection: "row", gap: 10 },
+    foot: {
+      flexDirection: "row", gap: 10, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 18,
+      borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg,
+    },
+    action: { flex: 1, paddingVertical: 14, borderRadius: 9, alignItems: "center" },
+    actionText: { fontSize: 16, fontWeight: "700", color: "#ffffff" },
+    center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 12 },
+    empty: { fontSize: 14, color: colors.muted, textAlign: "center", lineHeight: 21 },
+    retry: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.brand },
+    retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
+  }), [colors]);
+
+  const book = depthBook(quote ?? null);
+  const stamp = bookStamp(quote ?? null);
+  const provenance = quoteProvenance(quote ?? null);
+  const inList = (saved?.items ?? []).some(row => row.symbol === symbol && row.exchange === exchange);
+  const busy = add.isPending || drop.isPending;
+
+  const signed = (value: number | null | undefined) =>
+    value === null || value === undefined ? "no change figure" : `${value > 0 ? "+" : ""}${formatNumber(value)}`;
+
+  const tone = (value: number | null | undefined) =>
+    (value ?? 0) > 0 ? colors.up : (value ?? 0) < 0 ? colors.down : colors.muted;
+
+  const shown = (value: number | null | undefined, decimals = 2) =>
+    typeof value === "number" && Number.isFinite(value) ? formatNumber(value, decimals) : null;
+
+  const openTicket = (side: "BUY" | "SELL") => {
+    ticket.open({
+      symbol,
+      exchange,
+      product: exchange === "NSE" || exchange === "BSE" ? "CNC" : "NRML",
+      side,
+      quantity: 1,
+      orderType: "LIMIT",
+      price: 0,
+      source: "watchlist",
+      tag: `overview:${symbol}`,
+    });
+  };
+
+  const toggleList = () => {
+    const payload = { exchange, symbol, list: listNumber };
+    if (inList) drop.mutate(payload);
+    else add.mutate(payload);
+  };
+
+  /** A static the read did not carry says so, rather than showing a dash that could be a zero. */
+  const figure = (value: number | null | undefined, small = false) => {
+    const text = shown(value);
+    return text === null
+      ? <Text style={styles.missing}>Not sent</Text>
+      : <Text style={small ? styles.smallVal : styles.val}>{text}</Text>;
+  };
+
+  /** The bar only exists when the server published both ends of a range that has room in it. */
+  const range = (value: number | null | undefined, low: number | null | undefined, high: number | null | undefined) => {
+    const position = rangePosition(value, low, high);
+    if (position === null) return <Text style={styles.missing}>No range in this read</Text>;
+    return (
+      <View style={styles.range}>
+        <View style={styles.track}>
+          <View style={[styles.knob, { left: `${position}%` }]} />
+        </View>
+        <View style={styles.ends}>
+          <Text style={[styles.endText, { color: colors.down }]}>{formatNumber(low)}</Text>
+          <Text style={[styles.endText, { color: colors.up }]}>{formatNumber(high)}</Text>
+        </View>
+      </View>
+    );
+  };
+
+  if (!symbol) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.empty}>No symbol was passed to this screen.</Text>
+        <TouchableOpacity style={styles.retry} onPress={goBack}>
+          <Text style={styles.retryText}>Go back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const depth = Math.min(LADDER_ROWS, Math.max(book.bids.length, book.asks.length));
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.head}>
+        <TouchableOpacity onPress={goBack} hitSlop={10} accessibilityLabel="Go back">
+          <Ionicons name="arrow-back" size={20} color={colors.text} />
+        </TouchableOpacity>
+        <View style={styles.headMain}>
+          <Text style={styles.symbol}>{symbol}</Text>
+          <Text style={styles.meta}>
+            {`EQ · ${exchange}`}
+            {heldQty !== null ? ` · Held ${formatQuantity(heldQty)} sh` : ""}
+          </Text>
+          {quote?.name && quote.name.toUpperCase() !== symbol ? <Text style={styles.name}>{quote.name}</Text> : null}
+        </View>
+        <View style={styles.priceBox}>
+          <Text style={styles.ltp}>{shown(quote?.ltp) ?? "No price"}</Text>
+          <Text style={[styles.change, { color: tone(quote?.change) }]}>{signed(quote?.change)}</Text>
+          <View style={styles.badge}>
+            <View style={[styles.dot, { backgroundColor: provenance.live ? colors.up : colors.amber }]} />
+            <Text style={styles.badgeText}>
+              {provenance.word}
+              {provenance.date && !provenance.live ? ` · ${formatISTDate(provenance.date)}` : ""}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.tabs}>
+        <View style={[styles.tab, styles.tabOn]}>
+          <Text style={[styles.tabLabel, styles.tabLabelOn]}>Overview</Text>
+        </View>
+        <TouchableOpacity style={styles.tab} onPress={() => router.push(`/(tabs)/option-chain?symbol=${encodeURIComponent(symbol)}`)}>
+          <Text style={styles.tabLabel}>Option Chain</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.tab}
+          onPress={() => router.push(`/terminal-charts?symbol=${encodeURIComponent(`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`)}`)}
+        >
+          <Text style={styles.tabLabel}>Chart</Text>
+        </TouchableOpacity>
+      </View>
+
+      {isLoading && !quote ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.brand} />
+        </View>
+      ) : error && !quote ? (
+        <View style={styles.center}>
+          <Text style={styles.empty}>{error.message}</Text>
+          <TouchableOpacity style={styles.retry} onPress={() => refetch()}>
+            <Text style={styles.retryText}>Tap to try again</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={styles.body}>
+          <View style={styles.chips}>
+            <TouchableOpacity style={styles.chip} onPress={toggleList} disabled={busy}>
+              <Ionicons name={inList ? "star" : "star-outline"} size={13} color={colors.amber} />
+              <Text style={styles.chipText}>
+                {busy ? "Working…" : inList ? `In Watchlist ${listNumber} · remove` : `Add to Watchlist ${listNumber}`}
+              </Text>
+            </TouchableOpacity>
+            {other && shown(cross?.ltp) !== null ? (
+              <TouchableOpacity style={[styles.chip, styles.chipGhost]} onPress={() => setExchange(other)}>
+                <Text style={[styles.chipText, styles.chipTextGhost]}>
+                  {`${other} ${formatNumber(cross?.ltp)} ${signed(cross?.changePct)}%`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {isFetching && quote ? <Text style={styles.meta}>refreshing</Text> : null}
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.ladderHead}>
+              <Text style={styles.ladderHeadQty}>Qty</Text>
+              <Text style={styles.ladderHeadPx}>Bid</Text>
+              <Text style={styles.ladderHeadPx}>Offer</Text>
+              <Text style={[styles.ladderHeadQty, { textAlign: "right" }]}>Qty</Text>
+            </View>
+            {depth === 0 ? (
+              <Text style={[styles.stampText, { marginTop: 10 }]}>
+                {quote?.depthMessage ?? "The broker has not sent a book for this symbol yet."}
+              </Text>
+            ) : Array.from({ length: depth }, (_, index) => {
+              const bid = book.bids[index];
+              const ask = book.asks[index];
+              return (
+                <View key={index} style={styles.ladderRow}>
+                  <Text style={[styles.ladderQty, { color: colors.up }]}>{bid ? formatQuantity(bid.quantity) : ""}</Text>
+                  <Text style={[styles.ladderPx, { color: colors.up }]}>{bid ? formatNumber(bid.price) : ""}</Text>
+                  <Text style={[styles.ladderPx, { color: colors.down }]}>{ask ? formatNumber(ask.price) : ""}</Text>
+                  <Text style={[styles.ladderQty, { color: colors.down, textAlign: "right" }]}>{ask ? formatQuantity(ask.quantity) : ""}</Text>
+                </View>
+              );
+            })}
+
+            {book.bidShare !== null ? (
+              <>
+                <View style={styles.split}>
+                  <Text style={styles.splitText}>Bid</Text>
+                  <Text style={styles.splitText}>Offer</Text>
+                </View>
+                <View style={styles.meter}>
+                  <View style={[styles.meterBid, { flex: book.bidShare }]}>
+                    <Text style={styles.meterText}>{`${book.bidShare.toFixed(1)}%`}</Text>
+                  </View>
+                  <View style={[styles.meterAsk, { flex: 100 - book.bidShare }]}>
+                    <Text style={styles.meterText}>{`${(100 - book.bidShare).toFixed(1)}%`}</Text>
+                  </View>
+                </View>
+                <View style={styles.totals}>
+                  <Text style={styles.totalsText}>{`TBQ ${formatQuantity(book.tbq)}`}</Text>
+                  <Text style={styles.totalsText}>{`${formatQuantity(book.tsq)} TSQ`}</Text>
+                </View>
+              </>
+            ) : null}
+
+            {stamp.time ? (
+              <View style={styles.stamp}>
+                <View style={[styles.dot, { backgroundColor: stamp.live ? colors.up : colors.amber }]} />
+                <Text style={styles.stampText}>
+                  {`${stamp.live ? "Full book" : "Top of book only"} · stamped ${stamp.time} IST`}
+                </Text>
+              </View>
+            ) : null}
+            {stamp.reason ? <Text style={styles.reason}>{stamp.reason}</Text> : null}
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.grid2}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>OPEN</Text>
+                {figure(quote?.open)}
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>TODAY'S RANGE</Text>
+                {range(quote?.ltp, quote?.low, quote?.high)}
+              </View>
+            </View>
+            <View style={[styles.grid2, { marginTop: 14 }]}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>PREV. CLOSE</Text>
+                {figure(quote?.close)}
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>52 WEEK</Text>
+                {range(quote?.ltp, quote?.low52, quote?.high52)}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.stats}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>VOLUME</Text>
+                <Text style={styles.smallVal}>{quote?.volume ? formatQuantity(quote.volume) : "Not sent"}</Text>
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>AVG. TRADED PRICE</Text>
+                <Text style={styles.smallVal}>{shown(quote?.averagePrice) ?? "Not sent"}</Text>
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>CHANGE</Text>
+                <Text style={[styles.smallVal, { color: tone(quote?.changePct) }]}>
+                  {quote?.changePct === null || quote?.changePct === undefined
+                    ? "Not sent"
+                    : `${quote.changePct > 0 ? "+" : ""}${formatNumber(quote.changePct)}%`}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      )}
+
+      <View style={styles.foot}>
+        <TouchableOpacity style={[styles.action, { backgroundColor: "#16a34a" }]} onPress={() => openTicket("BUY")}>
+          <Text style={styles.actionText}>Buy</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.action, { backgroundColor: "#dc2626" }]} onPress={() => openTicket("SELL")}>
+          <Text style={styles.actionText}>Sell</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Mounted only while a ticket is open, as on the watchlist and portfolio, so every press seeds
+          the sheet from this symbol instead of the previous one's half-typed quantity. */}
+      {ticket.visible ? <BuySheet ticket={ticket} /> : null}
+    </View>
+  );
+}

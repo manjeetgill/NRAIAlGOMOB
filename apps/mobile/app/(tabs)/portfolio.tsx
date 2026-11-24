@@ -13,6 +13,7 @@
 
 import React, { useMemo, useState } from "react";
 import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
+import { useRouter } from "expo-router";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
@@ -89,6 +90,7 @@ const HOLDING_COLUMNS: SortColumn<HoldingRow>[] = [
 export default function PortfolioScreen() {
   const { useOpenPositions, useIciciAccount } = useApi();
   const { resolvedTheme } = useTheme();
+  const router = useRouter();
   const [tab, setTab] = useState<TabId>("positions");
 
   const { data, isLoading, isError, refetch } = useOpenPositions();
@@ -207,6 +209,16 @@ export default function PortfolioScreen() {
     } else {
       openOrderTicket({ side: "BUY" });
     }
+  };
+
+  /** A holding opens the stock with the quantity already on it, straight from the broker row the
+   *  trader just looked at - the Overview asks the account for nothing of its own. Positions keep
+   *  going to the ticket, because closing one is what a press on a position means. */
+  const openHolding = (row: Holding) => {
+    router.push(
+      `/stock?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}`
+      + `&held=${Math.abs(row.quantity)}`,
+    );
   };
 
   const positionCell = (item: PositionRow, column: SortColumn<PositionRow>) => {
@@ -353,6 +365,7 @@ export default function PortfolioScreen() {
           onSort={(column) => setHoldingSort(nextSort(column, holdingSort))}
           cell={holdingCell}
           keyOf={(item, index) => `${item.accountId}:${item.exchange}:${item.symbol}:${index}`}
+          onRowPress={openHolding}
           theme={theme}
           refreshControl={
             <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />

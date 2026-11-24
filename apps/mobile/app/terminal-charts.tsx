@@ -18,6 +18,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
 import {
@@ -68,7 +69,11 @@ function withForming(candles: readonly Candle[], forming: Candle | null | undefi
 export default function TerminalChartsScreen() {
   const { resolvedTheme } = useTheme();
   const { useTerminalChart, useChainUnderlyings } = useApi();
-  const [symbol, setSymbol] = useState<string>(DEFAULT_SYMBOL);
+  const seeded = useLocalSearchParams<{ symbol?: string }>();
+  // A press on a stock's "Chart" tab arrives with that symbol, so the desk opens on the instrument the
+  // trader was just looking at instead of on the default index. The route takes `NSE:SYMBOL` for a cash
+  // stock, which is what chartInstrument() on the shared side builds from it anyway.
+  const [symbol, setSymbol] = useState<string>(() => String(seeded.symbol ?? "").trim().toUpperCase() || DEFAULT_SYMBOL);
   const [interval, setInterval] = useState<IntervalId>(DEFAULT_INTERVAL);
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
