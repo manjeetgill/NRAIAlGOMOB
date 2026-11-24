@@ -26,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   liveSide,
   nearestMonthlyExpiry,
+  QUALITY_WORD,
   queryKeys,
   strikeIds,
   streamId,
@@ -53,16 +54,6 @@ function amount(value: string | number | null | undefined): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
-
-/** Prod names its quote states in code; the screen says what they mean. */
-const QUALITY_WORD: Record<string, string> = {
-  live: "live price",
-  delayed: "delayed price",
-  stale: "old price",
-  eod: "last close",
-  manual: "a hand-entered price",
-  unavailable: "no price from the broker",
-};
 
 /** How long ago these prices landed, so a date the trader is not watching never looks live when it is not. */
 function readAge(ms: number): string {

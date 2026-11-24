@@ -11,12 +11,11 @@ import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
 
 export default function MoreScreen() {
-  const { useMe, useLogout, useBrokers } = useApi();
+  const { useMe, useLogout } = useApi();
   const { resolvedTheme } = useTheme();
   const { user, brokers, isAuthenticated, logout: logoutStore } = useAuthStore();
   const { theme, setTheme } = useUIStore();
   const { data: me, isLoading: meLoading } = useMe();
-  const { data: brokersData, isLoading: brokersLoading } = useBrokers();
   const logoutMutation = useLogout();
 
   const colors = resolvedTheme === "dark"
@@ -39,14 +38,6 @@ export default function MoreScreen() {
     chevron: { marginLeft: 8 },
     switchContainer: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
     switchLabel: { fontSize: 16, fontWeight: "500", color: colors.text },
-    brokerCard: { backgroundColor: colors.card, borderRadius: 12, padding: 16, marginHorizontal: 16, marginTop: 8, borderWidth: 1, borderColor: colors.border },
-    brokerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8 },
-    brokerName: { fontSize: 16, fontWeight: "600", color: colors.text },
-    brokerStatus: { flexDirection: "row", alignItems: "center", gap: 6 },
-    statusDot: { width: 8, height: 8, borderRadius: 4 },
-    statusConnected: { backgroundColor: "#22c55e" },
-    statusDisconnected: { backgroundColor: "#ef4444" },
-    statusText: { fontSize: 13, color: colors.muted },
     dangerButton: { backgroundColor: "rgba(239,68,68,0.1)", borderRadius: 12, padding: 16, marginHorizontal: 16, marginTop: 24, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" },
     dangerButtonText: { textAlign: "center", fontSize: 16, fontWeight: "600", color: colors.danger },
     version: { textAlign: "center", padding: 24, fontSize: 12, color: colors.muted },
@@ -138,48 +129,6 @@ export default function MoreScreen() {
             />
           </View>
         </View>
-      </View>
-
-      {/* Brokers Section */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Connected Brokers</Text>
-        {brokersLoading ? (
-          <View style={styles.loading}>
-            <ActivityIndicator size="large" color={resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"} />
-          </View>
-        ) : brokersData?.length ? (
-          brokersData.map((broker) => (
-            <View key={broker.provider} style={styles.brokerCard}>
-              <View style={styles.brokerRow}>
-                <Text style={styles.brokerName}>{broker.provider.toUpperCase()}</Text>
-                <View style={styles.brokerStatus}>
-                  <View style={[styles.statusDot, broker.connected ? styles.statusConnected : styles.statusDisconnected]} />
-                  <Text style={styles.statusText}>{broker.connected ? "Connected" : "Disconnected"}</Text>
-                </View>
-              </View>
-              {broker.accountName && (
-                <View style={styles.brokerRow}>
-                  <Text style={{ fontSize: 14, color: colors.muted }}>Account</Text>
-                  <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{broker.accountName}</Text>
-                </View>
-              )}
-              {broker.expiresAt && (
-                <View style={styles.brokerRow}>
-                  <Text style={{ fontSize: 14, color: colors.muted }}>Session Expires</Text>
-                  <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{new Date(broker.expiresAt).toLocaleString()}</Text>
-                </View>
-              )}
-            </View>
-          ))
-        ) : (
-          <View style={styles.card}>
-            <View style={{ alignItems: "center", padding: 24 }}>
-              <Ionicons name="link-outline" size={48} color={colors.muted} />
-              <Text style={{ marginTop: 12, fontSize: 16, color: colors.muted }}>No brokers connected</Text>
-              <Text style={{ marginTop: 4, fontSize: 14, color: colors.muted }}>Connect a broker from the web app</Text>
-            </View>
-          </View>
-        )}
       </View>
 
       {/* Advanced Features */}
