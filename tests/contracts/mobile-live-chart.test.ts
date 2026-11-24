@@ -294,6 +294,29 @@ it("ignores a frame's unsigned and non-positive prices instead of publishing a z
   expect(feeds.at(-1)).toEqual([NIFTY, RELIANCE]);
 });
 
+it("does not notify disjoint watchers when only unrelated instruments tick (M1)", async () => {
+  const { watchQuotes } = await loadSocket();
+  let relianceCalls = 0;
+  let niftyCalls = 0;
+  watchQuotes([RELIANCE], () => {
+    relianceCalls++;
+  });
+  watchQuotes([NIFTY], () => {
+    niftyCalls++;
+  });
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  const stamp = "2026-11-17T04:30:00Z";
+  // Initial snapshot frame delivers to both
+  socket.frame({ mode: "snapshot", quotes: [wire(RELIANCE, 1400, stamp), wire(NIFTY, 24_500, stamp)] });
+  const relianceBefore = relianceCalls;
+  const niftyBefore = niftyCalls;
+  // Delta frame only for RELIANCE should NOT notify NIFTY watcher
+  socket.frame({ mode: "delta", quotes: [wire(RELIANCE, 1402, stamp)] });
+  expect(relianceCalls).toBe(relianceBefore + 1);
+  expect(niftyCalls).toBe(niftyBefore);
+});
+
 it("does not retry a refusal, but does retry a dropped connection", async () => {
   vi.useFakeTimers();
   const { watchQuotes } = await loadSocket();

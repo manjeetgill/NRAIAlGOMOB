@@ -18,13 +18,14 @@ import type { Candle } from "@nraialgo/shared/api";
 interface KLineChartProps {
   data: Candle[];
   height?: number;
+  symbol?: string;
 }
 
 type ChartMessage = 
   | { type: "ready" }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400 }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "" }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
@@ -85,6 +86,9 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
                 styles: {
                   grid: { show: true, horizontal: { color: colors.grid }, vertical: { color: colors.grid } },
                   candle: {
+                    tooltip: {
+                      title: { show: ${symbol ? "true" : "false"}, template: "{ticker}" },
+                    },
                     priceMark: { high: { color: colors.up }, low: { color: colors.down }, last: { color: colors.text } },
                     bar: { upColor: colors.up, downColor: colors.down, noChangeColor: colors.text },
                   },
@@ -95,6 +99,10 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
                 },
                 toolbar: { visible: 'always' },
               });
+
+              if (typeof chart.setSymbol === 'function' && ${JSON.stringify(symbol)}) {
+                chart.setSymbol({ ticker: ${JSON.stringify(symbol)} });
+              }
 
               chart.createIndicator('MA', false, { id: 'candle_pane' });
               chart.createIndicator('VOL', true, { id: 'indicator_pane' });
@@ -139,12 +147,34 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
             }
           }
 
+          function patchBar(item) {
+            if (!chart || !item) return;
+            try {
+              const bar = {
+                timestamp: item.timestamp,
+                open: item.open,
+                high: item.high,
+                low: item.low,
+                close: item.close,
+                volume: item.volume || 0,
+              };
+              if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
+                chart._chartStore._addData(bar, 'forward');
+              } else if (typeof chart.updateData === 'function') {
+                chart.updateData(bar);
+              }
+            } catch (e) {
+              console.error('Patch error:', e);
+            }
+          }
+
           function handleRawMessage(event) {
             try {
               const rawData = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
               const message = JSON.parse(rawData);
               if (message.type === 'init') initChart();
               else if (message.type === 'update') updateData(message.data);
+              else if (message.type === 'patch') patchBar(message.bar);
             } catch (e) { 
               console.error('Message error:', e);
             }
@@ -163,7 +193,9 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
       </body>
       </html>
     `;
-  }, [resolvedTheme]);
+  }, [resolvedTheme, symbol]);
+
+  const prevLastRef = useRef<{ timestamp: number; close: number; len: number } | null>(null);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -174,6 +206,8 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
         setError(null);
         // Send data to chart
         if (webViewRef.current && data.length > 0) {
+          const last = data[data.length - 1];
+          prevLastRef.current = { timestamp: last.timestamp, close: last.close, len: data.length };
           webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
         }
       } else if (message.type === "error") {
@@ -186,9 +220,18 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
   }, [data]);
 
   useEffect(() => {
-    if (isReady.current && webViewRef.current && data.length > 0) {
-      webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
+    if (!isReady.current || !webViewRef.current || !data.length) return;
+    const last = data[data.length - 1];
+    const prev = prevLastRef.current;
+    if (prev && prev.len === data.length && prev.timestamp === last.timestamp) {
+      if (prev.close === last.close) return;
+      // Patch forming bar delta instead of serializing the full series
+      prevLastRef.current = { timestamp: last.timestamp, close: last.close, len: data.length };
+      webViewRef.current.postMessage(JSON.stringify({ type: "patch", bar: last }));
+      return;
     }
+    prevLastRef.current = { timestamp: last.timestamp, close: last.close, len: data.length };
+    webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
   }, [data]);
 
   return (

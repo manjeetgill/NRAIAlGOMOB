@@ -34,7 +34,7 @@ export const queryClient = new QueryClient({
       staleTime: QUERY_CONFIG.STALE_TIME_NORMAL,
       retry: QUERY_CONFIG.RETRY_COUNT,
       retryDelay: QUERY_CONFIG.RETRY_DELAY,
-      refetchOnWindowFocus: false, // Mobile doesn't have window focus in same way
+      refetchOnWindowFocus: true, // Tied to AppState active status via focusManager
       refetchOnReconnect: true,
       refetchOnMount: true,
     },

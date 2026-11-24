@@ -57,7 +57,7 @@ export const queryKeys = {
 
   // Option Chain
   optionChain: {
-    chain: (underlying: string, expiry: string) => ["option-chain", "chain", underlying, expiry || "auto"] as const,
+    chain: (underlying: string, expiry: string, window?: number) => ["option-chain", "chain", underlying, expiry || "auto", window ?? "default"] as const,
     underlyings: () => ["option-chain", "underlyings"] as const,
     // The analysis body is the key: the server answers a POST, and two different baskets must never
     // share one cached curve.
@@ -479,7 +479,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     // with an expiry it is not, and picking the real one pays the broker for it a second time.
     const asked = ISO_DATE.test(expiry) && expiry >= todayIST() ? expiry : "";
     return useQuery({
-      queryKey: queryKeys.optionChain.chain(underlying, asked),
+      queryKey: queryKeys.optionChain.chain(underlying, asked, 30),
       queryFn: async () => {
         const data = await client.get<OptionChainData>("/v1/option-chain", {
           // `rate` and `dividend` are required by the route, so a request without them is rejected
@@ -487,7 +487,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
           params: { underlying, window: 30, rate: 0, dividend: 0, ...(asked ? { expiry: asked } : {}) },
         });
         if (data?.expiry && !asked) {
-          queryClient.setQueryData(queryKeys.optionChain.chain(underlying, data.expiry), data);
+          queryClient.setQueryData(queryKeys.optionChain.chain(underlying, data.expiry, 30), data);
         }
         return data;
       },
@@ -510,7 +510,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useOptionChains = (underlying: string, expiries: readonly string[], wanted: boolean) => {
     return useQueries({
       queries: expiries.map(expiry => ({
-        queryKey: queryKeys.optionChain.chain(underlying, expiry),
+        queryKey: queryKeys.optionChain.chain(underlying, expiry, FULL_WINDOW),
         queryFn: () => client.get<OptionChainData>("/v1/option-chain", {
           params: { underlying, expiry, window: FULL_WINDOW, rate: 0, dividend: 0 },
         }),
@@ -597,7 +597,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return response.intents;
       },
       staleTime: 5 * 1000,
-      refetchInterval: 10 * 1000,
+      refetchInterval: false, // Disabled: unconsumed poller (M13)
       ...options,
     });
   };
@@ -610,7 +610,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return response.orders;
       },
       staleTime: 5 * 1000,
-      refetchInterval: 10 * 1000,
+      refetchInterval: false, // Disabled: endpoint does not exist (M13)
       ...options,
     });
   };
@@ -707,7 +707,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: () => client.get<MarketQuote[]>("/v1/quotes", { params: { symbols: symbols.join(",") } }),
       enabled: symbols.length > 0,
       staleTime: 500,
-      refetchInterval: 1000,
+      refetchInterval: false, // Disabled: unconsumed 1s poller (M10)
       ...options,
     });
   };
@@ -731,7 +731,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: () => client.get<MarketDepth>(`/v1/depth/${symbol}`),
       enabled: !!symbol,
       staleTime: 500,
-      refetchInterval: 1000,
+      refetchInterval: false, // Disabled: unconsumed 1s poller (M10)
       ...options,
     });
   };

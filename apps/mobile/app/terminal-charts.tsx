@@ -50,6 +50,7 @@ const DEFAULT_SYMBOL = "NIFTY";
 // from a live broker session, so the chart is never blank because the market happens to be shut.
 const DEFAULT_INTERVAL: IntervalId = "1d";
 const DAILY_CANDLES_SHOWN = 120;
+const INTRADAY_CANDLES_SHOWN = 375;
 
 function axisLabel(timestamp: number, daily: boolean): string {
   const date = new Date(timestamp);
@@ -97,11 +98,11 @@ export default function TerminalChartsScreen() {
 
   const candles = chartData?.candles ?? [];
   const baseCandles = useMemo(
-    () => withForming(candles, chartData?.forming, isDaily ? DAILY_CANDLES_SHOWN : 0),
+    () => withForming(candles, chartData?.forming, isDaily ? DAILY_CANDLES_SHOWN : INTRADAY_CANDLES_SHOWN),
     [candles, chartData?.forming, isDaily],
   );
   const sessionCandles = useMemo(
-    () => (interval === "1d" ? withForming(session.data?.candles ?? [], session.data?.forming, 0) : []),
+    () => (interval === "1d" ? withForming(session.data?.candles ?? [], session.data?.forming, INTRADAY_CANDLES_SHOWN) : []),
     [interval, session.data],
   );
   const live = useLiveCandles(symbol, interval as ChartBucket, baseCandles, sessionCandles);
@@ -118,14 +119,6 @@ export default function TerminalChartsScreen() {
     [live.points],
   );
 
-  const { priceMin, priceMax } = useMemo(() => {
-    if (!chartDataPoints.length) return { priceMin: 0, priceMax: 100 };
-    const highs = chartDataPoints.map((d) => d.high);
-    const lows = chartDataPoints.map((d) => d.low);
-    const padding = (Math.max(...highs) - Math.min(...lows)) * 0.05;
-    return { priceMin: Math.min(...lows) - padding, priceMax: Math.max(...highs) + padding };
-  }, [chartDataPoints]);
-
   const colors = resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", up: "#22c55e", down: "#ef4444" }
     : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" };
@@ -135,44 +128,7 @@ export default function TerminalChartsScreen() {
   const liveAt = live.at === null ? null : new Date(live.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const liveColor = live.tick?.fresh ? colors.up : live.reason || live.tick ? colors.down : colors.muted;
 
-  const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg },
-    header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-    headerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-    title: { fontSize: 18, fontWeight: "700", color: colors.text },
-    symbolButton: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.card, borderRadius: 6, borderWidth: 1, borderColor: colors.border },
-    symbolText: { fontSize: 14, fontWeight: "600", color: colors.text },
-    meta: { fontSize: 10, color: colors.muted, textAlign: "right" },
-    intervalRow: { flexDirection: "row", gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
-    intervalButton: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.card, borderRadius: 6, borderWidth: 1, borderColor: colors.border },
-    intervalButtonActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-    intervalLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
-    intervalLabelActive: { color: "#ffffff" },
-    sourceRow: { paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
-    sourceText: { fontSize: 10.5, color: colors.muted },
-    liveRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: colors.border },
-    liveDot: { width: 8, height: 8, borderRadius: 4 },
-    liveText: { flex: 1, fontSize: 11, color: colors.muted },
-    liveTime: { fontSize: 11, color: colors.muted },
-    chartContainer: { flex: 1, margin: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, overflow: "hidden" },
-    stateBox: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
-    stateTitle: { marginTop: 12, fontSize: 16, fontWeight: "600", color: colors.text, textAlign: "center" },
-    stateBody: { marginTop: 4, fontSize: 13, color: colors.muted, textAlign: "center", paddingHorizontal: 24 },
-    actionButton: { backgroundColor: colors.accent, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8, marginTop: 16, minWidth: 200, alignItems: "center" },
-    actionLabel: { fontSize: 16, fontWeight: "600", color: "#ffffff" },
-    priceScale: { position: "absolute", right: 0, top: 0, bottom: 0, width: 60, justifyContent: "space-between", paddingHorizontal: 4 },
-    priceScaleLabel: { fontSize: 9, color: colors.muted, textAlign: "right" },
-    timeScale: { position: "absolute", bottom: 0, left: 0, right: 0, height: 30, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4 },
-    timeScaleLabel: { fontSize: 9, color: colors.muted },
-    sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: "80%" },
-    sheetTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: 12 },
-    search: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg, marginBottom: 8 },
-    sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, color: colors.muted, textTransform: "uppercase", paddingTop: 10, paddingBottom: 4 },
-    row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-    rowName: { fontSize: 16, fontWeight: "600", color: colors.text },
-    rowMeta: { fontSize: 12, color: colors.muted },
-    notice: { paddingVertical: 12, fontSize: 13, color: colors.muted, textAlign: "center" },
-  });
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   const pick = (name: string) => {
     handleSymbolChange(name);
@@ -189,36 +145,114 @@ export default function TerminalChartsScreen() {
       </View>
     );
   } else if (isError && !chartDataPoints.length) {
+    const isStock = !["NIFTY", "BANKNIFTY"].includes(symbol.toUpperCase());
+    const isIntraday = !isDaily;
+
     // A live tick is a better answer than a failed history read: the stream paints the bar it has a price for.
     body = (
       <View style={styles.stateBox}>
         <Ionicons name="alert-circle-outline" size={48} color={colors.down} />
         <Text style={styles.stateTitle}>No {interval} chart for {symbol}</Text>
-        <Text style={styles.stateBody}>{chartFailureReason(error)}</Text>
-        <TouchableOpacity style={styles.actionButton} onPress={() => refetch()} accessibilityRole="button" accessibilityLabel="Retry">
-          <Text style={styles.actionLabel}>Retry</Text>
-        </TouchableOpacity>
+        <Text style={styles.stateBody}>
+          {isIntraday && isStock
+            ? `Intraday bars for ${chartInstrument(symbol)} are available during live market hours (09:15–15:30 IST). Switch to Daily (1d) to view historical candles, or view NIFTY / BANKNIFTY for 1-second stored intraday charts.`
+            : chartFailureReason(error)}
+        </Text>
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "center" }}>
+          {isIntraday && (
+            <TouchableOpacity
+              style={[styles.actionButton, { marginTop: 0, minWidth: 140 }]}
+              onPress={() => handleIntervalChange("1d")}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to Daily"
+            >
+              <Text style={styles.actionLabel}>View Daily (1d)</Text>
+            </TouchableOpacity>
+          )}
+          {symbol !== "NIFTY" && (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                { marginTop: 0, minWidth: 140, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+              ]}
+              onPress={() => handleSymbolChange("NIFTY")}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to NIFTY"
+            >
+              <Text style={[styles.actionLabel, { color: colors.text }]}>View NIFTY</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[
+              styles.actionButton,
+              { marginTop: 0, minWidth: 100, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+            ]}
+            onPress={() => refetch()}
+            accessibilityRole="button"
+            accessibilityLabel="Retry"
+          >
+            <Text style={[styles.actionLabel, { color: colors.text }]}>Retry</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   } else if (!chartDataPoints.length) {
+    const isStock = !["NIFTY", "BANKNIFTY"].includes(symbol.toUpperCase());
+    const isIntraday = !isDaily;
+
     body = (
       <View style={styles.stateBox}>
         <Ionicons name="bar-chart-outline" size={48} color={colors.muted} />
         <Text style={styles.stateTitle}>No candles returned</Text>
         <Text style={styles.stateBody}>
-          {chartData?.source
-            ? `${chartData.source} returned no ${interval} bars for ${chartInstrument(symbol)}.`
-            : `No ${interval} bars came back for ${chartInstrument(symbol)}.`}
+          {isIntraday && isStock
+            ? `Intraday bars for ${chartInstrument(symbol)} are streamed during live market hours (09:15–15:30 IST). Switch to Daily (1d) to view historical data, or view NIFTY / BANKNIFTY for 1-second stored intraday charts.`
+            : chartData?.source
+              ? `${chartData.source} returned no ${interval} bars for ${chartInstrument(symbol)}.`
+              : `No ${interval} bars came back for ${chartInstrument(symbol)}.`}
         </Text>
-        <TouchableOpacity style={styles.actionButton} onPress={() => refetch()} accessibilityRole="button" accessibilityLabel="Refresh">
-          <Text style={styles.actionLabel}>Refresh</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "center" }}>
+          {isIntraday && (
+            <TouchableOpacity
+              style={[styles.actionButton, { marginTop: 0, minWidth: 140 }]}
+              onPress={() => handleIntervalChange("1d")}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to Daily"
+            >
+              <Text style={styles.actionLabel}>View Daily (1d)</Text>
+            </TouchableOpacity>
+          )}
+          {symbol !== "NIFTY" && (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                { marginTop: 0, minWidth: 140, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+              ]}
+              onPress={() => handleSymbolChange("NIFTY")}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to NIFTY"
+            >
+              <Text style={[styles.actionLabel, { color: colors.text }]}>View NIFTY</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[
+              styles.actionButton,
+              { marginTop: 0, minWidth: 100, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+            ]}
+            onPress={() => refetch()}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh"
+          >
+            <Text style={[styles.actionLabel, { color: colors.text }]}>Refresh</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   } else {
     body = (
       <View style={{ flex: 1 }} key={chartKey}>
-        <KLineChart data={chartDataPoints} height={500} />
+        <KLineChart data={chartDataPoints} height={500} symbol={symbol} />
       </View>
     );
   }
@@ -294,23 +328,74 @@ export default function TerminalChartsScreen() {
               keyExtractor={(item) => item.name}
               stickySectionHeadersEnabled={false}
               renderSectionHeader={({ section }) => <Text style={styles.sectionTitle}>{section.title}</Text>}
-              renderItem={({ item }) => (
-                <TouchableOpacity style={styles.row} onPress={() => pick(item.name)} accessibilityRole="button" accessibilityLabel={`Chart ${item.name}`}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowName}>{item.name}</Text>
-                    <Text style={styles.rowMeta}>{chartInstrument(item.name)} · lot {item.lotSize}</Text>
-                  </View>
-                  <Ionicons
-                    name={symbol === item.name ? "checkmark-circle-outline" : "radio-button-off-outline"}
-                    size={22}
-                    color={symbol === item.name ? colors.accent : colors.muted}
-                  />
-                </TouchableOpacity>
-              )}
+              renderItem={({ item }) => {
+                const has1sData = ["NIFTY", "BANKNIFTY"].includes(item.name.toUpperCase());
+                return (
+                  <TouchableOpacity style={styles.row} onPress={() => pick(item.name)} accessibilityRole="button" accessibilityLabel={`Chart ${item.name}`}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={styles.rowName}>{item.name}</Text>
+                        {has1sData && (
+                          <View style={{ backgroundColor: colors.accent + "20", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                            <Text style={{ fontSize: 10, fontWeight: "600", color: colors.accent }}>1s data</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.rowMeta}>{chartInstrument(item.name)} · lot {item.lotSize}</Text>
+                    </View>
+                    <Ionicons
+                      name={symbol === item.name ? "checkmark-circle-outline" : "radio-button-off-outline"}
+                      size={22}
+                      color={symbol === item.name ? colors.accent : colors.muted}
+                    />
+                  </TouchableOpacity>
+                );
+              }}
             />
           </View>
         </View>
       </Modal>
     </View>
   );
+}
+
+function createStyles(colors: { bg: string; card: string; text: string; muted: string; border: string; accent: string; up: string; down: string }) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.bg },
+    header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+    headerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+    title: { fontSize: 18, fontWeight: "700", color: colors.text },
+    symbolButton: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.card, borderRadius: 6, borderWidth: 1, borderColor: colors.border },
+    symbolText: { fontSize: 14, fontWeight: "600", color: colors.text },
+    meta: { fontSize: 10, color: colors.muted, textAlign: "right" },
+    intervalRow: { flexDirection: "row", gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+    intervalButton: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.card, borderRadius: 6, borderWidth: 1, borderColor: colors.border },
+    intervalButtonActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+    intervalLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
+    intervalLabelActive: { color: "#ffffff" },
+    sourceRow: { paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
+    sourceText: { fontSize: 10.5, color: colors.muted },
+    liveRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: colors.border },
+    liveDot: { width: 8, height: 8, borderRadius: 4 },
+    liveText: { flex: 1, fontSize: 11, color: colors.muted },
+    liveTime: { fontSize: 11, color: colors.muted },
+    chartContainer: { flex: 1, margin: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, overflow: "hidden" },
+    stateBox: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
+    stateTitle: { marginTop: 12, fontSize: 16, fontWeight: "600", color: colors.text, textAlign: "center" },
+    stateBody: { marginTop: 4, fontSize: 13, color: colors.muted, textAlign: "center", paddingHorizontal: 24 },
+    actionButton: { backgroundColor: colors.accent, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8, marginTop: 16, minWidth: 200, alignItems: "center" },
+    actionLabel: { fontSize: 16, fontWeight: "600", color: "#ffffff" },
+    priceScale: { position: "absolute", right: 0, top: 0, bottom: 0, width: 60, justifyContent: "space-between", paddingHorizontal: 4 },
+    priceScaleLabel: { fontSize: 9, color: colors.muted, textAlign: "right" },
+    timeScale: { position: "absolute", bottom: 0, left: 0, right: 0, height: 30, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4 },
+    timeScaleLabel: { fontSize: 9, color: colors.muted },
+    sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: "80%" },
+    sheetTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: 12 },
+    search: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg, marginBottom: 8 },
+    sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, color: colors.muted, textTransform: "uppercase", paddingTop: 10, paddingBottom: 4 },
+    row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
+    rowName: { fontSize: 16, fontWeight: "600", color: colors.text },
+    rowMeta: { fontSize: 12, color: colors.muted },
+    notice: { paddingVertical: 12, fontSize: 13, color: colors.muted, textAlign: "center" },
+  });
 }

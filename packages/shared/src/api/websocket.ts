@@ -126,8 +126,14 @@ function snapshotFor(ids: readonly string[]): FeedSnapshot {
   };
 }
 
-function publish() {
-  for (const watcher of watchers) watcher.handler(snapshotFor(watcher.ids));
+function publish(changedIds?: Set<string>) {
+  for (const watcher of watchers) {
+    if (changedIds && watcher.ids.length > 0) {
+      const affectsWatcher = watcher.ids.some((id) => changedIds.has(id));
+      if (!affectsWatcher) continue;
+    }
+    watcher.handler(snapshotFor(watcher.ids));
+  }
 }
 
 function desiredInstruments(): string[] {
@@ -152,17 +158,24 @@ function openSocket(url: string): WebSocket {
 
 function accept(frame: WireFrame) {
   const quotes = Array.isArray(frame.quotes) ? frame.quotes : [];
+  const changedIds = new Set<string>();
   if (frame.mode !== "delta") published = new Map();
   for (const quote of quotes) {
     const id = typeof quote.id === "string" && quote.id ? quote.id : quote.subscriptionId ?? "";
     const price = Number(quote.price);
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     published.set(quoteKey(quote), toTick(quote, id));
+    changedIds.add(id);
   }
-  for (const key of Array.isArray(frame.removed) ? frame.removed : []) published.delete(key);
+  for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
+    const existing = published.get(key);
+    if (existing) changedIds.add(existing.id);
+    published.delete(key);
+    changedIds.add(key);
+  }
   if (frame.states && typeof frame.states === "object") states = frame.states;
   if (typeof frame.asOf === "string") asOf = frame.asOf;
-  publish();
+  publish(frame.mode === "delta" ? changedIds : undefined);
 }
 
 function scheduleConnect() {

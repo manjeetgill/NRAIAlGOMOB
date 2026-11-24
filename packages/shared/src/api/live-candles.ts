@@ -179,7 +179,11 @@ export function tickLabel(tick: QuoteTick | null | undefined, connected: boolean
   if (reason === "capacity") return "This account already has three live streams open";
   if (!connected) return "Connecting to live prices";
   if (!tick) return "Waiting for a live tick";
-  const status = tick.status ? STATUS_LABELS[tick.status.toUpperCase()] ?? tick.status : "Unlabelled";
+  const status = tick.status
+    ? STATUS_LABELS[tick.status.toUpperCase()] ?? tick.status
+    : tick.fresh
+      ? "Live"
+      : "Latest";
   return `${status} price ${tick.price.toFixed(2)}`;
 }
 
