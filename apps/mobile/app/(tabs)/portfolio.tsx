@@ -217,7 +217,7 @@ export default function PortfolioScreen() {
   const openHolding = (row: Holding) => {
     router.push(
       `/stock?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}`
-      + `&held=${Math.abs(row.quantity)}`,
+      + `&held=${Math.abs(row.quantity)}&tab=portfolio`,
     );
   };
 

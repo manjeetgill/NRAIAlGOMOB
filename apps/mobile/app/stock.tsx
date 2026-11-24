@@ -18,6 +18,7 @@ import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition } from 
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
+import { tabRoute } from "@/utils/tabRoute";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
 
@@ -25,17 +26,19 @@ import { useApi } from "@/hooks/useApi";
 const LADDER_ROWS = 5;
 
 export default function StockScreen() {
-  const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string }>();
+  const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string; tab?: string }>();
   const router = useRouter();
   const { useEquityQuote, useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } = useApi();
   const { resolvedTheme } = useTheme();
   const ticket = useOrderTicket();
 
   const symbol = String(params.symbol ?? "").trim().toUpperCase();
-  /** A notification can open this screen as the first route in the stack, where there is nothing to go
-   *  back to; the arrow then returns to the Watchlist instead of throwing an unhandled GO_BACK. */
+  /** Back names the tab the press came from: popping into the tab group restored More no matter which tab
+   *  the trader was reading. A link can also open this screen as the first route in the stack, where there
+   *  is nothing to pop, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
   const canGoBack = useCanGoBack();
-  const goBack = () => (canGoBack ? router.back() : router.replace("/(tabs)/watchlist"));
+  const backTo = tabRoute(params.tab);
+  const goBack = () => (canGoBack ? router.navigate(backTo) : router.replace(backTo));
   const [exchange, setExchange] = useState(() => String(params.exchange ?? "NSE").trim().toUpperCase() || "NSE");
   // The list an add lands in is the one the press came from; a screen opened without one uses the first.
   const listNumber = Math.max(1, Number(params.list ?? 1) || 1);

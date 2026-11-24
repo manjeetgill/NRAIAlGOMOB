@@ -33,6 +33,7 @@ export {
   nearestMonthlyExpiry,
   todayIST,
   iciciHoldings,
+  iciciOpenPositions,
   iciciOrders,
   iciciAccountSection,
   chartInstrument,

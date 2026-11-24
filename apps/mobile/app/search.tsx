@@ -20,12 +20,13 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useCanGoBack, useRouter } from "expo-router";
+import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { chartFailureReason } from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
+import { tabRoute } from "@/utils/tabRoute";
 
 /** Below two letters the server has nothing to narrow, so the box waits instead of firing a read. */
 const MIN_QUERY = 2;
@@ -75,13 +76,18 @@ export default function SearchScreen() {
   }), [colors]);
 
   const openOverview = (hit: { exchange: string; symbol: string }) => {
-    router.push(`/stock?exchange=${encodeURIComponent(hit.exchange)}&symbol=${encodeURIComponent(hit.symbol)}`);
+    router.push(
+      `/stock?exchange=${encodeURIComponent(hit.exchange)}&symbol=${encodeURIComponent(hit.symbol)}&tab=search`,
+    );
   };
 
-  /** A link can open this screen as the first route in the stack, where there is nothing to go back to;
-   *  the arrow then returns to the Watchlist instead of throwing an unhandled GO_BACK. */
+  /** The pill carries the tab it was pressed on, because popping back into the tab group restored More no
+   *  matter which tab the trader was reading. A link can open this screen as the first route in the stack,
+   *  where there is nothing to pop, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
   const canGoBack = useCanGoBack();
-  const goBack = () => (canGoBack ? router.back() : router.replace("/(tabs)/watchlist"));
+  const { tab } = useLocalSearchParams<{ tab?: string }>();
+  const backTo = tabRoute(tab);
+  const goBack = () => (canGoBack ? router.navigate(backTo) : router.replace(backTo));
 
   const message = () => {
     if (error) return chartFailureReason(error, "The listed-stock catalogue could not be searched. Retry shortly.");

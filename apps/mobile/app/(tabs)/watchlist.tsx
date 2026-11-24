@@ -291,7 +291,7 @@ export default function WatchlistScreen() {
   /** A press shows the stock first; the long press above still goes straight to the ticket, so the
    *  fast path a trader uses on a list row is not lost behind the new screen. */
   const openOverview = (row: { exchange: string; symbol: string }) => {
-    router.push(`/stock?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}&list=${listNumber}`);
+    router.push(`/stock?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}&list=${listNumber}&tab=watchlist`);
   };
 
   const createList = () =>

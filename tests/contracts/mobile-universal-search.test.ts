@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
+import { tabRoute } from "../../apps/mobile/src/utils/tabRoute.ts";
 
 /**
  * The universal search is one box on top of every screen that answers with the server's own listed-stock
@@ -22,12 +23,12 @@ it("asks the equities catalogue and never the index list", () => {
 
 it("is reached from every screen but the sign-in and the search itself", () => {
   expect(shell).toContain("{pathname !== \"/login\" && pathname !== \"/search\" ? <SearchBar /> : null}");
-  expect(bar).toContain('router.push("/search")');
+  expect(bar).toContain('router.push(`/search?tab=${encodeURIComponent(pathname)}`)');
 });
 
 it("opens the Overview of the exact hit the trader tapped", () => {
   expect(screen).toContain("const openOverview = (hit: { exchange: string; symbol: string }) => {");
-  expect(screen).toContain("`/stock?exchange=${encodeURIComponent(hit.exchange)}&symbol=${encodeURIComponent(hit.symbol)}`");
+  expect(screen).toContain("`/stock?exchange=${encodeURIComponent(hit.exchange)}&symbol=${encodeURIComponent(hit.symbol)}&tab=search`");
   expect(screen).toContain("onPress={() => openOverview(item)}");
 });
 
@@ -57,13 +58,29 @@ it("draws only the fields the server sent for a hit", () => {
 });
 
 /** A notification or a link can open either screen as the first route in the stack. Pressing back there
- *  used to throw an unhandled GO_BACK, which is the one error a trader should never see for a screen that
- *  has nowhere to go back to - so both arrows fall through to the Watchlist instead. */
-it("never throws when back is pressed on a screen a link opened first", () => {
+ *  used to throw an unhandled GO_BACK, and popping back into the tab group restored the More tab whatever
+ *  the trader came from. Both arrows now navigate to the tab named by the `tab` parameter, or replace the
+ *  screen with it when there is nothing to pop at all. */
+it("returns to the tab the trader came from and never throws", () => {
   const overview = readFileSync(resolve("apps/mobile/app/stock.tsx"), "utf8");
   for (const source of [screen, overview]) {
-    expect(source).toContain('canGoBack ? router.back() : router.replace("/(tabs)/watchlist")');
+    expect(source).toContain("canGoBack ? router.navigate(backTo) : router.replace(backTo)");
+    expect(source).toContain("tabRoute(");
     expect(source).toContain("onPress={goBack}");
     expect(source).not.toContain("onPress={() => router.back()}");
+  }
+});
+
+/** The destination is whatever the caller put in the URL, and a link is user input: only the five tabs and
+ *  the search may be named, anything else falls back to the Watchlist rather than a route the router does
+ *  not have. */
+it("accepts only a route the app actually has", () => {
+  expect(tabRoute("portfolio")).toBe("/(tabs)/portfolio");
+  expect(tabRoute("/watchlist")).toBe("/(tabs)/watchlist");
+  expect(tabRoute("(tabs)/orders")).toBe("/(tabs)/orders");
+  expect(tabRoute("option-chain")).toBe("/(tabs)/option-chain");
+  expect(tabRoute("search")).toBe("/search");
+  for (const junk of [undefined, "", "stock", "../../admin", "PORTFOLIO?x=1", "'] ;"]) {
+    expect(tabRoute(junk)).toBe("/(tabs)/watchlist");
   }
 });

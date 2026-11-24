@@ -8,12 +8,13 @@
 
 import React, { useMemo } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
 
 export default function SearchBar() {
   const router = useRouter();
+  const pathname = usePathname();
   const { resolvedTheme } = useTheme();
 
   const colors = useMemo(() => resolvedTheme === "dark"
@@ -35,7 +36,7 @@ export default function SearchBar() {
       <TouchableOpacity
         style={styles.pill}
         activeOpacity={0.7}
-        onPress={() => router.push("/search")}
+        onPress={() => router.push(`/search?tab=${encodeURIComponent(pathname)}`)}
         accessibilityRole="button"
         accessibilityLabel="Search all listed stocks"
       >
