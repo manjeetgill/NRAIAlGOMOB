@@ -81,13 +81,13 @@ export default function SearchScreen() {
     );
   };
 
-  /** The pill carries the tab it was pressed on, because popping back into the tab group restored More no
-   *  matter which tab the trader was reading. A link can open this screen as the first route in the stack,
-   *  where there is nothing to pop, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
+  /** The pill carries the tab it was pressed on, because popping back into the tab group restored the More
+   *  tab whatever the trader came from. A link can open this screen as the first route in the stack, where
+   *  there is nothing to pop, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
   const canGoBack = useCanGoBack();
   const { tab } = useLocalSearchParams<{ tab?: string }>();
   const backTo = tabRoute(tab);
-  const goBack = () => (canGoBack ? router.navigate(backTo) : router.replace(backTo));
+  const goBack = () => (!canGoBack ? router.replace(backTo) : router.navigate(backTo));
 
   const message = () => {
     if (error) return chartFailureReason(error, "The listed-stock catalogue could not be searched. Retry shortly.");

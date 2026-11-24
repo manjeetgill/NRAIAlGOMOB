@@ -672,3 +672,14 @@ it("sends only the marked closes and the new legs, never the rest of the book", 
   expect(screen).toContain("has no price from the broker. Nothing was sent.");
   expect(screen).toContain("The broker still holds every leg of this basket.");
 });
+
+it("re-targets unexecuted legs and refreshes payoff when trader taps another expiry chip", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  expect(screen).toContain("const switchExpiry = (targetDay: string) => {");
+  expect(screen).toContain("onPress={() => switchExpiry(day)}");
+  // Does not re-target held legs from the broker
+  expect(screen).toContain("if (item.held) return item;");
+  // Matches templates to re-anchor strikes cleanly on the new date
+  expect(screen).toContain("const templateMatch = TEMPLATES.find(");
+  expect(screen).toContain("expiry: targetDay,");
+});

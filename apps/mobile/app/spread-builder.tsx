@@ -459,6 +459,63 @@ export default function SpreadBuilderScreen() {
     })));
   };
 
+  /**
+   * When the trader taps another date chip while unexecuted legs are staged, re-target those legs
+   * to the new expiry. Re-maps strikes to the nearest listed strikes on the new ladder (or re-anchors
+   * the active template if one is matched) so the legs stay valid, re-price immediately, and recalculate
+   * the single-expiry payoff. Held legs from the broker are never re-targeted: their expiry is the broker's fact.
+   */
+  const switchExpiry = (targetDay: string) => {
+    if (targetDay === chain?.expiry && targetDay === date) return;
+    setDate(targetDay);
+    setSentId("");
+    setNote(null);
+
+    // If adjusting held broker legs or there are no unheld legs, do not rewrite legs.
+    if (adjusting || legs.length === 0) return;
+
+    // Check if current legs match a known template
+    const templateMatch = TEMPLATES.find(template =>
+      template.legs.length === legs.length &&
+      template.legs.every((leg, index) => legs[index]?.side === leg.side && legs[index]?.right === leg.right && legs[index]?.lots === leg.lots)
+    );
+
+    const targetChain = chainOf.get(targetDay);
+    const targetLadder = (targetChain?.rows ?? []).filter(row => row.call || row.put).map(row => row.strike);
+    const targetAtm = (targetChain?.rows ?? []).find(row => row.isAtTheMoney)?.strike ?? "";
+
+    if (templateMatch && targetLadder.length > 0) {
+      const atmIdx = targetLadder.indexOf(targetAtm);
+      const anchor = atmIdx < 0 ? Math.floor(targetLadder.length / 2) : atmIdx;
+      edit(current => templateMatch.legs.map((leg, index) => ({
+        id: `${templateMatch.id}-${index}`,
+        side: leg.side,
+        right: leg.right,
+        lots: leg.lots,
+        expiry: targetDay,
+        strike: targetLadder[Math.min(targetLadder.length - 1, Math.max(0, anchor + leg.step))],
+      })));
+    } else {
+      // Re-target unheld legs to the new expiry. If target ladder is ready, snap to nearest listed strike;
+      // otherwise update the expiry string and let chain resolution price it.
+      edit(current => current.map(item => {
+        if (item.held) return item;
+        let newStrike = item.strike;
+        if (targetLadder.length > 0 && !targetLadder.includes(item.strike)) {
+          const num = Number(item.strike);
+          if (Number.isFinite(num)) {
+            newStrike = targetLadder.reduce((best, s) =>
+              Math.abs(Number(s) - num) < Math.abs(Number(best) - num) ? s : best, targetLadder[0]
+            );
+          } else {
+            newStrike = targetLadder[0];
+          }
+        }
+        return { ...item, expiry: targetDay, strike: newStrike };
+      }));
+    }
+  };
+
   const addLeg = () => {
     if (!strikes.length) return;
     edit(current => [...current, {
@@ -972,7 +1029,7 @@ export default function SpreadBuilderScreen() {
         data={chain.expiries}
         keyExtractor={day => day}
         renderItem={({ item: day }) => (
-          <TouchableOpacity style={[styles.dateChip, day === chain.expiry && styles.dateChipOn]} onPress={() => { setDate(day); setSentId(""); }}>
+          <TouchableOpacity style={[styles.dateChip, day === chain.expiry && styles.dateChipOn]} onPress={() => switchExpiry(day)}>
             <Text style={styles.dateText}>{day}</Text>
           </TouchableOpacity>
         )}

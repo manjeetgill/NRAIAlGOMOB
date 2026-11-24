@@ -33,12 +33,14 @@ export default function StockScreen() {
   const ticket = useOrderTicket();
 
   const symbol = String(params.symbol ?? "").trim().toUpperCase();
-  /** Back names the tab the press came from: popping into the tab group restored More no matter which tab
-   *  the trader was reading. A link can also open this screen as the first route in the stack, where there
-   *  is nothing to pop, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
+  /** Back names the screen the press came from. Popping into the tab group restored the More tab for every
+   *  press, so a tab is navigated instead, while the search screen is popped to keep the results the trader
+   *  was reading. A link can open this screen as the first route in the stack, where there is nothing to
+   *  pop at all, so the arrow replaces it instead of throwing an unhandled GO_BACK. */
   const canGoBack = useCanGoBack();
   const backTo = tabRoute(params.tab);
-  const goBack = () => (canGoBack ? router.navigate(backTo) : router.replace(backTo));
+  const goBack = () => (!canGoBack ? router.replace(backTo)
+    : backTo === "/search" ? router.back() : router.navigate(backTo));
   const [exchange, setExchange] = useState(() => String(params.exchange ?? "NSE").trim().toUpperCase() || "NSE");
   // The list an add lands in is the one the press came from; a screen opened without one uses the first.
   const listNumber = Math.max(1, Number(params.list ?? 1) || 1);
