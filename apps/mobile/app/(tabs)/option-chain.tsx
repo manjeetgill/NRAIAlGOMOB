@@ -159,23 +159,20 @@ export default function OptionChainScreen() {
   }, [setOptionChainFilters]);
 
   // An empty expiry is a question, not a missing value: the server returns its nearest listed expiry.
-  const { data: chain, error, refetch } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying });
+  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying });
 
   // Every listed date of this underlying, each cached exactly as a single-expiry read would be. The hook
   // is called unconditionally and asked for nothing outside the all-expiries view.
   const sections = useOptionChains(underlying, chain?.expiries ?? [], allExpiries);
 
-  // A desk opens on the contract that closes out the month, not on the weekly that happens to be
-  // nearest, and only the ladder in a chain response can say which date that is. So a launch that
-  // remembers no contract trades its first read for the month-end one — once per underlying, because
-  // clearing the expiry afterwards is the trader's own choice and must not be overwritten.
+  // A desk displays the nearest expiry or user-chosen expiry. The nearest monthly expiry is tagged in the picker.
   const monthly = chain ? nearestMonthlyExpiry(chain.expiries, todayIST()) : "";
   const derivedFor = useRef("");
   useEffect(() => {
     if (!chain || expiry || derivedFor.current === chain.underlying) return;
     derivedFor.current = chain.underlying;
-    const target = nearestMonthlyExpiry(chain.expiries, todayIST());
-    if (target && target !== chain.expiry) setOptionChainExpiry(target);
+    // Align expiry with server-returned nearest expiry to avoid redundant second network round-trip
+    if (chain.expiry) setOptionChainExpiry(chain.expiry);
   }, [chain, expiry, setOptionChainExpiry]);
 
   // What makes the next launch a single read. It is written from the chain that arrived, not from the
@@ -492,13 +489,17 @@ export default function OptionChainScreen() {
     );
   }
 
-  if (!chain) {
+  if (!chain && isLoading) {
     return (
       <View style={[styles.container, styles.loading]}>
         <ActivityIndicator size="large" color={colors.brand} />
         <Text style={styles.loadingText}>Reading the {underlying} option chain</Text>
       </View>
     );
+  }
+
+  if (!chain) {
+    return null;
   }
 
   const spot = amount(chain.spot?.price);
@@ -544,7 +545,11 @@ export default function OptionChainScreen() {
               <Text style={styles.selectorLabel}>Expiry</Text>
               <Text style={styles.selectorValue}>{allExpiries ? "All dates" : chain.expiry}</Text>
             </View>
-            <Ionicons name={expiryOpen ? "chevron-up" : "calendar-outline"} size={18} color={colors.muted} />
+            {isFetching ? (
+              <ActivityIndicator size="small" color={colors.brand} />
+            ) : (
+              <Ionicons name={expiryOpen ? "chevron-up" : "calendar-outline"} size={18} color={colors.muted} />
+            )}
           </TouchableOpacity>
         </View>
 

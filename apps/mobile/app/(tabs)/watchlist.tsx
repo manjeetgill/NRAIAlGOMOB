@@ -10,7 +10,7 @@
  * marks a row, and a marked row says so in its own colour.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -62,6 +62,15 @@ export default function WatchlistScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   // Which row the open sheet may also take out of this list. Kept beside the ticket rather than
   // inside it, because the ticket is shared and knows nothing about lists.
   const [removable, setRemovable] = useState<{ exchange: string; symbol: string } | null>(null);
@@ -77,18 +86,18 @@ export default function WatchlistScreen() {
     queryKey: queryKeys.watchlist.builtin(builtin, page),
     enabled: tab.kind === "predefined",
   });
-  const { data: found } = useEquitySearch(search);
+  const { data: found } = useEquitySearch(debouncedSearch);
   const add = useAddToWatchlist();
   const drop = useRemoveFromWatchlist();
   const create = useCreateWatchlist();
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155", brand: "#38bdf8" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7" }, [resolvedTheme]);
   const up = resolvedTheme === "dark" ? "#22c55e" : "#16a34a";
   const down = "#ef4444";
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     tabs: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bg },
     tab: { paddingHorizontal: 14, paddingVertical: 12 },
@@ -129,7 +138,7 @@ export default function WatchlistScreen() {
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 10 },
     empty: { fontSize: 14, color: colors.muted, textAlign: "center", lineHeight: 21 },
     error: { paddingHorizontal: 14, paddingTop: 12, fontSize: 13, color: down },
-  });
+  }), [colors, down]);
 
   const maxLists = saved?.maxLists ?? 5;
   // Prod's `lists` only carries the slots that already hold rows or a saved name, so an empty
@@ -337,7 +346,7 @@ export default function WatchlistScreen() {
         <Text style={styles.error}>{String((savedError ?? builtinError)?.message ?? "The watchlist could not be read.")}</Text>
       ) : null}
 
-      {search.length >= 2 && found?.results.length ? (
+      {debouncedSearch.length >= 2 && found?.results.length ? (
         <View>
           {found.results.map(hit => (
             <TouchableOpacity key={`${hit.exchange}:${hit.symbol}`} style={styles.option} onPress={() => addTo(hit)} disabled={add.isPending}>
@@ -366,6 +375,9 @@ export default function WatchlistScreen() {
           data={liveRows}
           keyExtractor={item => `${item.exchange}:${item.symbol}`}
           renderItem={renderRow}
+          initialNumToRender={15}
+          maxToRenderPerBatch={15}
+          windowSize={7}
           ListFooterComponent={
             <>
               {tab.kind === "predefined" && pages > 1 ? (

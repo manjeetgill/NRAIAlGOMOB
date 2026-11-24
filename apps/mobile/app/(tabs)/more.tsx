@@ -2,7 +2,7 @@
  * More Screen - Settings, Account, Advanced Features
  */
 
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, ScrollView, StyleSheet, Switch, TouchableOpacity, Alert, ActivityIndicator } from "react-native";
 import { useAuthStore, useUIStore } from "@nraialgo/shared/stores";
 import { useTheme, globalStyles } from "@/components/ThemeProvider";
@@ -18,11 +18,11 @@ export default function MoreScreen() {
   const { data: me, isLoading: meLoading } = useMe();
   const logoutMutation = useLogout();
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", danger: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", danger: "#ef4444" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", danger: "#ef4444" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     header: { padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
     title: { fontSize: 24, fontWeight: "700", color: colors.text },
@@ -42,7 +42,7 @@ export default function MoreScreen() {
     dangerButtonText: { textAlign: "center", fontSize: 16, fontWeight: "600", color: colors.danger },
     version: { textAlign: "center", padding: 24, fontSize: 12, color: colors.muted },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
-  });
+  }), [colors]);
 
   const handleLogout = async () => {
     Alert.alert("Logout", "Are you sure you want to logout?", [

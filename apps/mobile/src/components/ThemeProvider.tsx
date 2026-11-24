@@ -21,8 +21,6 @@ const ThemeContext = createContext<ThemeContextType | null>(null);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const { theme, setTheme: setThemeStore } = useUIStore();
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
-  const [mounted, setMounted] = useState(false);
 
   // Resolve system theme
   const resolveTheme = useCallback((theme: Theme): "light" | "dark" => {
@@ -32,9 +30,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     return theme;
   }, []);
 
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => {
+    const currentTheme = useUIStore.getState().theme;
+    return currentTheme === "system" ? (Appearance.getColorScheme() ?? "light") : currentTheme;
+  });
+
   // Update resolved theme when system/theme changes
   useEffect(() => {
-    setMounted(true);
     setResolvedTheme(resolveTheme(theme));
 
     const subscription = Appearance.addChangeListener(({ colorScheme }) => {
@@ -56,13 +58,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const nextIndex = (currentIndex + 1) % themes.length;
     setTheme(themes[nextIndex]);
   }, [theme, setTheme]);
-
-  // Prevent flash of wrong theme on mount
-  if (!mounted) {
-    return (
-      <View style={StyleSheet.absoluteFill} />
-    );
-  }
 
   return (
     <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme, toggleTheme }}>

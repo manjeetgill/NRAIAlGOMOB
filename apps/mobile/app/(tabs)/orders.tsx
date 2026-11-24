@@ -82,11 +82,11 @@ export default function OrdersScreen() {
 
   const allOrders = useMemo(() => iciciAccount ? iciciOrders(iciciAccount) : [], [iciciAccount]);
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", buy: "#16a34a", sell: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", buy: "#16a34a", sell: "#dc2626" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     tabBar: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.card },
     tab: { flex: 1, paddingVertical: 12, alignItems: "center" },
@@ -120,7 +120,7 @@ export default function OrdersScreen() {
     emptyText: { fontSize: 14, color: colors.muted, textAlign: "center" },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     sectionHeader: { fontSize: 11, fontWeight: "600", color: colors.muted, textTransform: "uppercase", paddingVertical: 8, paddingHorizontal: 4, backgroundColor: colors.bg },
-  });
+  }), [colors]);
 
   const openOrders = useMemo(() => {
     return allOrders.filter(o => normalizeStatus(o.status) === "OPEN");
@@ -243,6 +243,9 @@ export default function OrdersScreen() {
           keyExtractor={(item) => item.orderId}
           renderItem={({ item }) => renderOrderCard(item)}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
@@ -258,6 +261,9 @@ export default function OrdersScreen() {
           keyExtractor={(item) => item.orderId}
           renderItem={({ item }) => renderOrderCard(item)}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
@@ -273,6 +279,9 @@ export default function OrdersScreen() {
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => renderGttCard(item)}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchGtts()} colors={[colors.accent]} />}
         />
       );

@@ -131,8 +131,11 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
             }
           });
 
+          window.addEventListener('DOMContentLoaded', () => {
+            initChart();
+          });
           window.addEventListener('load', () => {
-            setTimeout(() => initChart(), 300);
+            if (!chart) initChart();
           });
         </script>
       </body>

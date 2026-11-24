@@ -222,7 +222,7 @@ export type LegMark = { contract: string; priceAt: string | null; quality: strin
 
 /** What the model call needs, and - when it cannot be made - the exact reason the screen shows instead. */
 export type AnalysisBuild =
-  | { body: StrategyAnalysisRequest; margin: MarginRequest; marks: LegMark[]; unpriced: [] }
+  | { body: StrategyAnalysisRequest; margin: MarginRequest | null; marks: LegMark[]; unpriced: [] }
   | { body: null; margin: null; marks: []; unpriced: string[] };
 
 /**

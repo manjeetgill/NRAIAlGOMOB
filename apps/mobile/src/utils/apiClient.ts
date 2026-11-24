@@ -77,15 +77,22 @@ getApiClient();
 
 // Prove the session the way the server defines one: myalgodesk.in keeps identity in a
 // session cookie, so a successful /v1/auth/me is the only evidence of being signed in.
-export async function initializeApiClient(): Promise<boolean> {
-  const client = getApiClient();
+let initInFlight: Promise<boolean> | null = null;
 
-  try {
-    const user = await client.get<User>("/v1/auth/me");
-    useAuthStore.getState().setUser(user);
-    return true;
-  } catch {
-    useAuthStore.getState().logout();
-    return false;
-  }
+export async function initializeApiClient(): Promise<boolean> {
+  if (initInFlight) return initInFlight;
+  initInFlight = (async () => {
+    const client = getApiClient();
+    try {
+      const user = await client.get<User>("/v1/auth/me");
+      useAuthStore.getState().setUser(user);
+      return true;
+    } catch {
+      useAuthStore.getState().logout();
+      return false;
+    } finally {
+      initInFlight = null;
+    }
+  })();
+  return initInFlight;
 }

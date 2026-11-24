@@ -136,12 +136,12 @@ export default function PortfolioScreen() {
   const positionRows = useMemo(() => sortRows(positions, POSITION_COLUMNS, positionSort), [positions, positionSort]);
   const holdingRows = useMemo(() => sortRows(holdings, HOLDING_COLUMNS, holdingSort), [holdings, holdingSort]);
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", live: "#22c55e", accent: "#38bdf8", brand: { "600": "#38bdf8" } }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", live: "#16a34a", accent: "#0284c7", brand: { "600": "#0284c7" } };
-  const theme = { card: colors.card, text: colors.text, muted: colors.muted, border: colors.border, accent: colors.accent };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", live: "#16a34a", accent: "#0284c7", brand: { "600": "#0284c7" } }, [resolvedTheme]);
+  const theme = useMemo(() => ({ card: colors.card, text: colors.text, muted: colors.muted, border: colors.border, accent: colors.accent }), [colors]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     subtitle: { fontSize: 13, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
     tabContainer: { flexDirection: "row", backgroundColor: colors.card, marginHorizontal: 16, marginTop: 16, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
@@ -164,7 +164,7 @@ export default function PortfolioScreen() {
     retry: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent },
     retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
     fab: { position: "absolute", bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brand?.["600"] || "#0284c7", alignItems: "center", justifyContent: "center", elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
-  });
+  }), [colors]);
 
   const pnlStyle = (value: number | null) =>
     value === null ? styles.dimValue : value >= 0 ? styles.pnlPositive : styles.pnlNegative;

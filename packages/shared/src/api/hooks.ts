@@ -321,7 +321,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   /** Un-groups a basket from the desk. The broker's book is untouched; the row simply stops being listed. */
   const useDeleteBasket = (options?: UseMutationOptions<void, ApiError, string>) => {
     return useMutation({
-      mutationFn: (basketId: string) => client.delete(`/v1/baskets/${basketId}`),
+      mutationFn: (basketId: string) => client.delete<void>(`/v1/baskets/${basketId}`),
       onSuccess: invalidateBaskets,
       ...options,
     });
@@ -474,15 +474,22 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     const asked = ISO_DATE.test(expiry) && expiry >= todayIST() ? expiry : "";
     return useQuery({
       queryKey: queryKeys.optionChain.chain(underlying, asked),
-      queryFn: () => client.get<OptionChainData>("/v1/option-chain", {
-        // `rate` and `dividend` are required by the route, so a request without them is rejected
-        // before the chain is ever read. These are the same values the web desk sends on first paint.
-        params: { underlying, window: FULL_WINDOW, rate: 0, dividend: 0, ...(asked ? { expiry: asked } : {}) },
-      }),
+      queryFn: async () => {
+        const data = await client.get<OptionChainData>("/v1/option-chain", {
+          // `rate` and `dividend` are required by the route, so a request without them is rejected
+          // before the chain is ever read. Window is 30 for fast mobile rendering (~100 quotes vs 800).
+          params: { underlying, window: 30, rate: 0, dividend: 0, ...(asked ? { expiry: asked } : {}) },
+        });
+        if (data?.expiry && !asked) {
+          queryClient.setQueryData(queryKeys.optionChain.chain(underlying, data.expiry), data);
+        }
+        return data;
+      },
       enabled: !!underlying,
-      staleTime: 2 * 1000,
+      placeholderData: keepPreviousData,
+      staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
-      refetchInterval: ({ state }) => (state.data ? 3 * 1000 : false),
+      refetchInterval: ({ state }) => (state.data ? 5 * 1000 : false),
       ...options,
     });
   };

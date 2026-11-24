@@ -8,7 +8,7 @@
  * a row with no price sorts last rather than disappearing.
  */
 
-import React, { type ReactElement } from "react";
+import React, { useCallback, useMemo, type ReactElement } from "react";
 import { Dimensions, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
 import type { SortColumn, SortState } from "@nraialgo/shared/api";
@@ -56,7 +56,7 @@ function scaleWidths(columns: readonly { width: number }[], padding: number): nu
 export function SortableTable<Row>({
   rows, columns, sort, onSort, cell, keyOf, onRowPress, theme, refreshControl, footer,
 }: Props<Row>) {
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     head: { flexDirection: "row", paddingHorizontal: PADDING, paddingVertical: 8, backgroundColor: theme.card, borderBottomWidth: 1, borderBottomColor: theme.border },
     headCell: { paddingRight: 6 },
     headText: { fontSize: 10, fontWeight: "600", color: theme.muted, lineHeight: 13 },
@@ -67,11 +67,11 @@ export function SortableTable<Row>({
     value: { fontSize: 11, fontWeight: "500", color: theme.text },
     sub: { fontSize: 10, color: theme.muted },
     symbol: { fontSize: 12, fontWeight: "600", color: theme.text },
-  });
+  }), [theme.card, theme.border, theme.muted, theme.accent, theme.text]);
 
   const widths = scaleWidths(columns, PADDING);
 
-  const header = (
+  const header = useMemo(() => (
     <View style={styles.head}>
       {columns.map((column, index) => (
         <TouchableOpacity
@@ -88,9 +88,9 @@ export function SortableTable<Row>({
         </TouchableOpacity>
       ))}
     </View>
-  );
+  ), [columns, widths, onSort, sort?.key, sort?.descending, styles]);
 
-  const renderRow = ({ item, index }: { item: Row; index: number }) => {
+  const renderRow = useCallback(({ item }: { item: Row }) => {
     const body = (
       <View style={styles.row}>
         {columns.map((column, columnIndex) => {
@@ -121,7 +121,7 @@ export function SortableTable<Row>({
         {body}
       </TouchableOpacity>
     ) : body;
-  };
+  }, [columns, widths, cell, onRowPress, styles]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -133,6 +133,9 @@ export function SortableTable<Row>({
         contentContainerStyle={styles.list}
         refreshControl={refreshControl}
         ListFooterComponent={footer}
+        initialNumToRender={15}
+        maxToRenderPerBatch={15}
+        windowSize={7}
       />
     </View>
   );

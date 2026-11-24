@@ -277,8 +277,8 @@ export function watchQuotes(ids: readonly string[], handler: (feed: FeedSnapshot
  * effect re-runs and replaces the connection's subscription, so a screen never has to remember to re-send.
  */
 function useRegistration(symbols: readonly string[], enabled: boolean) {
-  const ids = [...new Set(symbols)].sort();
-  const key = ids.join(",");
+  const ids = useMemo(() => [...new Set(symbols)].sort(), [symbols]);
+  const key = useMemo(() => ids.join(","), [ids]);
   const [feed, setFeed] = useState<FeedSnapshot & { reason: FeedReason }>({ ...EMPTY_FEED, reason: null });
 
   useEffect(() => {

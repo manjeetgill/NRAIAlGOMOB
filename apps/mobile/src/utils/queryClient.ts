@@ -4,10 +4,28 @@
  * Configures the query client with mobile-appropriate defaults
  */
 
-import { QueryClient } from "@tanstack/react-query";
+import { AppState, AppStateStatus, Platform } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
+import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
 import { configureApi } from "@nraialgo/shared/api";
 import { getApiClient, initializeApiClient } from "./apiClient";
 import { QUERY_CONFIG } from "@nraialgo/shared/constants";
+
+// Online status manager for React Native
+onlineManager.setEventListener((setOnline) => {
+  return NetInfo.addEventListener((state) => {
+    setOnline(!!state.isConnected);
+  });
+});
+
+// AppState lifecycle manager for React Native: pause queries/polling in background
+function onAppStateChange(status: AppStateStatus) {
+  if (Platform.OS !== "web") {
+    focusManager.setFocused(status === "active");
+  }
+}
+
+AppState.addEventListener("change", onAppStateChange);
 
 // Create query client with mobile defaults
 export const queryClient = new QueryClient({
@@ -32,9 +50,9 @@ export const queryClient = new QueryClient({
 // a cache no screen reads — and the signed-out account's rows sitting in the one everybody sees.
 configureApi(getApiClient(), queryClient);
 
-// Initialize everything
+// Initialize everything needed for query client (configuration is already static at import)
 export async function initializeQueryClient(): Promise<void> {
-  await initializeApiClient();
+  // Configured statically via configureApi(getApiClient(), queryClient)
 }
 
 // Export for use in components

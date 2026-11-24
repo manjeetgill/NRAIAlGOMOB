@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "start": "npm run start --workspace @nraialgo/mobile",
-    "typecheck": "npm run typecheck --workspace @nraialgo/mobile",
+    "typecheck": "npm run typecheck --workspace @nraialgo/shared && npm run typecheck --workspace @nraialgo/mobile",
     "test": "vitest run"
   },
   "devDependencies": {
