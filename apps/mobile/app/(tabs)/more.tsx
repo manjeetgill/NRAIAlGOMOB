@@ -214,6 +214,13 @@ export default function MoreScreen() {
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
           </TouchableOpacity>
+          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => router.push("/(tabs)/scanner")}>
+            <View style={styles.labelRow}>
+              <Ionicons name="search-outline" size={24} color={colors.muted} style={styles.icon} />
+              <Text style={styles.label}>Scanner</Text>
+            </View>
+            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.row} onPress={() => router.push("/trade-history")}>
             <View style={styles.labelRow}>
               <Ionicons name="document-text-outline" size={24} color={colors.muted} style={styles.icon} />
