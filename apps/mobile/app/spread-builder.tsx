@@ -239,6 +239,8 @@ export default function SpreadBuilderScreen() {
 
   const [legs, setLegs] = useState<Leg[]>([]);
   const [basket, setBasket] = useState("");
+  // The sheet that asks for the name. Execute opens it; only its Send talks to prod.
+  const [sendSheet, setSendSheet] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sentId, setSentId] = useState("");
@@ -326,6 +328,8 @@ export default function SpreadBuilderScreen() {
     setSearch("");
     if (name === underlying) return;
     edit(() => []);
+    // The name goes with the legs: a basket typed for NIFTY must not file a RELIANCE basket under it.
+    setBasket("");
     setOptionChainUnderlying(name);
   };
 
@@ -706,20 +710,54 @@ export default function SpreadBuilderScreen() {
     onPanResponderTerminate: () => setTouchPx(null),
   }), [chart]);
 
-  const send = async () => {
-    if (!chain || !wanted) { setNote("The chain has not answered yet. Nothing was sent."); return; }
-    if (!legs.length) { setNote("Add a leg first."); return; }
+  /** Why this basket cannot go out yet, in the words the screen shows, or null when it can. */
+  const refusal = (): string | null => {
+    if (!chain || !wanted) return "The chain has not answered yet. Nothing was sent.";
+    if (!legs.length) return "Add a leg first.";
     if (!plan.length) {
-      setNote(`${closes} leg${closes === 1 ? "" : "s"} marked to close and ${adds} added - nothing to send. The broker still holds every leg of this basket.`);
-      return;
+      return `${closes} leg${closes === 1 ? "" : "s"} marked to close and ${adds} added - nothing to send. The broker still holds every leg of this basket.`;
     }
-    if (plan.length > 8) { setNote("Prod takes eight legs in one instruction. Remove some."); return; }
-    if (!account) { setNote("No connected broker account for this sign-in. Nothing was sent."); return; }
+    if (plan.length > 8) return "Prod takes eight legs in one instruction. Remove some.";
+    if (!account) return "No connected broker account for this sign-in. Nothing was sent.";
     const unpriced = plan.find(line => line.price === null);
-    if (unpriced) {
-      setNote(`${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker. Nothing was sent.`);
-      return;
-    }
+    if (unpriced) return `${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker. Nothing was sent.`;
+    return null;
+  };
+
+  /**
+   * The name the sheet opens with. An adjusted basket keeps its own so the press writes back onto the card
+   * the trader is looking at, while a new one is named by the shape it is staged in - prod files every later
+   * order carrying the same name onto that same basket, so the name is part of the instruction, not a label.
+   */
+  const suggestedName = (): string => {
+    if (basket.trim()) return basket.trim();
+    const shape = TEMPLATES.find(template => template.legs.length === legs.length
+      && template.legs.every((leg, index) => {
+        const current = legs[index];
+        return !!current && current.side === leg.side && current.right === leg.right && current.lots === leg.lots;
+      }));
+    const dates = [...new Set(legs.map(leg => leg.expiry))].sort();
+    const stem = shape
+      ? shape.name
+      : legs.map(leg => `${leg.side === "SELL" ? "S" : "B"}${leg.strike}${leg.right}`).join(" ");
+    return `${stem} ${underlying} ${dates.join("/")}`.slice(0, 80);
+  };
+
+  /** Execute: ask what to call this basket. Nothing reaches prod from this press. */
+  const ask = () => {
+    const reason = refusal();
+    if (reason) { setNote(reason); return; }
+    setBasket(suggestedName());
+    setNote(null);
+    setSendSheet(true);
+  };
+
+  const send = async () => {
+    const reason = refusal();
+    if (reason) { setSendSheet(false); setNote(reason); return; }
+    // The name is required, not optional: an unnamed press is an intent no desk card can be filed under.
+    const name = basket.trim();
+    if (!name) { setSendSheet(false); setNote("Name the basket before sending. Nothing was sent."); return; }
 
     // Each line names its own date: prod resolves a leg against the ladder of the expiry it is sent with,
     // so a basket that spans two dates closes and adds on the right contracts rather than all on one.
@@ -737,6 +775,7 @@ export default function SpreadBuilderScreen() {
     // tapped while the drafts were being named would otherwise send the old contracts under a reference
     // the edited basket is holding.
     const reference = referenceFor(basketKey);
+    setSendSheet(false);
     setSending(true);
     setNote(null);
     try {
@@ -748,7 +787,7 @@ export default function SpreadBuilderScreen() {
         clientId: reference,
         provider: drafts.provider,
         accountId: drafts.accountId,
-        ...(basket.trim() ? { basketName: basket.trim() } : {}),
+        basketName: name,
         orders,
       });
       if (shownKey.current === basketKey) {
@@ -833,6 +872,8 @@ export default function SpreadBuilderScreen() {
     tooltipValue: { fontSize: 10.5, fontWeight: "600" },
     execute: { height: 52, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.brand },
     executeText: { fontSize: 16, fontWeight: "700", color: "#ffffff" },
+    cancel: { height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+    cancelText: { fontSize: 14, fontWeight: "700", color: colors.muted },
     note: { fontSize: 12, color: colors.warn, lineHeight: 17 },
     outcome: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.card, padding: 10, gap: 6 },
     outcomeLeg: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
@@ -1018,6 +1059,49 @@ export default function SpreadBuilderScreen() {
     </Modal>
   );
 
+  // The press names the basket before prod is asked: the name is what the desk files the sent orders under,
+  // so it travels with the instruction instead of being left blank and arriving as an anonymous intent.
+  const nameSheet = (
+    <Modal visible={sendSheet} animationType="slide" onRequestClose={() => setSendSheet(false)}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+        <View style={styles.sheet}>
+          <View style={styles.sheetHead}>
+            <Text style={styles.title}>Name this basket</Text>
+            <TouchableOpacity
+              onPress={() => setSendSheet(false)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel without sending"
+            >
+              <Ionicons name="close" size={22} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={styles.field}
+            value={basket}
+            onChangeText={setBasket}
+            placeholder={`${underlying} ${wanted}`}
+            placeholderTextColor={colors.muted}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={80}
+            accessibilityLabel="Basket name"
+          />
+          <Text style={styles.small}>
+            {`${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}  ·  ${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
+          </Text>
+          <Text style={styles.small}>Orders under this name join one card on the Basket desk.</Text>
+          <TouchableOpacity style={styles.execute} onPress={send} disabled={sending} accessibilityRole="button" accessibilityLabel="Send this basket to the broker">
+            <Text style={styles.executeText}>{sending ? "Sending" : "Send"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.cancel} onPress={() => setSendSheet(false)} accessibilityRole="button" accessibilityLabel="Cancel and stay on the builder">
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.body}>
       {tabs}
@@ -1184,17 +1268,16 @@ export default function SpreadBuilderScreen() {
         </TouchableOpacity>
       ) : null}
 
-      {legs.length > 1 ? (
-        <TextInput
-          style={styles.field}
-          value={basket}
-          onChangeText={setBasket}
-          placeholder={`Basket name - ${underlying} ${wanted}`}
-          placeholderTextColor={colors.muted}
-          autoCapitalize="characters"
-          maxLength={80}
-        />
-      ) : null}
+      <TextInput
+        style={styles.field}
+        value={basket}
+        onChangeText={setBasket}
+        placeholder={`Basket name - ${underlying} ${wanted}`}
+        placeholderTextColor={colors.muted}
+        autoCapitalize="characters"
+        maxLength={80}
+        accessibilityLabel="Basket name"
+      />
 
       {plan.length ? (
         <View style={styles.net}>
@@ -1291,7 +1374,7 @@ export default function SpreadBuilderScreen() {
         </View>
       ) : null}
 
-      <TouchableOpacity style={[styles.execute, (sending || !plan.length) && { opacity: 0.5 }]} onPress={send} disabled={sending}>
+      <TouchableOpacity style={[styles.execute, (sending || !plan.length) && { opacity: 0.5 }]} onPress={ask} disabled={sending}>
         <Text style={styles.executeText}>
           {sending
             ? "Sending"
@@ -1324,6 +1407,7 @@ export default function SpreadBuilderScreen() {
 
       {picker}
       {expirySheet}
+      {nameSheet}
     </ScrollView>
   );
 }

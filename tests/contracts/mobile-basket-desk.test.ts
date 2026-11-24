@@ -683,3 +683,22 @@ it("re-targets unexecuted legs and refreshes payoff when trader taps another exp
   expect(screen).toContain("const templateMatch = TEMPLATES.find(");
   expect(screen).toContain("expiry: targetDay,");
 });
+
+it("asks for a basket name at Execute and sends every order under it", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // Execute opens the naming sheet; only the sheet's Send talks to prod.
+  expect(screen).toContain("onPress={ask}");
+  expect(screen).toContain("setSendSheet(true);");
+  // A basket that cannot go out never gets a sheet: the same refusals run before it opens.
+  expect(screen).toContain("const reason = refusal();\n    if (reason) { setNote(reason); return; }");
+  // The name is always sent, so the intent is never an anonymous one the desk cannot file.
+  expect(screen).toContain("basketName: name,");
+  expect(screen).not.toContain("...(basket.trim() ? { basketName: basket.trim() } : {})");
+  // Clearing the name stops the press instead of silently filing the basket under nothing.
+  expect(screen).toContain('if (!name) { setSendSheet(false); setNote("Name the basket before sending. Nothing was sent."); return; }');
+  // Every basket is nameable, not only a multi-leg one.
+  expect(screen).not.toContain("{legs.length > 1 ? (");
+  // An adjusted basket is filed back onto its own card, and a symbol switch drops the old name.
+  expect(screen).toContain("if (basket.trim()) return basket.trim();");
+  expect(screen).toContain('setBasket("");');
+});
