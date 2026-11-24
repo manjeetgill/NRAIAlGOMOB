@@ -122,15 +122,19 @@ export default function OrdersScreen() {
     sectionHeader: { fontSize: 11, fontWeight: "600", color: colors.muted, textTransform: "uppercase", paddingVertical: 8, paddingHorizontal: 4, backgroundColor: colors.bg },
   }), [colors]);
 
-  const openOrders = useMemo(() => {
-    return allOrders.filter(o => normalizeStatus(o.status) === "OPEN");
-  }, [allOrders]);
-
-  const closedOrders = useMemo(() => {
-    return allOrders.filter(o => {
-      const s = normalizeStatus(o.status);
-      return s === "COMPLETE" || s === "CANCELLED" || s === "REJECTED";
-    });
+  const { openOrders, closedOrders } = useMemo(() => {
+    const open: BrokerOrder[] = [];
+    const closed: BrokerOrder[] = [];
+    for (let i = 0; i < allOrders.length; i++) {
+      const order = allOrders[i];
+      const s = normalizeStatus(order.status);
+      if (s === "OPEN") {
+        open.push(order);
+      } else if (s === "COMPLETE" || s === "CANCELLED" || s === "REJECTED") {
+        closed.push(order);
+      }
+    }
+    return { openOrders: open, closedOrders: closed };
   }, [allOrders]);
 
   const isLoading = tab === "gtt" ? gttLoading : ordersLoading;

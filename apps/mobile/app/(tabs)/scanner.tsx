@@ -14,13 +14,13 @@ import type { ScannerSignal, ScannerSignalType } from "@nraialgo/shared/api";
 
 type SignalFilter = "all" | "breakout" | "breakdown" | "support" | "resistance" | "hm";
 
-const FILTERS: { id: SignalFilter; label: string; kinds: ScannerSignalType[] }[] = [
-  { id: "all", label: "All", kinds: ["breakout", "breakdown", "support_touch", "resistance_touch", "breakout_retest", "breakdown_retest", "hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"] },
-  { id: "breakout", label: "Breakout", kinds: ["breakout"] },
-  { id: "breakdown", label: "Breakdown", kinds: ["breakdown"] },
-  { id: "support", label: "Support", kinds: ["support_touch", "breakout_retest"] },
-  { id: "resistance", label: "Resistance", kinds: ["resistance_touch", "breakdown_retest"] },
-  { id: "hm", label: "HM RSI+ST", kinds: ["hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"] },
+const FILTERS: { id: SignalFilter; label: string; kinds: Set<ScannerSignalType> }[] = [
+  { id: "all", label: "All", kinds: new Set(["breakout", "breakdown", "support_touch", "resistance_touch", "breakout_retest", "breakdown_retest", "hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"]) },
+  { id: "breakout", label: "Breakout", kinds: new Set(["breakout"]) },
+  { id: "breakdown", label: "Breakdown", kinds: new Set(["breakdown"]) },
+  { id: "support", label: "Support", kinds: new Set(["support_touch", "breakout_retest"]) },
+  { id: "resistance", label: "Resistance", kinds: new Set(["resistance_touch", "breakdown_retest"]) },
+  { id: "hm", label: "HM RSI+ST", kinds: new Set(["hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"]) },
 ];
 
 const SIGNAL_LABELS: Record<ScannerSignalType, string> = {
@@ -41,11 +41,11 @@ export default function ScannerScreen() {
 
   const { data, isLoading, isError, refetch } = useTechnicalEvents();
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", buy: "#16a34a", sell: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", buy: "#16a34a", sell: "#dc2626" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     filterBar: { flexDirection: "row", paddingVertical: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.card },
     filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, marginRight: 8, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
@@ -77,13 +77,13 @@ export default function ScannerScreen() {
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     status: { padding: 12, backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.border },
     statusText: { fontSize: 11, color: colors.muted, textAlign: "center" },
-  });
+  }), [colors]);
 
   const filteredSignals = useMemo(() => {
     if (!data?.items) return [];
     const selectedFilter = FILTERS.find(f => f.id === filter);
-    if (!selectedFilter) return data.items;
-    return data.items.filter(item => selectedFilter.kinds.includes(item.signal_type));
+    if (!selectedFilter || filter === "all") return data.items;
+    return data.items.filter(item => selectedFilter.kinds.has(item.signal_type));
   }, [data, filter]);
 
   const getBadgeStyle = (signalType: ScannerSignalType) => {
@@ -196,6 +196,9 @@ export default function ScannerScreen() {
           keyExtractor={(item) => `${item.instrument}-${item.session}`}
           renderItem={({ item }) => renderSignalCard(item)}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetch()} colors={[colors.accent]} />}
         />
       )}

@@ -91,11 +91,11 @@ export default function TradeHistoryScreen() {
   );
   const realized = rows.reduce((total, row) => total + row.realized, 0);
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", up: "#22c55e", down: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
     title: { fontSize: 24, fontWeight: "700", color: colors.text },
@@ -123,7 +123,7 @@ export default function TradeHistoryScreen() {
     stateBody: { fontSize: 14, color: colors.muted, textAlign: "center", lineHeight: 20 },
     retry: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.accent },
     retryText: { fontSize: 13, fontWeight: "600", color: colors.accent },
-  });
+  }), [colors]);
 
   const emptyCopy: Record<TabId, { title: string; body: string }> = {
     all: { title: "No baskets on this account", body: "Prod names every position it can attribute to a basket. Nothing here is filled in by hand." },
@@ -183,6 +183,10 @@ export default function TradeHistoryScreen() {
           style={styles.list}
           data={rows}
           keyExtractor={row => row.id}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={7}
+          getItemLayout={(_, index) => ({ length: 69, offset: 69 * index, index })}
           renderItem={({ item }) => (
             <View style={styles.tradeItem}>
               <View style={[styles.badge, { backgroundColor: `${colors.accent}20` }]}>

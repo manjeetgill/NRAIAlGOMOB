@@ -46,6 +46,8 @@ type Tab = { kind: "predefined" } | { kind: "list"; number: number };
 
 const SEGMENT: Record<string, string> = { NSE: "NSE EQ", BSE: "BSE EQ" };
 
+const WATCHLIST_ROW_HEIGHT = 65;
+
 export default function WatchlistScreen() {
   const { useIndices, useWatchlist, useBuiltinWatchlist, useEquitySearch,
     useAddToWatchlist, useRemoveFromWatchlist, useCreateWatchlist } = useApi();
@@ -378,6 +380,11 @@ export default function WatchlistScreen() {
           initialNumToRender={15}
           maxToRenderPerBatch={15}
           windowSize={7}
+          getItemLayout={(_, index) => ({
+            length: WATCHLIST_ROW_HEIGHT,
+            offset: WATCHLIST_ROW_HEIGHT * index,
+            index,
+          })}
           ListFooterComponent={
             <>
               {tab.kind === "predefined" && pages > 1 ? (

@@ -582,20 +582,26 @@ export default function SpreadBuilderScreen() {
   // Only call buildPayoff for single-expiry baskets.
   const distinctExpiries = new Set(legs.map(leg => leg.expiry));
   const isCalendarBasket = distinctExpiries.size > 1;
-  const payoff = !chain || unpricedLeg || sizeless || curveLadder.length < 3 || isCalendarBasket ? null : buildPayoff(
-    priced.map(item => ({
-      strike: Number(item.leg.strike),
-      right: item.leg.right,
-      sign: item.leg.side === "BUY" ? 1 : -1,
-      premium: item.premium as number,
-      qty: item.qty,
-    })),
-    curveLadder,
-    spotNow,
-  );
+
+  // Payoff calculation memoization
+  const payoff = useMemo(() => {
+    if (!chain || unpricedLeg || sizeless || curveLadder.length < 3 || isCalendarBasket) return null;
+    return buildPayoff(
+      priced.map(item => ({
+        strike: Number(item.leg.strike),
+        right: item.leg.right,
+        sign: item.leg.side === "BUY" ? 1 : -1,
+        premium: item.premium as number,
+        qty: item.qty,
+      })),
+      curveLadder,
+      spotNow,
+    );
+  }, [chain, unpricedLeg, sizeless, curveLadder, isCalendarBasket, priced, spotNow]);
 
   // Chart and panResponder must be computed before any early returns to satisfy React's rules of hooks.
-  const chart = payoff ? (() => {
+  const chart = useMemo(() => {
+    if (!payoff) return null;
     const w = Math.round(screenWidth - 42);
     const h = 132;
     const padX = 5;
@@ -627,7 +633,7 @@ export default function SpreadBuilderScreen() {
       fullHi,
       d,
     };
-  })() : null;
+  }, [payoff, screenWidth, zoom]);
 
   const touchSpot = chart && touchPx !== null
     ? chart.lo + ((touchPx - 5) / (chart.w - 10)) * (chart.hi - chart.lo)
@@ -706,11 +712,11 @@ export default function SpreadBuilderScreen() {
     }
   };
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", brand: "#38bdf8", buy: "#22c55e", sell: "#ef4444", warn: "#f59e0b" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7", buy: "#16a34a", sell: "#dc2626", warn: "#b45309" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7", buy: "#16a34a", sell: "#dc2626", warn: "#b45309" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     body: { padding: 12, gap: 12 },
     tabs: { flexDirection: "row", gap: 6 },
@@ -777,7 +783,7 @@ export default function SpreadBuilderScreen() {
     outcomeState: { fontSize: 12, fontWeight: "700", color: colors.muted },
     center: { padding: 32, alignItems: "center", gap: 10 },
     centerText: { fontSize: 13, color: colors.muted, textAlign: "center" },
-  });
+  }), [colors]);
 
   const spot = chain ? amount(chain.spot.price) : null;
 

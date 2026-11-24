@@ -12,6 +12,7 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOp
 import { Ionicons } from "@expo/vector-icons";
 import type { FleetItem } from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
+import { queryKeys } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
 
@@ -54,14 +55,20 @@ export default function AlgoLabScreen() {
   const [maxDrawdown, setMaxDrawdown] = useState("");
   const [maxOpen, setMaxOpen] = useState("");
 
-  const { data: fleet, isLoading: fleetLoading, isError: fleetFailed, error: fleetError, refetch: refetchFleet } = useFleet();
-  const { data: positions, isLoading: positionsLoading } = useOpenPositions();
+  const { data: fleet, isLoading: fleetLoading, isError: fleetFailed, error: fleetError, refetch: refetchFleet } = useFleet({
+    queryKey: queryKeys.algoLab.fleet(),
+    enabled: activeTab === "fleet",
+  });
+  const { data: positions, isLoading: positionsLoading } = useOpenPositions({
+    queryKey: queryKeys.positions.open(),
+    enabled: activeTab === "risk",
+  });
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", inputBg: "#0f172a", up: "#22c55e", down: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", inputBg: "#ffffff", up: "#16a34a", down: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", inputBg: "#ffffff", up: "#16a34a", down: "#dc2626" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
     title: { fontSize: 24, fontWeight: "700", color: colors.text },
@@ -104,7 +111,7 @@ export default function AlgoLabScreen() {
     fleetPnL: { fontSize: 15, fontWeight: "600" },
     retry: { alignSelf: "flex-start", paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.accent },
     retryText: { fontSize: 13, fontWeight: "600", color: colors.accent },
-  });
+  }), [colors]);
 
   const tabs: { id: TabId; label: string; icon: "construct-outline" | "analytics-outline" | "shield-outline" | "layers-outline" }[] = [
     { id: "builder", label: "Builder", icon: "construct-outline" },

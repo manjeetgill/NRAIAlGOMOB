@@ -54,6 +54,7 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
         </div>
         <script>
           let chart = null;
+          let lastDataKey = null;
           
           function showError(msg) {
             document.getElementById('error').style.display = 'block';
@@ -107,6 +108,11 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
           function updateData(data) {
             if (!chart || !data || !data.length) return;
             try {
+              const first = data[0];
+              const last = data[data.length - 1];
+              const dataKey = data.length + "_" + (first ? first.timestamp : "") + "_" + (last ? last.timestamp + "_" + last.close : "");
+              if (dataKey === lastDataKey) return;
+              lastDataKey = dataKey;
               const klineData = data.map(item => ({
                 timestamp: item.timestamp,
                 open: item.open,
