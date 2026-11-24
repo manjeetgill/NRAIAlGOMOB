@@ -23,6 +23,22 @@ const TABS: { id: TabId; label: string }[] = [
 const OPEN_STATUSES = new Set(["OPEN", "PENDING", "TRIGGER PENDING", "ORDER PLACED"]);
 const CLOSED_STATUSES = new Set(["COMPLETE", "FILLED", "CANCELLED", "REJECTED", "CANCEL"]);
 
+/** ICICI timestamps arrive without a timezone but are always IST. Parse them as IST so the
+ *  displayed time is correct regardless of the device's own zone. */
+function parseIstTimestamp(value: string | null): Date | null {
+  if (!value) return null;
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value);
+  const iso = hasZone ? value : `${value.replace(" ", "T")}+05:30`;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
+function formatOrderTime(value: string | null): string {
+  const date = parseIstTimestamp(value);
+  if (!date) return "—";
+  return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" });
+}
+
 export default function OrdersScreen() {
   const { useIciciAccount, useGttOrders } = useApi();
   const { resolvedTheme } = useTheme();
@@ -106,7 +122,8 @@ export default function OrdersScreen() {
         </View>
         {order.message ? <Text style={styles.label}>{order.message}</Text> : null}
         <View style={[styles.row, { marginTop: 4 }]}>
-          <Text style={styles.label}>{order.exchange} · {order.timestamp ? new Date(order.timestamp).toLocaleTimeString() : "—"}</Text>
+          <Text style={styles.label}>{order.exchange}</Text>
+          <Text style={styles.label}>{formatOrderTime(order.timestamp)}</Text>
         </View>
       </View>
     );

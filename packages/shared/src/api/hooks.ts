@@ -1230,48 +1230,37 @@ export interface BrokerOrder {
   message: string | null;
 }
 
-/** All orders from the ICICI account snapshot — the single source of truth for broker orders. */
+/** All orders from the ICICI account snapshot — the single source of truth for broker orders.
+ *  Prod merges orders_NSE + orders_NFO into a single `order` section, so we only read that. */
 export function iciciOrders(payload: IciciAccountPayload): BrokerOrder[] {
   const account = payload.accountId ?? "unknown";
-  // ICICI stores orders in multiple sections: orders_NSE, orders_NFO, and sometimes 'order'
-  const sections = [
-    payload.sections?.orders_NSE,
-    payload.sections?.orders_NFO,
-    payload.sections?.order,
-  ].filter((s): s is IciciSection<IciciOrderRow> => !!s?.rows?.length);
+  const section = payload.sections?.order;
+  if (!section?.rows?.length) return [];
 
   const orders: BrokerOrder[] = [];
-  for (const section of sections) {
-    for (const row of section.rows) {
-      const qty = toNumber(row.quantity) ?? 0;
-      const filled = toNumber(row.filled_quantity) ?? toNumber(row.quantity) ?? 0;
-      const pending = toNumber(row.pending_quantity) ?? 0;
-      const action = String(row.action ?? "").trim().toUpperCase();
-      orders.push({
-        orderId: String(row.order_id ?? ""),
-        provider: "icici",
-        exchange: String(row.exchange_code ?? ""),
-        symbol: row.stock_code ? String(row.stock_code) : null,
-        side: action === "BUY" ? "BUY" : action === "SELL" ? "SELL" : null,
-        product: row.product_type ? String(row.product_type) : null,
-        orderType: row.order_type ? String(row.order_type) : null,
-        quantity: Math.abs(qty),
-        price: iciciPrice(row.price),
-        filledQuantity: Math.abs(filled),
-        pendingQuantity: Math.abs(pending),
-        status: String(row.status ?? "UNKNOWN"),
-        timestamp: row.order_datetime ?? row.order_time ?? row.exchange_time ?? null,
-        message: row.message ?? row.remark ?? null,
-      });
-    }
+  for (const row of section.rows) {
+    const qty = toNumber(row.quantity) ?? 0;
+    const filled = toNumber(row.filled_quantity) ?? toNumber(row.quantity) ?? 0;
+    const pending = toNumber(row.pending_quantity) ?? 0;
+    const action = String(row.action ?? "").trim().toUpperCase();
+    orders.push({
+      orderId: String(row.order_id ?? ""),
+      provider: "icici",
+      exchange: String(row.exchange_code ?? ""),
+      symbol: row.stock_code ? String(row.stock_code) : null,
+      side: action === "BUY" ? "BUY" : action === "SELL" ? "SELL" : null,
+      product: row.product_type ? String(row.product_type) : null,
+      orderType: row.order_type ? String(row.order_type) : null,
+      quantity: Math.abs(qty),
+      price: iciciPrice(row.price),
+      filledQuantity: Math.abs(filled),
+      pendingQuantity: Math.abs(pending),
+      status: String(row.status ?? "UNKNOWN"),
+      timestamp: row.order_datetime ?? row.order_time ?? row.exchange_time ?? null,
+      message: row.message ?? row.remark ?? null,
+    });
   }
-  // Deduplicate by order_id (same order may appear in multiple sections)
-  const seen = new Set<string>();
-  return orders.filter(o => {
-    if (seen.has(o.orderId)) return false;
-    seen.add(o.orderId);
-    return true;
-  });
+  return orders;
 }
 
 export type AccountSectionKind = "cold" | "ready" | "stale" | "degraded" | "unavailable";
