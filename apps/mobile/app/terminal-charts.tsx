@@ -72,11 +72,15 @@ export default function TerminalChartsScreen() {
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
 
+  console.log("TerminalCharts: Rendering with symbol=", symbol, "interval=", interval);
+
   const isDaily = DAILY_INTERVALS.has(interval);
   const { data: chartData, isLoading, isError, error, refetch } = useTerminalChart(symbol, interval, {
     // The stream paints the forming candle, so the record only has to reconcile the completed bars.
     refetchInterval: isDaily ? false : 30_000,
   });
+
+  console.log("TerminalCharts: chartData=", chartData, "isLoading=", isLoading, "isError=", isError);
   // A daily bar opens with the session, and the stored archive only reaches the last closed session: today's
   // minute bars are what give the live daily candle a true open instead of the first price this device saw.
   const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000 });
@@ -236,7 +240,14 @@ export default function TerminalChartsScreen() {
   } else {
     body = (
       <>
-        <CandleStickChart {...chartConfig} data={chartDataPoints} />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.card, margin: 12, borderRadius: 12 }}>
+          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }}>Chart: {chartDataPoints.length} candles</Text>
+          <Text style={{ color: colors.muted, fontSize: 12, marginTop: 8 }}>
+            {chartDataPoints.length > 0 ? `Range: ${formatRupees(priceMin)} - ${formatRupees(priceMax)}` : 'No data'}
+          </Text>
+          {/* TODO: CandleStickChart disabled for testing */}
+          {/* <CandleStickChart {...chartConfig} data={chartDataPoints} /> */}
+        </View>
         <View style={styles.priceScale}>
           {Array.from({ length: 6 }, (_, i) => {
             const price = priceMax - (priceMax - priceMin) * (i / 5);
@@ -246,7 +257,7 @@ export default function TerminalChartsScreen() {
         <View style={styles.timeScale}>
           {[0, 0.25, 0.5, 0.75, 1].map((fraction, i) => {
             const index = Math.min(chartDataPoints.length - 1, Math.round((chartDataPoints.length - 1) * fraction));
-            return <Text key={i} style={styles.timeScaleLabel}>{axisLabel(chartDataPoints[index].timestamp, isDaily)}</Text>;
+            return <Text key={i} style={styles.timeScaleLabel}>{axisLabel(chartDataPoints[index]?.timestamp ?? 0, isDaily)}</Text>;
           })}
         </View>
       </>
