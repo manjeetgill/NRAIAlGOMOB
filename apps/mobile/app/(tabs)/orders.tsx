@@ -79,25 +79,6 @@ export default function OrdersScreen() {
   const isError = tab === "gtt" ? gttError : intentsError;
   const refetch = tab === "gtt" ? refetchGtts : refetchIntents;
 
-  if (isLoading) {
-    return (
-      <View style={[styles.container, styles.loading]}>
-        <ActivityIndicator size="large" color={colors.accent} />
-      </View>
-    );
-  }
-
-  if (isError) {
-    return (
-      <View style={[styles.container, styles.empty]}>
-        <Text style={styles.emptyText}>Failed to load orders</Text>
-        <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => void refetch()}>
-          <Text style={{ color: colors.accent, fontWeight: "600" }}>Tap to retry</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
   const renderOrderCard = (intent: OrderIntent) => {
     const legs = intent.orders || [];
     const firstLeg = legs[0];
@@ -110,13 +91,17 @@ export default function OrdersScreen() {
           </Text>
         </View>
         {legs.map((leg: OrderLine, i: number) => (
-          <View key={i} style={styles.row}>
-            <Text style={[styles.value, leg.side === "BUY" ? styles.buyValue : styles.sellValue]}>
-              {leg.side} {formatNumber(leg.filledQuantity)}/{formatNumber(leg.quantity)}
-            </Text>
-            <Text style={styles.value}>
-              {leg.averagePrice ? formatRupees(Number(leg.averagePrice)) : leg.state.toUpperCase()}
-            </Text>
+          <View key={i}>
+            {legs.length > 1 ? <Text style={styles.label}>{leg.tradingsymbol}</Text> : null}
+            <View style={styles.row}>
+              <Text style={[styles.value, leg.side === "BUY" ? styles.buyValue : styles.sellValue]}>
+                {leg.side} {formatNumber(leg.filledQuantity)}/{formatNumber(leg.quantity)}
+              </Text>
+              <Text style={styles.value}>
+                {leg.averagePrice ? formatRupees(Number(leg.averagePrice)) : leg.state.toUpperCase()}
+              </Text>
+            </View>
+            {leg.message ? <Text style={styles.label}>{leg.message}</Text> : null}
           </View>
         ))}
         {intent.message && (
@@ -174,7 +159,31 @@ export default function OrdersScreen() {
     );
   };
 
+  // A failed read belongs to one tab, so it covers only that tab's body: the bar stays mounted and the
+  // other two lists remain reachable instead of the whole screen answering with one error.
+  const statusPane = () => {
+    if (isLoading) {
+      return (
+        <View style={[styles.empty, { flex: 1 }]}>
+          <ActivityIndicator size="large" color={colors.accent} />
+        </View>
+      );
+    }
+    if (!isError) return null;
+    return (
+      <View style={[styles.empty, { flex: 1 }]}>
+        <Text style={styles.emptyText}>Failed to load {tab === "gtt" ? "GTT orders" : "orders"}</Text>
+        <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => void refetch()}>
+          <Text style={{ color: colors.accent, fontWeight: "600" }}>Tap to retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   const renderContent = () => {
+    const pane = statusPane();
+    if (pane) return pane;
+
     if (tab === "pending") {
       if (pendingOrders.length === 0) {
         return <View style={styles.empty}><Text style={styles.emptyText}>No pending orders</Text></View>;

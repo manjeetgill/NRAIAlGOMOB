@@ -61,8 +61,20 @@ describe("Orders screen shows three tabs", () => {
 
   it("shows the server's reason instead of a blank when a leg or GTT is unexplained", () => {
     expect(screen).toContain("leg.state.toUpperCase()");
+    expect(screen).toContain("leg.message");
     expect(screen).toContain("intent.message");
     expect(screen).toContain("gtt.last_error");
+  });
+
+  it("names the contract on every leg of a multi-leg order", () => {
+    expect(screen).toContain("legs.length > 1");
+    expect(screen).toContain("{leg.tradingsymbol}");
+  });
+
+  it("keeps the tab bar mounted when one tab's read fails", () => {
+    expect(screen).not.toMatch(/if \(isError\) \{\s*return \(\s*<View style=\{\[styles\.container/);
+    expect(screen).toContain("const pane = statusPane();");
+    expect(screen).toContain('Failed to load {tab === "gtt" ? "GTT orders" : "orders"}');
   });
 
   it("refreshes on pull-to-refresh for each tab", () => {
