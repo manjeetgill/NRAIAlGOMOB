@@ -185,8 +185,10 @@ it("shows a degraded or stale book with prod's reason over it instead of in plac
   // Only a list with nothing in it may fall back to the notice; a state word never hides rows that arrived.
   expect(screen).toContain('if (positions.length === 0 && blocked(positionsState)) return notice(positionsState, "Positions")');
   expect(screen).toContain('if (holdings.length === 0 && blocked(holdingsState)) return notice(holdingsState, "Holdings")');
-  expect(screen).toContain('positionsState.kind === "ready" ? null : banner(positionsState, "Positions")');
-  expect(screen).toContain('holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")');
+  // The stale/saved banner is gone: a degraded book still shows the rows it has, with no sentence above them.
+  expect(screen).not.toContain("banner(positionsState");
+  expect(screen).not.toContain("banner(holdingsState");
+  expect(screen).not.toContain("Last confirmed broker section");
   expect(screen).not.toContain("if (blocked(positionsState)) return notice");
   expect(screen).not.toContain("if (blocked(holdingsState)) return notice");
 });

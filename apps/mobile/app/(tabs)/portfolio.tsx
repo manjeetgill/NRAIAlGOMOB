@@ -161,7 +161,6 @@ export default function PortfolioScreen() {
     emptyText: { fontSize: 16, color: colors.muted, textAlign: "center" },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
-    staleLine: { fontSize: 12, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
     retry: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent },
     retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
     fab: { position: "absolute", bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brand?.["600"] || "#0284c7", alignItems: "center", justifyContent: "center", elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
@@ -193,13 +192,6 @@ export default function PortfolioScreen() {
         <Text style={styles.retryText}>Tap to try again</Text>
       </TouchableOpacity>
     </View>
-  );
-
-  const banner = (state: { kind: string; reason: string | null }, noun: string) => (
-    <Text style={styles.staleLine}>
-      {state.reason ?? `${noun} shows the broker's last saved values.`}
-      {account?.asOf ? ` Saved ${new Date(account.asOf).toLocaleString()}.` : ""}
-    </Text>
   );
 
   const handleOpenTicket = (position?: OpenPosition) => {
@@ -300,7 +292,6 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        {positionsState.kind === "ready" ? null : banner(positionsState, "Positions")}
         <SortableTable
           rows={positionRows}
           columns={POSITION_COLUMNS}
@@ -355,7 +346,6 @@ export default function PortfolioScreen() {
 
     return (
       <>
-        {holdingsState.kind === "ready" ? null : banner(holdingsState, "Holdings")}
         <SortableTable
           rows={holdingRows}
           columns={HOLDING_COLUMNS}
