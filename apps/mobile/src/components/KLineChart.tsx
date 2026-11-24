@@ -14,18 +14,29 @@ import type { WebViewMessageEvent } from "react-native-webview";
 import { useTheme } from "@/components/ThemeProvider";
 import { KLINECHARTS_LIB } from "./klinecharts_lib";
 import type { Candle } from "@nraialgo/shared/api";
+import type { ChartMarker, ChartOverlay, ChartPane } from "@/utils/scan-chart";
 
 interface KLineChartProps {
   data: Candle[];
   height?: number;
   symbol?: string;
+  /**
+   * The scanner's own studies, drawn over the candles it was run on: `overlays` are the rule's levels,
+   * `markers` its entries and exits, `panes` the series the scan saved. Sent as tables rather than
+   * functions, because a WebView cannot be handed a callback.
+   */
+  overlays?: ChartOverlay[];
+  markers?: ChartMarker[];
+  panes?: ChartPane[];
+  /** The scanner supplies its own volume pane, so it asks for the plain candle pane instead. */
+  defaultIndicators?: boolean;
 }
 
-type ChartMessage = 
+type ChartMessage =
   | { type: "ready" }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400, symbol = "" }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, defaultIndicators = true }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
@@ -56,6 +67,8 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
         <script>
           let chart = null;
           let lastDataKey = null;
+          let lastScan = null;
+          let scanPanes = [];
           
           function showError(msg) {
             document.getElementById('error').style.display = 'block';
@@ -104,12 +117,78 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
                 chart.setSymbol({ ticker: ${JSON.stringify(symbol)} });
               }
 
-              chart.createIndicator('MA', false, { id: 'candle_pane' });
-              chart.createIndicator('VOL', true, { id: 'indicator_pane' });
+              ${defaultIndicators ? `chart.createIndicator('MA', false, { id: 'candle_pane' });
+              chart.createIndicator('VOL', true, { id: 'indicator_pane' });` : ''}
               
               window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
             } catch (e) {
               showError('Init error: ' + e.message);
+            }
+          }
+
+          function clearScan() {
+            if (!chart) return;
+            try { chart.removeOverlay({ groupId: 'scan' }); } catch (e) {}
+            scanPanes.forEach(function (id) { try { chart.removeIndicator({ id: id }); } catch (e) {} });
+            scanPanes = [];
+          }
+
+          // A WebView cannot be handed a calc function, so a scan's studies arrive as timestamp tables and
+          // are rebuilt here. Overlay points resolve against the candles, so this runs after the data.
+          function applyScan(scan) {
+            if (!chart || !scan) return;
+            lastScan = scan;
+            clearScan();
+            try {
+              (scan.panes || []).forEach(function (pane) {
+                const tables = {};
+                pane.lines.forEach(function (item) { tables[item.key] = item.points; });
+                const spec = {
+                  name: pane.name, id: pane.id, paneId: pane.paneId, shortName: pane.title,
+                  calcParams: [], regenerateFigures: null,
+                  figures: pane.lines.map(function (item) {
+                    return { key: item.key, title: item.label + ': ', type: 'line', styles: function () { return { color: item.color, size: 2 }; } };
+                  }),
+                  calc: function (bars) {
+                    return bars.map(function (bar) {
+                      const row = {};
+                      pane.lines.forEach(function (item) {
+                        const value = tables[item.key][bar.timestamp];
+                        if (typeof value === 'number' && isFinite(value)) row[item.key] = value;
+                      });
+                      return row;
+                    });
+                  }
+                };
+                if (typeof pane.minValue === 'number') { spec.minValue = pane.minValue; spec.maxValue = pane.maxValue; }
+                let created = false;
+                try { created = !!chart.createIndicator(spec, true); } catch (e) { created = false; }
+                if (created) {
+                  // Tracked even on the candle pane: a refetch of another scan must not leave the previous
+                  // study's line drawn over the candles.
+                  scanPanes.push(pane.id);
+                  if (pane.paneId !== 'candle_pane') {
+                    try { chart.setPaneOptions({ id: pane.paneId, height: pane.height || 72, minHeight: 56, dragEnabled: true }); } catch (e) {}
+                  }
+                }
+              });
+              (scan.overlays || []).forEach(function (overlay) {
+                try {
+                  chart.createOverlay({ name: overlay.name, groupId: 'scan', lock: true, points: overlay.points, styles: { line: { color: overlay.color } } });
+                } catch (e) {}
+              });
+              (scan.markers || []).forEach(function (marker) {
+                try {
+                  chart.createOverlay({
+                    name: 'simpleAnnotation', groupId: 'scan', lock: true,
+                    points: [{ timestamp: marker.timestamp, value: marker.value }],
+                    extendData: marker.text,
+                    styles: { line: { color: marker.color }, text: { color: marker.color } }
+                  });
+                } catch (e) {}
+              });
+            } catch (e) {
+              console.error('Scan overlay error:', e);
             }
           }
 
@@ -142,6 +221,7 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
                 chart.setSymbol('CHART');
                 chart.setPeriod({ multiplier: 1, timespan: 'day' });
               }
+              if (lastScan) applyScan(lastScan);
             } catch (e) {
               console.error('Update error:', e);
             }
@@ -175,6 +255,7 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
               if (message.type === 'init') initChart();
               else if (message.type === 'update') updateData(message.data);
               else if (message.type === 'patch') patchBar(message.bar);
+              else if (message.type === 'scan') applyScan(message.scan);
             } catch (e) { 
               console.error('Message error:', e);
             }
@@ -193,9 +274,21 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
       </body>
       </html>
     `;
-  }, [resolvedTheme, symbol]);
+  }, [resolvedTheme, symbol, defaultIndicators]);
 
   const prevLastRef = useRef<{ timestamp: number; close: number; len: number } | null>(null);
+
+  // One string per study set: an identical refetch of the same scan must not redraw every level.
+  const scanPayload = useMemo(
+    () => JSON.stringify({ type: "scan", scan: { overlays: overlays ?? [], markers: markers ?? [], panes: panes ?? [] } }),
+    [overlays, markers, panes],
+  );
+  const postedScanRef = useRef<string | null>(null);
+  const postScan = useCallback(() => {
+    if (!isReady.current || !webViewRef.current || postedScanRef.current === scanPayload) return;
+    postedScanRef.current = scanPayload;
+    webViewRef.current.postMessage(scanPayload);
+  }, [scanPayload]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -210,6 +303,7 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
           prevLastRef.current = { timestamp: last.timestamp, close: last.close, len: data.length };
           webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
         }
+        postScan();
       } else if (message.type === "error") {
         setError(message.message);
         setLoading(false);
@@ -217,7 +311,7 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
     } catch (e) {
       console.error("Chart message error:", e);
     }
-  }, [data]);
+  }, [data, postScan]);
 
   useEffect(() => {
     if (!isReady.current || !webViewRef.current || !data.length) return;
@@ -233,6 +327,10 @@ export default function KLineChart({ data, height = 400, symbol = "" }: KLineCha
     prevLastRef.current = { timestamp: last.timestamp, close: last.close, len: data.length };
     webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
   }, [data]);
+
+  useEffect(() => {
+    postScan();
+  }, [postScan]);
 
   return (
     <View style={[styles.container, { height }]}>

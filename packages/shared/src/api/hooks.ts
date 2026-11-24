@@ -12,6 +12,9 @@ import { formatISTDate } from "../utils";
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
 const FULL_WINDOW = 400;
 
+/** The periods `/v1/technical-events/evidence` accepts, copied from its own Literal. */
+const EVIDENCE_TIMEFRAMES = new Set(["1d", "1w", "1M", "1h", "30m", "15m"]);
+
 /**
  * Leg states prod still moves on. Anything else is where the basket landed, so a screen following one
  * instruction can stop asking without guessing at a finish.
@@ -20,6 +23,25 @@ const UNSETTLED_LEG_STATES = new Set(["queued", "dispatching", "acknowledged", "
 
 // Query params type - TanStack Query expects string | number | boolean values
 export type QueryParams = Record<string, string | number | boolean | null | undefined>;
+
+/** Which saved scan one chart read is about. The server keys evidence on all four, so the identity that
+ *  asks is the identity that caches: a row from a run and a row from the standing scan never share an entry. */
+export interface ScannerEvidenceIdentity {
+  instrument: string;
+  session: string;
+  timeframe: string;
+  runId?: string;
+}
+
+/** The exact query one saved scan is read with, plus the period it was asked under after the server's own
+ *  Literal is applied. Split out so a test can see what goes on the wire without rendering a screen. */
+export function evidenceRequest(identity: ScannerEvidenceIdentity): { path: string; timeframe: string } {
+  const timeframe = EVIDENCE_TIMEFRAMES.has(identity.timeframe) ? identity.timeframe : "1d";
+  const path = `/v1/technical-events/evidence?instrument=${encodeURIComponent(identity.instrument)}`
+    + `&session=${encodeURIComponent(identity.session)}&timeframe=${timeframe}`
+    + (identity.runId ? `&run_id=${encodeURIComponent(identity.runId)}` : "");
+  return { path, timeframe };
+}
 
 // Query key factory for consistent cache keys
 export const queryKeys = {
@@ -89,6 +111,7 @@ export const queryKeys = {
     liveTrades: () => ["scanner", "live-trades"] as const,
     results: (params?: QueryParams) => ["scanner", "results", params] as const,
     technicalEvents: () => ["scanner", "technical-events"] as const,
+    evidence: (identity: ScannerEvidenceIdentity) => ["scanner", "evidence", identity] as const,
   },
 
   // Algo Lab
@@ -199,7 +222,7 @@ export type ScannerSignalType =
  *  was seen on and that candle's close; the owner's copy carries the rule explanation beside them. */
 export interface ScannerEvent {
   kind: string;
-  timestamp?: string;
+  timestamp?: number | string | null;
   close?: number | null;
   explanation?: string;
 }
@@ -233,6 +256,76 @@ export interface TechnicalEventsResponse {
     event_kinds?: string[];
     timeframe?: string;
   };
+}
+
+/** One confirmed extremum of the saved scan's own history, with the candle that proved it. */
+export interface ScannerPivot {
+  price: number;
+  originTimestamp: number;
+  confirmedAt: number;
+}
+
+export interface ScannerIndicatorRow {
+  timestamp: number;
+  rsi14?: number | null;
+  support?: number;
+  resistance?: number;
+  atr?: number;
+  volumeMean20?: number | null;
+}
+
+export interface ScannerHmRow {
+  timestamp: number;
+  rsi?: number | null;
+  ema?: number | null;
+  wma?: number | null;
+  supertrend?: number | null;
+  direction?: number | null;
+}
+
+export interface ScannerHmSignal {
+  timestamp: number;
+  kind: string;
+  actions: string[];
+}
+
+/** One rule match with the level it was tested against. The owner's copy carries these; a member's copy of
+ *  the same scan is stripped to kind, timestamp and close server-side, so nothing may assume a level exists. */
+export interface ScannerEvidenceEvent {
+  kind: string;
+  timestamp?: number | string | null;
+  close?: number | null;
+  level?: number;
+  tolerance?: number;
+  origin?: number | string | null;
+  explanation?: string;
+  evidence?: { lower?: number; upper?: number; volumeRatio?: number | null; volumeStatus?: string };
+}
+
+/**
+ * The candles and levels behind one saved scan, from `GET /v1/technical-events/evidence`.
+ *
+ * `chartCandles` is the saved window extended with older archived history; `candles` is what the rule itself
+ * was run on. Both stay exactly as the scan stored them, so the chart shows the completed candles the
+ * signal was seen on and never a live price that arrived after it.
+ */
+export interface ScannerEvidence {
+  source?: string;
+  session?: string;
+  timeframe?: string;
+  candles?: Candle[];
+  chartCandles?: Candle[];
+  events: ScannerEvidenceEvent[];
+  indicatorSeries?: ScannerIndicatorRow[];
+  context?: { pivots?: { high?: ScannerPivot | null; low?: ScannerPivot | null } };
+  hmSeries?: ScannerHmRow[];
+  hmSignals?: ScannerHmSignal[];
+  support?: number;
+  resistance?: number;
+  tolerance?: number;
+  atr?: number;
+  previousClose?: number | null;
+  signalCompletedAt?: number | null;
 }
 
 // Hook factory for creating typed API hooks
@@ -776,6 +869,22 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  /**
+   * The candles, levels and studies behind one saved scan — the same read the web scanner makes when a row
+   * is clicked. `timeframe` has exactly the server's own words; anything else is asked as `1d` rather than
+   * sent and rejected, because the route answers 422 to a period it cannot store a scan under.
+   */
+  const useScannerEvidence = (identity: ScannerEvidenceIdentity, options?: UseQueryOptions<ScannerEvidence, ApiError>) => {
+    const { path, timeframe } = evidenceRequest(identity);
+    return useQuery({
+      queryKey: queryKeys.scanner.evidence({ ...identity, timeframe }),
+      queryFn: () => client.get<ScannerEvidence>(path),
+      enabled: Boolean(identity.instrument && identity.session),
+      staleTime: 5 * 60 * 1000,
+      ...options,
+    });
+  };
+
   // ===== ALGO LAB =====
   const useFleet = (options?: UseQueryOptions<FleetItem[], ApiError>) => {
     return useQuery({
@@ -965,6 +1074,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useAutomations,
     useLiveTrades,
     useTechnicalEvents,
+    useScannerEvidence,
     // Algo Lab
     useFleet,
     useDrafts,

@@ -4,13 +4,17 @@
  * Shows breakout, breakdown, support/resistance signals from the technical events scanner.
  * Lightweight mobile view: one row per event with the figures `/v1/technical-events` files beside it —
  * the instrument, the saved session and timeframe, and the close of the candle the rule matched on.
+ * A row opens the saved scan's own chart, the same evidence read the web scanner makes.
  */
 
 import React, { useState, useMemo } from "react";
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
+import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
+import { asMs } from "@/utils/scan-chart";
 import type { ScannerSignalType } from "@nraialgo/shared/api";
 
 type SignalFilter = "all" | "breakout" | "breakdown" | "support" | "resistance" | "hm";
@@ -26,9 +30,8 @@ const FILTERS: { id: SignalFilter; label: string; kinds: Set<string> }[] = [
 
 /** The server files the candle as epoch milliseconds. Its day is the session row already, so the number
  *  earns a line only when it carries a time, which is how an intraday candle differs from a daily one. */
-const candleTime = (value: string): string => {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return "";
+const candleTime = (ms: number | null): string => {
+  if (!ms) return "";
   const ist = new Date(ms + 19_800_000);
   if (ist.getUTCHours() === 0 && ist.getUTCMinutes() === 0) return "";
   return `${String(ist.getUTCHours()).padStart(2, "0")}:${String(ist.getUTCMinutes()).padStart(2, "0")}`;
@@ -48,6 +51,7 @@ const SIGNAL_LABELS: Record<ScannerSignalType, string> = {
 export default function ScannerScreen() {
   const { useTechnicalEvents } = useApi();
   const { resolvedTheme } = useTheme();
+  const router = useRouter();
   const [filter, setFilter] = useState<SignalFilter>("all");
 
   const { data, isLoading, isError, refetch } = useTechnicalEvents();
@@ -97,10 +101,11 @@ export default function ScannerScreen() {
       id: `${item.instrument}-${item.session}-${itemIndex}-${eventIndex}`,
       instrument: item.instrument,
       kind: event.kind,
-      at: event.timestamp ?? "",
+      at: asMs(event.timestamp),
       close: typeof event.close === "number" && Number.isFinite(event.close) ? event.close : null,
       session: item.session,
       timeframe: item.timeframe ?? item.result?.timeframe ?? "",
+      runId: item.run_id ?? "",
     }))
   ), [data]);
 
@@ -121,11 +126,28 @@ export default function ScannerScreen() {
   const getBadgeLabel = (kind: string) =>
     SIGNAL_LABELS[kind as ScannerSignalType] ?? kind.replace(/_/g, " ");
 
-  const renderSignalCard = (signal: { instrument: string; kind: string; at: string; close: number | null; session: string; timeframe: string }) => (
-    <View style={styles.card}>
+  /** The chart is read per saved scan, so the row carries its own identity down: the same symbol scanned on
+   *  two sessions, or by a run and by the standing scan, are three different sets of candles. */
+  const openChart = (signal: { instrument: string; session: string; timeframe: string; kind: string; runId: string }) => {
+    router.push(`/scanner-chart?instrument=${encodeURIComponent(signal.instrument)}`
+      + `&session=${encodeURIComponent(signal.session)}&timeframe=${encodeURIComponent(signal.timeframe || "1d")}`
+      + `&kind=${encodeURIComponent(signal.kind)}`
+      + (signal.runId ? `&run_id=${encodeURIComponent(signal.runId)}` : ""));
+  };
+
+  const renderSignalCard = (signal: { instrument: string; kind: string; at: number | null; close: number | null; session: string; timeframe: string; runId: string }) => (
+    <TouchableOpacity
+      style={styles.card}
+      onPress={() => openChart(signal)}
+      accessibilityRole="button"
+      accessibilityLabel={`Open the ${getBadgeLabel(signal.kind)} scan chart for ${signal.instrument}`}
+    >
       <View style={styles.header}>
         <Text style={styles.symbol}>{signal.instrument}</Text>
-        <Text style={[styles.badge, getBadgeStyle(signal.kind)]}>{getBadgeLabel(signal.kind)}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={[styles.badge, getBadgeStyle(signal.kind)]}>{getBadgeLabel(signal.kind)}</Text>
+          <Ionicons name="chevron-forward" size={14} color={colors.muted} />
+        </View>
       </View>
       {signal.close !== null ? (
         <View style={styles.row}>
@@ -151,7 +173,7 @@ export default function ScannerScreen() {
           <Text style={styles.value}>{candleTime(signal.at)}</Text>
         </View>
       ) : null}
-    </View>
+    </TouchableOpacity>
   );
 
   if (isLoading) {
