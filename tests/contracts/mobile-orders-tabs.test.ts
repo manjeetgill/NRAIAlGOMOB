@@ -7,24 +7,39 @@ const screen = readFileSync(resolve(root, "apps/mobile/app/(tabs)/orders.tsx"), 
 const hooks = readFileSync(resolve(root, "packages/shared/src/api/hooks.ts"), "utf8");
 const index = readFileSync(resolve(root, "packages/shared/src/api/index.ts"), "utf8");
 
+/**
+ * The Orders desk answers with the broker's own list, not with this app's order intents: a trader who placed
+ * an order from Breeze must see it here, and an intent this app recorded but the broker refused must not be
+ * shown as if it existed. That switch (aa0d05e) also renamed the two status tabs, so the cases below track
+ * the list as the ICICI account snapshot actually arrives — one row per broker order, no leg arrays.
+ */
 describe("Orders screen shows three tabs", () => {
-  it("has Pending, Executed, and GTT Orders tabs", () => {
-    expect(screen).toContain('"pending"');
-    expect(screen).toContain('"executed"');
-    expect(screen).toContain('"gtt"');
-    expect(screen).toContain("Pending");
-    expect(screen).toContain("Executed");
-    expect(screen).toContain("GTT Orders");
+  it("has Open, Closed, and GTT Orders tabs", () => {
+    expect(screen).toContain('type TabId = "open" | "closed" | "gtt"');
+    expect(screen).toContain('{ id: "open", label: "Open" }');
+    expect(screen).toContain('{ id: "closed", label: "Closed" }');
+    expect(screen).toContain('{ id: "gtt", label: "GTT Orders" }');
+    expect(screen).toContain("useState<TabId>(\"open\")");
   });
 
-  it("splits orders by the statuses the server actually returns", () => {
-    expect(screen).toContain('o.status === "queued"');
-    expect(screen).toContain('o.status === "working"');
-    expect(screen).toContain('o.status === "unknown"');
-    expect(screen).toContain('o.status === "filled"');
-    expect(screen).toContain('o.status === "partial"');
-    expect(screen).toContain('o.status === "cancelled"');
-    expect(screen).toContain('o.status === "failed"');
+  it("lists the broker's orders, never this app's own intent log", () => {
+    expect(screen).toContain("useIciciAccount");
+    expect(screen).toContain("iciciOrders(iciciAccount)");
+    expect(hooks).toContain("export function iciciOrders");
+    expect(hooks).toContain("payload.sections?.order");
+    expect(screen).not.toContain("useOrders");
+  });
+
+  it("splits orders by the statuses the broker actually sends", () => {
+    // ICICI never sends one word per state: the web desk's normalizeStatus collapses its vocabulary and
+    // this screen has to collapse it the same way, or a "TRIGGER PENDING" order lands in neither tab.
+    expect(screen).toContain("const s = normalizeStatus(order.status);");
+    expect(screen).toContain('if (s === "OPEN") {');
+    expect(screen).toContain('s === "COMPLETE" || s === "CANCELLED" || s === "REJECTED"');
+    expect(screen).toContain("COMPLETE|COMPLETED|EXECUTED|FILLED|TRADED");
+    expect(screen).toContain("OPEN|PENDING|TRIGGER PENDING|ORDERED|REQUESTED|PARTIALLY|PUT ORDER REQ|VALIDATION PENDING|AMO REQ");
+    /** Anything the collapse does not recognise stays out of both lists instead of being guessed as open. */
+    expect(screen).toContain('return "OTHER"');
   });
 
   it("unwraps the {intents:[...]} envelope so the list is never a non-array", () => {
@@ -59,16 +74,21 @@ describe("Orders screen shows three tabs", () => {
     expect(screen).toContain("Number(spec?.quantity)");
   });
 
-  it("shows the server's reason instead of a blank when a leg or GTT is unexplained", () => {
-    expect(screen).toContain("leg.state.toUpperCase()");
-    expect(screen).toContain("leg.message");
-    expect(screen).toContain("intent.message");
-    expect(screen).toContain("gtt.last_error");
+  it("shows the server's reason instead of a blank when an order or GTT is unexplained", () => {
+    expect(screen).toContain("{order.message ? <Text style={styles.label}>{order.message}</Text> : null}");
+    expect(screen).toContain("{gtt.last_error &&");
+    expect(screen).toContain("{gtt.last_error}");
+    expect(screen).toContain('gtt.state.toUpperCase().replace("_", " ")');
   });
 
-  it("names the contract on every leg of a multi-leg order", () => {
-    expect(screen).toContain("legs.length > 1");
-    expect(screen).toContain("{leg.tradingsymbol}");
+  it("names what the broker filled on every order row", () => {
+    // One broker row is one contract, so the identity the old leg array carried is now the order itself:
+    // the symbol the broker printed, filled against placed, and the exchange it went out on.
+    expect(screen).toContain("{order.symbol || order.orderId}");
+    expect(screen).toContain("{order.side} {formatNumber(order.filledQuantity)}/{formatNumber(order.quantity)}");
+    expect(screen).toContain("{order.exchange}");
+    expect(screen.match(/keyExtractor=\{\(item\) => item\.orderId\}/g) ?? []).toHaveLength(2);
+    expect(screen).toContain("keyExtractor={(item) => item.orderId}");
   });
 
   it("keeps the tab bar mounted when one tab's read fails", () => {
@@ -79,8 +99,9 @@ describe("Orders screen shows three tabs", () => {
 
   it("refreshes on pull-to-refresh for each tab", () => {
     expect(screen).toContain("RefreshControl");
-    expect(screen).toContain("refetchIntents");
-    expect(screen).toContain("refetchGtts");
+    expect((screen.match(/<RefreshControl/g) ?? [])).toHaveLength(3);
+    expect(screen.match(/onRefresh=\{\(\) => void refetchOrders\(\)\}/g) ?? []).toHaveLength(2);
+    expect(screen).toContain("onRefresh={() => void refetchGtts()}");
   });
 
   it("auto-refreshes orders every 10 seconds", () => {
