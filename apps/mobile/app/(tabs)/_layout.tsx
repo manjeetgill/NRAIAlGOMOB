@@ -8,6 +8,7 @@ import React from "react";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
+import { prefetchPortfolio, prefetchOrders, prefetchOptionChain } from "@/utils/prefetch";
 
 export default function TabLayout() {
   const { resolvedTheme } = useTheme();
@@ -15,6 +16,14 @@ export default function TabLayout() {
   return (
     <Tabs
       id="tabs"
+      screenListeners={{
+        tabPress: (e) => {
+          const routeName = e.target?.split("-")[0];
+          if (routeName === "portfolio") prefetchPortfolio();
+          else if (routeName === "orders") prefetchOrders();
+          else if (routeName === "option" || routeName === "option-chain") prefetchOptionChain();
+        },
+      }}
       screenOptions={{
         headerShown: false,
         freezeOnBlur: true,

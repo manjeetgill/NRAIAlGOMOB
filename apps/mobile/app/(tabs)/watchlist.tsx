@@ -48,6 +48,90 @@ const SEGMENT: Record<string, string> = { NSE: "NSE EQ", BSE: "BSE EQ" };
 
 const WATCHLIST_ROW_HEIGHT = 65;
 
+interface WatchlistRowItemProps {
+  item: WatchlistRow & Marked;
+  tabKind: "predefined" | "list";
+  already: boolean;
+  addPending: boolean;
+  pricesPending: boolean;
+  colors: any;
+  up: string;
+  down: string;
+  styles: any;
+  priceTone: (change: number | null) => string;
+  signed: (value: number | null) => string;
+  openBuy: (row: { exchange: string; symbol: string }, side?: "BUY" | "SELL", removable?: boolean) => void;
+  addTo: (row: { exchange: string; symbol: string; name?: string }) => void;
+}
+
+const WatchlistRowItem = React.memo(
+  function WatchlistRowItem({
+    item,
+    tabKind,
+    already,
+    addPending,
+    pricesPending,
+    colors,
+    up,
+    styles,
+    priceTone,
+    signed,
+    openBuy,
+    addTo,
+  }: WatchlistRowItemProps) {
+    return (
+      <TouchableOpacity
+        style={styles.row}
+        onPress={() => (tabKind === "predefined" ? (already ? openBuy(item, "BUY", true) : addTo(item)) : openBuy(item, "BUY", true))}
+        disabled={addPending}
+      >
+        <View style={styles.left}>
+          <Text style={styles.symbol}>{item.symbol}</Text>
+          <Text style={styles.segment}>{SEGMENT[item.exchange] ?? item.exchange}</Text>
+        </View>
+        <View style={styles.middle}>
+          {item.name && item.name !== item.symbol ? <Text style={styles.name} numberOfLines={1}>{item.name}</Text> : null}
+        </View>
+        <View style={styles.right}>
+          {item.ltp === null ? (
+            <Text style={styles.noPrice}>{pricesPending ? "Waiting for price" : "No price"}</Text>
+          ) : (
+            <>
+              <Text style={[styles.price, { color: priceTone(item.change) }]}>{formatNumber(item.ltp)}</Text>
+              <Text style={[styles.change, { color: priceTone(item.change) }]}>
+                {item.change === null ? "no change figure" : `${signed(item.change)} (${signed(item.changePct)}%)`}
+              </Text>
+            </>
+          )}
+        </View>
+        {tabKind === "predefined" ? (
+          <TouchableOpacity style={styles.action} onPress={() => openBuy(item, "BUY", already)} hitSlop={12}>
+            <Ionicons name={already ? "checkmark-circle" : "add-circle-outline"} size={22} color={already ? up : colors.brand} />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.action}>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.item.symbol === next.item.symbol &&
+      prev.item.exchange === next.item.exchange &&
+      prev.item.ltp === next.item.ltp &&
+      prev.item.change === next.item.change &&
+      prev.item.changePct === next.item.changePct &&
+      prev.item.live === next.item.live &&
+      prev.already === next.already &&
+      prev.addPending === next.addPending &&
+      prev.pricesPending === next.pricesPending &&
+      prev.tabKind === next.tabKind
+    );
+  }
+);
+
 export default function WatchlistScreen() {
   const { useIndices, useWatchlist, useBuiltinWatchlist, useEquitySearch,
     useAddToWatchlist, useRemoveFromWatchlist, useCreateWatchlist } = useApi();
@@ -243,44 +327,21 @@ export default function WatchlistScreen() {
   const renderRow = ({ item }: { item: WatchlistRow & Marked }) => {
     const already = inList.has(`${item.exchange}:${item.symbol}`);
     return (
-      <TouchableOpacity
-        style={styles.row}
-        onPress={() => (tab.kind === "predefined" ? (already ? openBuy(item, "BUY", true) : addTo(item)) : openBuy(item, "BUY", true))}
-        disabled={add.isPending}
-      >
-        <View style={styles.left}>
-          <Text style={styles.symbol}>{item.symbol}</Text>
-          <Text style={styles.segment}>{SEGMENT[item.exchange] ?? item.exchange}</Text>
-        </View>
-        <View style={styles.middle}>
-          {item.name && item.name !== item.symbol ? <Text style={styles.name} numberOfLines={1}>{item.name}</Text> : null}
-        </View>
-        <View style={styles.right}>
-          {item.ltp === null ? (
-            <Text style={styles.noPrice}>{pricesPending ? "Waiting for price" : "No price"}</Text>
-          ) : (
-            <>
-              <Text style={[styles.price, { color: priceTone(item.change) }]}>{formatNumber(item.ltp)}</Text>
-              <Text style={[styles.change, { color: priceTone(item.change) }]}>
-                {item.change === null ? "no change figure" : `${signed(item.change)} (${signed(item.changePct)}%)`}
-              </Text>
-            </>
-          )}
-        </View>
-        {tab.kind === "predefined" ? (
-          // The row itself adds the symbol to the list; this mark is the buy entry point, so a row
-          // that is already saved still has a way to open a ticket.
-          <TouchableOpacity style={styles.action} onPress={() => openBuy(item, "BUY", already)} hitSlop={12}>
-            <Ionicons name={already ? "checkmark-circle" : "add-circle-outline"} size={22} color={already ? up : colors.brand} />
-          </TouchableOpacity>
-        ) : (
-          // A saved row trades and un-saves from the sheet the row opens, so this only marks that
-          // the row is pressable. The three figures it used to hide are all in the sheet now.
-          <View style={styles.action}>
-            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-          </View>
-        )}
-      </TouchableOpacity>
+      <WatchlistRowItem
+        item={item}
+        tabKind={tab.kind}
+        already={already}
+        addPending={add.isPending}
+        pricesPending={pricesPending}
+        colors={colors}
+        up={up}
+        down={down}
+        styles={styles}
+        priceTone={priceTone}
+        signed={signed}
+        openBuy={openBuy}
+        addTo={addTo}
+      />
     );
   };
 

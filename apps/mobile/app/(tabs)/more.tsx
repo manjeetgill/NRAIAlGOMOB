@@ -9,6 +9,7 @@ import { useTheme, globalStyles } from "@/components/ThemeProvider";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
+import { prefetchAlgoLab, prefetchScanner } from "@/utils/prefetch";
 
 export default function MoreScreen() {
   const { useMe, useLogout } = useApi();
@@ -135,7 +136,11 @@ export default function MoreScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Advanced</Text>
         <View style={styles.card}>
-          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => router.push("/algo-lab")}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowDivider]}
+            onPress={() => router.push("/algo-lab")}
+            onPressIn={prefetchAlgoLab}
+          >
             <View style={styles.labelRow}>
               <Ionicons name="construct-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Algo Lab</Text>
@@ -163,7 +168,11 @@ export default function MoreScreen() {
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => router.push("/(tabs)/scanner")}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowDivider]}
+            onPress={() => router.push("/(tabs)/scanner")}
+            onPressIn={prefetchScanner}
+          >
             <View style={styles.labelRow}>
               <Ionicons name="search-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Scanner</Text>

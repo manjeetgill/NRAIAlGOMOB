@@ -617,10 +617,10 @@ export default function OptionChainScreen() {
           ref={listRef}
           data={items}
           keyExtractor={item => item.key}
-          initialNumToRender={12}
-          maxToRenderPerBatch={8}
+          initialNumToRender={10}
+          maxToRenderPerBatch={6}
           updateCellsBatchingPeriod={50}
-          windowSize={7}
+          windowSize={5}
           removeClippedSubviews
           onContentSizeChange={centerOn}
           onViewableItemsChanged={onViewableItemsChanged}
