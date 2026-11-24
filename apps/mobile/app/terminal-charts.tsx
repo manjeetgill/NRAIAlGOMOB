@@ -6,7 +6,7 @@
  * rather than the last poll.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -30,7 +30,7 @@ import {
   type ChartBucket,
 } from "@nraialgo/shared/api";
 import { formatRupees } from "@nraialgo/shared/utils";
-import { CandleStickChart } from "react-native-gifted-charts";
+import KLineChart from "@/components/KLineChart";
 
 const INTERVALS = [
   { id: "1m", label: "1m" },
@@ -44,7 +44,7 @@ const INTERVALS = [
 
 type IntervalId = (typeof INTERVALS)[number]["id"];
 
-const DAILY_INTERVALS: ReadonlySet<IntervalId> = new Set(["1d", "1w"]);
+const DAILY_INTERVALS = new Set<IntervalId>(["1d", "1w"]);
 const DEFAULT_SYMBOL = "NIFTY";
 // Daily candles are the default: one bar per completed session, read from stored history rather than
 // from a live broker session, so the chart is never blank because the market happens to be shut.
@@ -71,8 +71,17 @@ export default function TerminalChartsScreen() {
   const [interval, setInterval] = useState<IntervalId>(DEFAULT_INTERVAL);
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
+  const [chartKey, setChartKey] = useState(0);
 
-  console.log("TerminalCharts: Rendering with symbol=", symbol, "interval=", interval);
+  const handleSymbolChange = useCallback((newSymbol: string) => {
+    setSymbol(newSymbol);
+    setChartKey((k) => k + 1);
+  }, []);
+
+  const handleIntervalChange = useCallback((newInterval: IntervalId) => {
+    setInterval(newInterval);
+    setChartKey((k) => k + 1);
+  }, []);
 
   const isDaily = DAILY_INTERVALS.has(interval);
   const { data: chartData, isLoading, isError, error, refetch } = useTerminalChart(symbol, interval, {
@@ -80,9 +89,6 @@ export default function TerminalChartsScreen() {
     refetchInterval: isDaily ? false : 30_000,
   });
 
-  console.log("TerminalCharts: chartData=", chartData, "isLoading=", isLoading, "isError=", isError);
-  // A daily bar opens with the session, and the stored archive only reaches the last closed session: today's
-  // minute bars are what give the live daily candle a true open instead of the first price this device saw.
   const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000 });
   const underlyings = useChainUnderlyings();
 
@@ -168,36 +174,8 @@ export default function TerminalChartsScreen() {
     notice: { paddingVertical: 12, fontSize: 13, color: colors.muted, textAlign: "center" },
   });
 
-  const chartConfig = useMemo(() => ({
-    chartConfig: {
-      backgroundColor: colors.card,
-      backgroundGradientFrom: colors.card,
-      backgroundGradientTo: colors.card,
-      decimalPlaces: 2,
-      color: (opacity = 1) => `rgba(34, 197, 94, ${opacity})`,
-      strokeWidth: 2,
-      style: { borderRadius: 12 },
-      propsForDots: { r: 4, strokeWidth: 2, stroke: colors.text },
-      yAxisLabel: "₹",
-      yAxisSuffix: "",
-      xAxisLabel: "",
-      xAxisSuffix: "",
-      xAxis: { label: (timestamp: number) => axisLabel(timestamp, isDaily) },
-    },
-    candleStickConfig: {
-      candleWidth: 12,
-      candleSpacing: 8,
-      upColor: colors.up,
-      downColor: colors.down,
-      neutralColor: colors.muted,
-      borderWidth: 1,
-      borderColor: colors.muted,
-      showVolume: false,
-    },
-  }), [colors, isDaily]);
-
   const pick = (name: string) => {
-    setSymbol(name);
+    handleSymbolChange(name);
     setShowSymbolPicker(false);
     setSearch("");
   };
@@ -239,28 +217,9 @@ export default function TerminalChartsScreen() {
     );
   } else {
     body = (
-      <>
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.card, margin: 12, borderRadius: 12 }}>
-          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }}>Chart: {chartDataPoints.length} candles</Text>
-          <Text style={{ color: colors.muted, fontSize: 12, marginTop: 8 }}>
-            {chartDataPoints.length > 0 ? `Range: ${formatRupees(priceMin)} - ${formatRupees(priceMax)}` : 'No data'}
-          </Text>
-          {/* TODO: CandleStickChart disabled for testing */}
-          {/* <CandleStickChart {...chartConfig} data={chartDataPoints} /> */}
-        </View>
-        <View style={styles.priceScale}>
-          {Array.from({ length: 6 }, (_, i) => {
-            const price = priceMax - (priceMax - priceMin) * (i / 5);
-            return <Text key={i} style={styles.priceScaleLabel}>{formatRupees(price)}</Text>;
-          })}
-        </View>
-        <View style={styles.timeScale}>
-          {[0, 0.25, 0.5, 0.75, 1].map((fraction, i) => {
-            const index = Math.min(chartDataPoints.length - 1, Math.round((chartDataPoints.length - 1) * fraction));
-            return <Text key={i} style={styles.timeScaleLabel}>{axisLabel(chartDataPoints[index]?.timestamp ?? 0, isDaily)}</Text>;
-          })}
-        </View>
-      </>
+      <View style={{ flex: 1 }} key={chartKey}>
+        <KLineChart data={chartDataPoints} height={500} />
+      </View>
     );
   }
 
@@ -285,7 +244,7 @@ export default function TerminalChartsScreen() {
           <TouchableOpacity
             key={entry.id}
             style={[styles.intervalButton, interval === entry.id && styles.intervalButtonActive]}
-            onPress={() => setInterval(entry.id)}
+            onPress={() => handleIntervalChange(entry.id)}
             accessibilityRole="button"
             accessibilityLabel={`${entry.label} candles`}
           >
@@ -304,7 +263,7 @@ export default function TerminalChartsScreen() {
         <View style={styles.sourceRow}>
           <Text style={styles.sourceText} numberOfLines={2}>
             {chartData?.source ?? "Stored daily history"}
-            {candles.length > chartDataPoints.length ? ` · newest ${chartDataPoints.length} of ${candles.length} sessions` : ""}
+            {chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}
           </Text>
         </View>
       )}

@@ -6,14 +6,20 @@ import {
   buildAnalysis,
   closedUnits,
   curves,
+  expiryKey,
+  heldPayoff,
   isLiveMoney,
   isLiveRun,
+  ladderUnderlying,
   legValue,
   openLiveBaskets,
   payoffExpiries,
   payoffFigures,
+  priceProvenance,
   rupees,
+  sameContract,
   valueAt,
+  withBookMarks,
 } from "../../packages/shared/src/api/basket-desk.ts";
 
 const root = resolve(__dirname, "../..");
@@ -147,6 +153,26 @@ function ladder(over: Record<string, unknown> = {}) {
   };
 }
 
+/** A broker open-position row, as the Positions book maps it from ICICI's own columns. */
+function bookRow(over: Record<string, unknown> = {}) {
+  return {
+    symbol: "NIFTY26NOV25600CE",
+    side: "SELL",
+    quantity: 65,
+    entryPrice: 96.5,
+    markPrice: 71.05,
+    unrealizedPnl: 1654.25,
+    broker: "icici",
+    account: "9231",
+    product: "MIS",
+    exchange: "NFO",
+    expiry: "2026-11-27",
+    strike: "25600",
+    right: "CE",
+    ...over,
+  };
+}
+
 it("lists only baskets holding real broker money, and never a closed one", () => {
   const rows = [
     deskBasket({ id: "paper-kind", kind: "paper" }),
@@ -196,6 +222,75 @@ it("prices a bought leg up and a sold leg down, and counts only what is still op
   expect(closed.unpriced).toBe(0);
 });
 
+it("reads an expiry in every shape the broker sources send", () => {
+  expect(expiryKey("2026-11-26")).toBe("2026-11-26");
+  expect(expiryKey("20261126")).toBe("2026-11-26");
+  expect(expiryKey("26-Nov-2026")).toBe("2026-11-26");
+  expect(expiryKey("26 NOV 2026")).toBe("2026-11-26");
+  // An ambiguous number-only form is not guessed at; the caller falls back to the broker's own words.
+  expect(expiryKey("26-11-2026")).toBeNull();
+  expect(expiryKey(null)).toBeNull();
+});
+
+it("marks a leg only from the row that is exactly that contract", () => {
+  const leg = brokerLeg() as Parameters<typeof sameContract>[1];
+  expect(sameContract(bookRow() as Parameters<typeof sameContract>[0], leg)).toBe(true);
+  // The same underlying at another strike or right is a different contract: matching on the name alone is
+  // how every NIFTY position in the book gets attributed to the newest NIFTY basket.
+  expect(sameContract(bookRow({ symbol: "NIFTY26NOV25200PE", strike: "25200", right: "PE" }), leg)).toBe(false);
+  expect(sameContract(bookRow({ symbol: "UNAVAILABLE" }), leg)).toBe(false);
+
+  // The other shape: an order token beside a book row whose code embeds the underlying.
+  const token = brokerLeg({ symbol: "HINLEV_20261229_2200_PE" }) as Parameters<typeof sameContract>[1];
+  expect(sameContract(bookRow({ symbol: "HINLEV26DEC2200PE", strike: "2200", right: "P", expiry: "29-DEC-2026" }), token)).toBe(true);
+  expect(sameContract(bookRow({ symbol: "HINLEV26DEC2200CE", strike: "2200", right: "CE", expiry: "2026-12-29" }), token)).toBe(false);
+  expect(sameContract(bookRow({ symbol: "HINLEV26NOV2200PE", strike: "2200", right: "PE", expiry: "2026-11-25" }), token)).toBe(false);
+  expect(sameContract(bookRow({ symbol: "HINLEV26DEC2250PE", strike: "2250", right: "PE", expiry: "2026-12-29" }), token)).toBe(false);
+});
+
+it("fills the marks prod leaves empty on an order or manual basket", () => {
+  const held = deskBasket({
+    id: "ticket",
+    legs: [brokerLeg({ markPrice: null }), brokerLeg({ symbol: "NIFTY26NOV25200PE", strike: "25200", right: "PE", side: "BUY", markPrice: null, entryPrice: 88.1 })],
+  });
+  const priced = deskBasket({ id: "server-priced", legs: [brokerLeg()] });
+  const paper = deskBasket({ id: "paper", kind: "run", provider: "paper", legs: [brokerLeg({ markPrice: null })] });
+  const rows = [
+    bookRow(),
+    bookRow({ symbol: "NIFTY26NOV25200PE", strike: "25200", right: "PE", markPrice: 82.4 }),
+  ] as Parameters<typeof withBookMarks>[1];
+  const joined = withBookMarks(
+    [held, priced, paper] as Parameters<typeof withBookMarks>[0],
+    rows,
+  );
+  expect(joined.marked).toBe(2);
+  expect(joined.baskets[0].legs.map(leg => leg.markPrice)).toEqual([71.05, 82.4]);
+  // A leg the server already priced keeps the server's number, and a paper basket is never touched.
+  expect(joined.baskets[1].legs[0].markPrice).toBe(71.05);
+  expect(joined.baskets[2].legs[0].markPrice).toBeNull();
+  // The joined card now reports the return the owner decides on, instead of "no price".
+  const value = basketPnl(joined.baskets[0].legs, 0);
+  expect(value.unpriced).toBe(0);
+  expect(value.total).toBeCloseTo((71.05 - 96.5) * 65 * -1 + (82.4 - 88.1) * 65, 2);
+});
+
+it("leaves every figure blank when the book holds nothing for the basket", () => {
+  const held = [deskBasket({ legs: [brokerLeg({ markPrice: null })] })] as Parameters<typeof withBookMarks>[0];
+  const rows = [
+    bookRow({ quantity: 0 }),
+    bookRow({ markPrice: null }),
+    bookRow({ markPrice: 0 }),
+  ] as Parameters<typeof withBookMarks>[1];
+  const joined = withBookMarks(held, rows);
+  expect(joined.marked).toBe(0);
+  expect(joined.baskets[0].legs[0].markPrice).toBeNull();
+  // No price is not a flat leg: the open half stays null rather than becoming ₹0.00.
+  const value = basketPnl(joined.baskets[0].legs, 400);
+  expect(value.open).toBeNull();
+  expect(value.total).toBe(400);
+  expect(value.unpriced).toBe(1);
+});
+
 it("asks for one ladder per distinct expiry and no more", () => {
   expect(payoffExpiries(deskBasket({ payoffLegs: [contract(), contract({ right: "PE", strike: "25200" })] })))
     .toEqual(["2026-11-27"]);
@@ -225,6 +320,11 @@ it("builds the model body with exactly the keys the server allows", () => {
   expect(built.body.legs[0].entrySpot).toBe("25418.35");
   expect(built.body.spot).toBe("25418.35");
   expect(built.margin.legs).toHaveLength(2);
+  // Every priced leg carries the time and state it was priced in, for the caption under the chart.
+  expect(built.marks).toEqual([
+    { contract: "NIFTY 25600 CE", priceAt: "2026-11-24T14:52:01+05:30", quality: "live" },
+    { contract: "NIFTY 25200 PE", priceAt: "2026-11-24T14:52:02+05:30", quality: "live" },
+  ]);
 });
 
 it("refuses the model with the leg named, rather than drawing a curve missing a wing", () => {
@@ -243,13 +343,56 @@ it("refuses the model with the leg named, rather than drawing a curve missing a 
 it("sends a price the model can date, and none it cannot", () => {
   const undated = ladder({
     rows: [{ ...ladder().rows[0], call: { ...ladder().rows[0].call, ltpAt: "2026-11-24 14:52", quote: { at: null, quality: "live" } } }],
-    asOf: "2026-11-24 14:52",
+    // The ladder's own read time carries a real offset, so it is exactly what a fabricated stamp looks
+    // like. The model works each leg's remaining maturity from pricedAt, so borrowing it here would make
+    // a trade from last week look like one from this second and lengthen the T+0 line.
+    asOf: "2026-11-24T14:52:03+05:30",
   });
   const built = buildAnalysis(deskBasket({ payoffLegs: [contract()] }), [undated]);
   expect(built.body).not.toBeNull();
   // A local-time string would be a guess about the timezone, so the leg goes without its forward inputs.
   expect(built.body.legs[0].pricedAt).toBeUndefined();
   expect(built.body.legs[0].entrySpot).toBeUndefined();
+  expect(built.marks[0].priceAt).toBeNull();
+});
+
+it("says when the priced legs were priced, in the words the broker used", () => {
+  // Nothing dated: the model falls back to the request spot, and the screen has to admit that.
+  expect(priceProvenance([{ contract: "NIFTY 25600 CE", priceAt: null, quality: "live" }]))
+    .toContain("no leg price carries a time");
+  expect(priceProvenance([])).toBe("");
+
+  // An old session is printed with its date, never as a bare clock time that reads as now.
+  const lastWeek = priceProvenance([{ contract: "NIFTY 25600 CE", priceAt: "2026-01-05T10:00:00+05:30", quality: "eod" }]);
+  expect(lastWeek).toContain("2026-01-05");
+  expect(lastWeek).toContain("last close");
+  expect(lastWeek).toContain("excludes exit charges");
+
+  // The oldest observation decides the caption: a curve is only as fresh as its stalest wing, and a
+  // basket half live and half closing is never printed as if all of it were live.
+  const mixed = priceProvenance([
+    { contract: "NIFTY 25600 CE", priceAt: new Date().toISOString(), quality: "live" },
+    { contract: "NIFTY 25200 PE", priceAt: "2026-01-05T10:00:00+05:30", quality: "eod" },
+  ]);
+  expect(mixed).toContain("2026-01-05");
+  expect(mixed).toContain("mixed prices");
+  // One leg dated and one not is counted, not quietly drawn as if both were dated.
+  const half = priceProvenance([
+    { contract: "NIFTY 25600 CE", priceAt: "2026-01-05T10:00:00+05:30", quality: "live" },
+    { contract: "NIFTY 25200 PE", priceAt: null, quality: "live" },
+  ]);
+  expect(half).toContain("1 leg has no recorded time");
+});
+
+it("refuses to draw one index's curve over a basket built on two", () => {
+  // /v1/strategy-analysis has no underlying per leg: one spot axis prices everything, so a mixed basket
+  // would read as a hedge that moves together when it does not.
+  const mixed = buildAnalysis(deskBasket({
+    payoffLegs: [contract(), contract({ underlying: "BANKNIFTY", symbol: "BANKNIFTY26NOV56000CE", strike: "56000" })],
+  }), [ladder()]);
+  expect(mixed.body).toBeNull();
+  expect(mixed.unpriced.join(" ")).toContain("one index wide");
+  expect(mixed.unpriced.join(" ")).toContain("BANKNIFTY");
 });
 
 it("will not ask for margin for a basket wider than the endpoint takes", () => {
@@ -277,6 +420,82 @@ it("reads the basket's value between the samples, not from the nearest one", () 
   expect(curves({ spot: "25300", curve: { spots: [25000, 25200], expiry: [1, 2], today: null } })).toBeNull();
 });
 
+it("lifts both model curves by the money the exited units already made", () => {
+  const model = curves({
+    spot: "25300",
+    curve: { spots: [25000, 25200, 25400], expiry: [100, 200, 300], today: [10, 20, 30] },
+  }, 1500);
+  // Without the shift the chart answers a different question than the Total P&L printed above it.
+  expect(model.expiry).toEqual([1600, 1700, 1800]);
+  expect(model.today).toEqual([1510, 1520, 1530]);
+  expect(model.atSpot).toBe(1750);
+  expect(model.atSpotToday).toBe(1525);
+});
+
+/**
+ * Four baskets run through prod's own settlement engine (`strategy_payoff.payoff_at` and `analyze`, the
+ * shipped service, called directly in Python), so the phone's local curve is checked against the same
+ * arithmetic the web desk prints rather than against a hand-worked number. Each case probes both sides of
+ * every kink, the kink itself, and spots outside the outer strikes.
+ */
+const SERVER_CURVE = [
+  { name: "condor", netDebit: -2140.00, maxProfit: 14640.00, maxLoss: -10360.00,
+    breakEvens: [25585.60], unboundedLoss: false, legs: [{ strike: "24500", right: "PE", action: "sell", entryPrice: "95.50", lots: 1, lotSize: 25 }, { strike: "25000", right: "PE", action: "buy", entryPrice: "60.25", lots: 1, lotSize: 25 }, { strike: "25500", right: "CE", action: "sell", entryPrice: "105.75", lots: 1, lotSize: 25 }, { strike: "26000", right: "CE", action: "buy", entryPrice: "55.40", lots: 1, lotSize: 25 }],
+    probe: [[23600, 14640], [24499, 14640], [24499.99, 14640], [24500, 14640], [25500, 2140], [25180.55, 2140], [25999, -10335], [26000, -10360], [26000.01, -10360], [26001, -10360], [26600, -10360], [27200, -10360]] },
+  { name: "naked_short_ce", netDebit: -2643.75, maxProfit: 2643.75, maxLoss: null,
+    breakEvens: [25605.75], unboundedLoss: true, legs: [{ strike: "25500", right: "CE", action: "sell", entryPrice: "105.75", lots: 1, lotSize: 25 }],
+    probe: [[24600, 2643.75], [25499, 2643.75], [25500, 2643.75], [25180.55, 2643.75], [25500.01, 2643.5], [25501, 2618.75], [26100, -12356.25], [26700, -27356.25]] },
+  { name: "bull_call", netDebit: 3256.25, maxProfit: 14243.75, maxLoss: -3256.25,
+    breakEvens: [24630.25], unboundedLoss: false, legs: [{ strike: "24500", right: "CE", action: "buy", entryPrice: "220.35", lots: 1, lotSize: 25 }, { strike: "25200", right: "CE", action: "sell", entryPrice: "90.10", lots: 1, lotSize: 25 }],
+    probe: [[23600, -3256.25], [24499, -3256.25], [24499.99, -3256.25], [24500, -3256.25], [25200, 14243.75], [25180.55, 13757.5], [25199, 14218.75], [25200.01, 14243.75], [25800, 14243.75], [26400, 14243.75]] },
+  { name: "wide_uneven", netDebit: -825.00, maxProfit: 125825.00, maxLoss: 825.00,
+    breakEvens: [], unboundedLoss: false, legs: [{ strike: "20000", right: "PE", action: "sell", entryPrice: "120.00", lots: 1, lotSize: 25 }, { strike: "25000", right: "PE", action: "buy", entryPrice: "45.00", lots: 1, lotSize: 25 }, { strike: "26000", right: "CE", action: "buy", entryPrice: "60.00", lots: 1, lotSize: 25 }, { strike: "31000", right: "CE", action: "sell", entryPrice: "18.00", lots: 1, lotSize: 25 }],
+    probe: [[19100, 125825], [19999, 125825], [19999.99, 125825], [20000, 125825], [26000, 825], [25180.55, 825], [30999, 125800], [31000, 125825], [31000.01, 125825], [31600, 125825], [32200, 125825]] },
+] as const;
+
+it("draws the held curve exactly where prod's own settlement engine puts it", () => {
+  for (const fixture of SERVER_CURVE) {
+    const held = heldPayoff(deskBasket({ payoffLegs: fixture.legs.map(leg => contract({ ...leg })) }));
+    expect(held, fixture.name).not.toBeNull();
+    for (const [spot, value] of fixture.probe) {
+      // Inside the drawn range, so the reading is an interpolation of a straight line and not an edge clamp.
+      expect(spot).toBeGreaterThanOrEqual(held!.spots[0]!);
+      expect(spot).toBeLessThanOrEqual(held!.spots.at(-1)!);
+      expect(valueAt(held!.spots, held!.values, spot), `${fixture.name} at ${spot}`).toBeCloseTo(value, 1);
+    }
+    expect(held!.netDebit, `${fixture.name} net debit`).toBeCloseTo(fixture.netDebit, 2);
+    expect(held!.max, `${fixture.name} best`).toBeCloseTo(fixture.maxProfit, 1);
+    // A tail still climbing at the edge is unlimited, which is the one case a bare number would lie about.
+    if (fixture.unboundedLoss) expect(held!.min).toBeNull();
+    else expect(held!.min, `${fixture.name} worst`).toBeCloseTo(fixture.maxLoss!, 1);
+    expect(held!.breakEvens.map(Math.round), `${fixture.name} break-evens`).toEqual(fixture.breakEvens.map(Math.round));
+    expect(held!.breakEvens.length).toBe(fixture.breakEvens.length);
+  }
+});
+
+it("declines to draw a held curve it cannot charge, and folds booked money into the one it does", () => {
+  // A leg with no recorded premium has an unknown cost basis, so the line would be a guess.
+  expect(heldPayoff(deskBasket({ payoffLegs: [contract({ entryPrice: "0" })] }))).toBeNull();
+  expect(heldPayoff(deskBasket({ payoffLegs: [contract({ entryPrice: null })] }))).toBeNull();
+  expect(heldPayoff(deskBasket())).toBeNull();
+
+  const basket = deskBasket({ payoffLegs: [contract({ strike: "25500", right: "CE", action: "sell", entryPrice: "105.75", lots: 1, lotSize: 25 })] });
+  const flat = heldPayoff(basket);
+  const booked = heldPayoff(basket, 5000);
+  for (const [index, value] of booked.values.entries()) expect(value - 5000).toBeCloseTo(flat.values[index]!, 2);
+  // The exited units moved the crossing, exactly as they moved the card's Total P&L.
+  expect(booked.breakEvens[0]).toBeCloseTo(flat.breakEvens[0]! + 5000 / 25, 2);
+});
+
+it("asks the ladder for the index the contract is listed on, not the broker's own code", () => {
+  const withCanonical = deskBasket({ payoffLegs: [contract({ underlying: "NIFTY" })] });
+  expect(ladderUnderlying(withCanonical)).toBe("NIFTY");
+  // An empty `underlying` is what prod sends for a row keyed by a broker symbol; the name is then the
+  // basket's own, which is the string the chain route takes.
+  expect(ladderUnderlying(deskBasket({ underlying: "BANKNIFTY", payoffLegs: [contract({ underlying: "" })] }))).toBe("BANKNIFTY");
+  expect(ladderUnderlying(deskBasket({ payoffLegs: [contract({ underlying: null })] }))).toBe("NIFTY");
+});
+
 it("prints the server's figures, and the server's reason when a figure has none", () => {
   const priced = payoffFigures({
     expiry: {
@@ -301,11 +520,21 @@ it("prints the server's figures, and the server's reason when a figure has none"
     pop: { available: false, reason: "POP needs a volatility for every leg" },
     greeks: { available: false, reason: "No greeks for a basket with a leg out of range" },
     assumptions: { ratePct: 0, dividendPct: 0 },
-  });
+  }, "2026-12-01");
   expect(refused.maxProfit).toContain("cannot resolve");
   expect(refused.pop).toContain("needs a volatility");
   expect(refused.greeks).toContain("out of range");
+  // A single-expiry answer carries no settlement date, but the phone drew the curve for a date it read
+  // off the legs, so the horizon names it instead of pointing at "the basket's own date".
+  expect(refused.horizon).toBe("Expires 2026-12-01");
   expect(Object.values(refused).every(value => value.trim() !== "")).toBe(true);
+  // With neither the server nor the legs giving a date, the sentence stays a sentence, never a blank.
+  expect(payoffFigures({
+    expiry: { available: false, reason: "no limits" },
+    pop: { available: false, reason: "no pop" },
+    greeks: { available: false, reason: "no greeks" },
+    assumptions: { ratePct: 0, dividendPct: 0 },
+  }, null).horizon).toBe("Expires at the basket’s own date");
 });
 
 it("calls a price by what it is and says whose price an exit was", () => {
@@ -338,11 +567,115 @@ it("keeps the phone honest about what it will not send", () => {
   expect(desk).toContain("Adjust in Builder");
 });
 
+it("prices the desk from the broker book and follows the theme", () => {
+  const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
+  expect(desk).toContain("withBookMarks(");
+  expect(desk).toContain("useOpenPositions()");
+  // The two figures the owner decides on stay on every card, not only in the opened basket.
+  expect(desk).toContain("Booked");
+  expect(desk).toContain("Total P&amp;L");
+  // Where a price came from is stated, and a missing one is named instead of counted as flat.
+  expect(desk).toContain("priced from the broker's positions");
+  expect(desk).toContain("without a price, not counted");
+  // A broker row that reports no spot is not printed as ₹0.00, and the sheet follows the app theme.
+  expect(desk).toContain("basket.spot > 0");
+  expect(desk).toContain("sheet(resolvedTheme)");
+  // A broker-shaped expiry ("26-Nov-2026") is normalised before it prints, not sliced as if it were ISO.
+  expect(desk).toContain("expiryKey(value)");
+  // A figure that is exactly zero is not drawn in the profit colour.
+  expect(desk).toContain("moneyColor(value.booked, styles)");
+  expect(desk).not.toContain("booked >= 0 ? styles.cPos");
+  expect(desk).not.toContain("const BRAND =");
+  // The curve states its own age and that the money is before charges, so a closing price never reads live.
+  expect(desk).toContain("priceProvenance(built.marks)");
+});
+
 it("puts the two tabs on the spread screen and hands the legs to the builder", () => {
   const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
   expect(screen).toContain('useState<"builder" | "basket">("builder")');
   expect(screen).toContain("<BasketDesk onAdjust={adjustFromBasket} />");
   expect(screen).toContain("row.payoffLegs");
-  expect(screen).toContain("nearestStrike(ladder, leg.strike)");
-  expect(screen).toContain("does not change or close what the broker already holds");
+  // The builder asks the canonical underlying for its ladder, so a broker code ("SENSEX" rows that carry
+  // "BSECNXBANK") still finds the chain it needs, and the held strike is staged exactly as the book has it.
+  expect(screen).toContain("ladderUnderlying(row)");
+  expect(screen).toContain("held: { lots, lotSize: leg.lotSize, entry: leg.entryPrice }");
+  // A held contract is not moved to the nearest listed strike: that would send an order for a contract
+  // nobody holds, so the strike stays and an off-ladder one is refused by name instead.
+  expect(screen).not.toContain("nearestStrike");
+});
+
+it("makes every held leg read-only and marks a close instead of deleting the row", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // The held row is text, not a control: no side flip, no right flip, no strike stepper.
+  expect(screen).toContain("{leg.held ? (");
+  expect(screen).toContain("{`${leg.side} ${leg.strike} ${leg.right}`}");
+  // The x marks a close and can be taken back; nothing is sent by that press.
+  expect(screen).toContain("onPress={() => (leg.held ? markClose(leg) : remove(leg))}");
+  expect(screen).toContain('closingNow ? "arrow-undo" : "close"');
+  expect(screen).toContain("struck");
+  // A staged basket shows no strategy templates: they would add legs to a book, not build a new one.
+  expect(screen).toContain("{adjusting ? null : (");
+  expect(screen).toContain("Press x on a leg to close it, then step the lots down to close only part of it; a leg without a mark is left exactly as the broker holds it.");
+});
+
+it("closes part of a held leg without pretending the whole leg left", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // A mark defaults to the whole holding and is then stepped, so the count lives with the mark, not the row.
+  expect(screen).toContain("useState<Record<string, number>>({})");
+  expect(screen).toContain("else next[leg.id] = leg.held?.lots ?? 1;");
+  expect(screen).toContain("setMarked(current => ({ ...current, [leg.id]: Math.min(max, Math.max(1, (current[leg.id] ?? max) + direction)) }))");
+  // The order line carries the stepped count, and the curve keeps the lots that were not closed.
+  expect(screen).toContain("lots: closingNow ? closeLotsOf(leg) : leg.lots,");
+  expect(screen).toContain("const left = (leg.held?.lots ?? leg.lots) - closeLotsOf(leg);");
+  // The button cannot read as a whole-leg close when it is not one.
+  expect(screen).toContain("wholeCloses === closes ? `Close ${closes}` : `Close ${closeLots} lots`");
+});
+
+it("sends each leg on its own date and prices it off that date's chain", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // A held leg is staged with the expiry the broker bought it on, and a basket spanning dates is staged
+  // rather than sent back to the web desk.
+  expect(screen).toContain("expiry: leg.expiry,");
+  expect(screen).toContain("const dates = [...new Set(contracts.map(leg => leg.expiry))].sort();");
+  expect(screen).not.toContain("a calendar basket is worked from the web desk");
+  // The draft line names the leg's own date: one press can close one date and add another.
+  expect(screen).toContain("expiry: line.expiry,");
+  // Prices, lot sizes and the strike stepper come off the ladder the leg actually lives on, read by
+  // useOptionChains so a date that is not on screen never borrows this one's premium.
+  expect(screen).toContain("const extra = useOptionChains(underlying, offDates, offDates.length > 0);");
+  expect(screen).toContain("const read = chainOf.get(leg.expiry);");
+  // The date is part of what would be sent, so it is part of the reference key: tapping the strip above
+  // can no longer re-aim every contract under a reference that named the old ones.
+  expect(screen).toContain('["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg)]');
+  // An unpriced line names the date it could not be priced on, and stops the whole press.
+  expect(screen).toContain("${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker.");
+});
+
+it("shows the bid, the ask and the exact price each leg is placed at", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // Both sides of the book for the leg's own date, so the placed price is visibly sitting inside a spread.
+  expect(screen).toContain("function bookOf(chain: OptionChainData | undefined, strike: string, right: \"CE\" | \"PE\")");
+  expect(screen).toContain("<Text style={styles.bid}>{price(twoSided.bid)}</Text>");
+  expect(screen).toContain("<Text style={styles.ask}>{price(twoSided.ask)}</Text>");
+  // The limit price is named with the side it was taken from, and a price borrowed from the last trade is
+  // labelled as one rather than shown as a level the book is quoting.
+  expect(screen).toContain("return read ? legQuote(read, leg.strike, leg.right, side) : null;");
+  expect(screen).toContain('quote.from === "ltp" ? "last traded" : quote.from');
+  expect(screen).toContain('const order: Array<["bid" | "ask" | "ltp", string | null]> = side === "BUY"');
+  // A strike the chosen date does not list is said as that, not drawn as a missing number.
+  expect(screen).toContain("${leg.strike} ${leg.right} is not listed on ${leg.expiry}");
+});
+
+it("sends only the marked closes and the new legs, never the rest of the book", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // An unmarked held leg contributes no order line at all.
+  expect(screen).toContain("if (leg.held && !closingNow) return [];");
+  // The close takes the opposite side of what is held, at the held leg's own lot size.
+  expect(screen).toContain('const side = closingNow ? (leg.side === "BUY" ? "SELL" : "BUY") : leg.side;');
+  expect(screen).toContain("const sizeOf = (leg: Leg) => leg.held?.lotSize || chainOf.get(leg.expiry)?.lotSize || lotSize;");
+  expect(screen).toContain('kind: leg.held ? "close" : "add",');
+  // The button names what the press will do, and an unpriced line stops the whole send.
+  expect(screen).toContain('[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")');
+  expect(screen).toContain("has no price from the broker. Nothing was sent.");
+  expect(screen).toContain("The broker still holds every leg of this basket.");
 });

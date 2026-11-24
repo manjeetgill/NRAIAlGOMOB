@@ -20,30 +20,56 @@ import {
   buildAnalysis,
   closedUnits,
   curves,
+  expiryKey,
+  heldPayoff,
+  ladderUnderlying,
   legValue,
   openLiveBaskets,
   payoffExpiries,
   payoffFigures,
+  priceProvenance,
   rupees,
+  valueAt,
+  withBookMarks,
   type Basket,
   type StrategyAnalysis,
 } from "@nraialgo/shared/api";
 import { formatISTTime, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
+import { useTheme } from "@/components/ThemeProvider";
 
 interface Props {
   /** Hand a basket's legs to the Builder tab, where an adjustment is actually placed. */
   onAdjust: (basket: Basket) => void;
 }
 
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/**
+ * A broker expiry in the words a trader reads.
+ *
+ * Prod sends an expiry in whichever shape its source used — ISO for an order, "26-Nov-2026" for a row
+ * carried straight from the broker's position book — so both are normalised before they are printed. An
+ * unreadable date is shown as the broker wrote it rather than dropped, because a blank reads as "no
+ * expiry" to someone deciding whether to close.
+ */
 const dayWord = (value?: string | null): string => {
-  const [year, month, day] = (value ?? "").split("-");
-  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  return year && month && day ? `${day} ${months[Number(month) - 1] ?? month} ${year.slice(2)}` : "";
+  const key = expiryKey(value);
+  if (!key) return String(value ?? "").trim();
+  const [year, month, day] = key.split("-");
+  return `${day} ${MONTHS[Number(month) - 1] ?? month} ${year!.slice(2)}`;
 };
 
 const contract = (underlying: string, strike: string, right: string, expiry?: string): string =>
   `${underlying} ${strike} ${right}${expiry ? ` · ${dayWord(expiry)}` : ""}`;
+
+/** What kind of broker money a card is, in the words the trader uses. */
+const kindWord = (basket: Basket): string =>
+  basket.kind === "order" ? "order ticket" : basket.kind === "manual" ? "broker positions" : "algo run";
+
+/** A flat figure is neither a gain nor a loss, so it must not borrow the profit colour. */
+const moneyColor = (value: number, styles: ReturnType<typeof sheet>): string =>
+  value > 0 ? styles.cPos : value < 0 ? styles.cNeg : styles.cMuted;
 
 /** Prod's sentence for why T+0 has no line, taken from the same calibration the curve needs. */
 function calibration(analysis: StrategyAnalysis | null): string | null {
@@ -51,14 +77,21 @@ function calibration(analysis: StrategyAnalysis | null): string | null {
 }
 
 export default function BasketDesk({ onAdjust }: Props) {
-  const { useBaskets } = useApi();
+  const { useBaskets, useOpenPositions } = useApi();
   const { data, isLoading, isError, error, refetch, isFetching, dataUpdatedAt } = useBaskets();
+  // The same book the Positions tab shows, on the same query key so the two screens share one read.
+  // /v1/baskets leaves an order or manual basket's legs unpriced and the web desk repairs that in the
+  // browser, so the phone joins the book for the whole list. It polls prod's cached account snapshot, not
+  // the broker, which is also what keeps these figures moving during the session.
+  const positions = useOpenPositions();
   const [openId, setOpenId] = useState<string | null>(null);
+  const { resolvedTheme } = useTheme();
 
-  const baskets = useMemo(() => openLiveBaskets(data?.baskets ?? []), [data]);
+  const desk = useMemo(() => withBookMarks(openLiveBaskets(data?.baskets ?? []), positions.data ?? []), [data, positions.data]);
+  const baskets = desk.baskets;
   const open = baskets.find(basket => basket.id === openId) ?? null;
 
-  const styles = sheet();
+  const styles = sheet(resolvedTheme);
 
   if (isError) {
     return (
@@ -76,7 +109,7 @@ export default function BasketDesk({ onAdjust }: Props) {
   if (isLoading) {
     return (
       <View style={styles.empty}>
-        <ActivityIndicator color="#38bdf8" />
+        <ActivityIndicator color={styles.cBrand} />
         <Text style={styles.emptyBody}>Reading which baskets the broker is holding</Text>
       </View>
     );
@@ -102,7 +135,7 @@ export default function BasketDesk({ onAdjust }: Props) {
           <Text style={styles.chipText}>{isFetching ? "Reading" : "Refresh"}</Text>
         </TouchableOpacity>
       </View>
-      <Aggregate baskets={baskets} styles={styles} />
+      <Aggregate baskets={baskets} marked={desk.marked} bookFailed={positions.isError ? positions.error.message : null} styles={styles} />
       {!baskets.length ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No live baskets</Text>
@@ -116,7 +149,7 @@ export default function BasketDesk({ onAdjust }: Props) {
         <BasketCard key={basket.id} basket={basket} styles={styles} onOpen={() => setOpenId(basket.id)} />
       ))}
       {data?.unattributed.length ? (
-        <Text style={styles.basis}>{`${data.unattributed.length} broker position${data.unattributed.length === 1 ? "" : "s"} here is not grouped into a basket.`}</Text>
+        <Text style={styles.basis}>{`${data.unattributed.length} broker position${data.unattributed.length === 1 ? " is" : "s are"} not grouped into a basket.`}</Text>
       ) : null}
       {data?.basis ? <Text style={styles.basis}>{data.basis}</Text> : null}
       {isFetching ? <Text style={styles.basis}>Updating</Text> : null}
@@ -125,7 +158,13 @@ export default function BasketDesk({ onAdjust }: Props) {
 }
 
 /** The whole book's return, so the decision to close something can start from the top number. */
-function Aggregate({ baskets, styles }: { baskets: Basket[]; styles: ReturnType<typeof sheet> }) {
+function Aggregate({ baskets, marked, bookFailed, styles }: {
+  baskets: Basket[];
+  /** Legs this screen priced from the broker's own open-position book, rather than leaving blank. */
+  marked: number;
+  bookFailed: string | null;
+  styles: ReturnType<typeof sheet>;
+}) {
   const totals = baskets.reduce(
     (sum, basket) => {
       const value = basketPnl(basket.legs, basket.realized);
@@ -144,13 +183,13 @@ function Aggregate({ baskets, styles }: { baskets: Basket[]; styles: ReturnType<
       <View style={styles.aggregateRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.figureLabel}>Total P&amp;L</Text>
-          <Text style={[styles.figureBig, { color: totals.open + totals.booked >= 0 ? GREEN : RED }]}>
+          <Text style={[styles.figureBig, { color: moneyColor(totals.open + totals.booked, styles) }]}>
             {rupees(totals.open + totals.booked, true) ?? "no price"}
           </Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.figureLabel}>Booked from exits</Text>
-          <Text style={[styles.figure, { color: totals.booked >= 0 ? GREEN : RED }]}>{rupees(totals.booked, true) ?? "no price"}</Text>
+          <Text style={[styles.figure, { color: moneyColor(totals.booked, styles) }]}>{rupees(totals.booked, true) ?? "no price"}</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.figureLabel}>Open legs</Text>
@@ -159,9 +198,11 @@ function Aggregate({ baskets, styles }: { baskets: Basket[]; styles: ReturnType<
       </View>
       <Text style={styles.aggregateFoot}>
         {[
-          `${baskets.length} live basket${baskets.length === 1 ? "" : "s"} · ${legs} legs`,
+          `${baskets.length} live · ${legs} legs`,
           totals.working ? `${totals.working} entry still working` : null,
-          totals.unmarked ? `${totals.unmarked} leg${totals.unmarked === 1 ? "" : "s"} without a price — not counted above` : null,
+          marked ? `${marked} priced from the broker's positions` : null,
+          totals.unmarked ? `${totals.unmarked} without a price, not counted` : null,
+          bookFailed ? "the broker's positions did not answer" : null,
         ].filter(Boolean).join("  ·  ")}
       </Text>
     </View>
@@ -171,37 +212,41 @@ function Aggregate({ baskets, styles }: { baskets: Basket[]; styles: ReturnType<
 function BasketCard({ basket, styles, onOpen }: { basket: Basket; styles: ReturnType<typeof sheet>; onOpen: () => void }) {
   const value = basketPnl(basket.legs, basket.realized);
   const openLegs = basket.legs.filter(leg => leg.quantity > 0).length;
-  const kindWord = basket.kind === "order" ? "order ticket" : basket.kind === "manual" ? "broker positions" : "algo run";
   return (
     <TouchableOpacity style={styles.card} onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Open basket ${basket.name}`}>
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle} numberOfLines={1}>{basket.name?.trim() || basket.underlying}</Text>
           <Text style={styles.cardMeta}>
-            {`${basket.underlying} · ${dayWord(basket.expiry) || "expiry on record"} · ${openLegs} of ${basket.legs.length} legs open · ${kindWord}`}
+            {[
+              basket.underlying,
+              dayWord(basket.expiry) || null,
+              `${openLegs} of ${basket.legs.length} legs open`,
+              kindWord(basket),
+            ].filter(Boolean).join(" · ")}
           </Text>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={MUTED} />
+        <Ionicons name="chevron-forward" size={18} color={styles.cMuted} />
       </View>
       <View style={styles.cardFigures}>
         <View>
           <Text style={styles.figureLabel}>Total P&amp;L</Text>
-          <Text style={[styles.figure, { color: (value.total ?? 0) >= 0 ? GREEN : RED }]}>{rupees(value.total, true) ?? "no price"}</Text>
+          <Text style={[styles.figure, { color: moneyColor(value.total ?? 0, styles) }]}>{rupees(value.total, true) ?? "no price"}</Text>
         </View>
         <View>
           <Text style={styles.figureLabel}>Booked</Text>
-          <Text style={[styles.figure, { color: value.booked >= 0 ? GREEN : RED }]}>{value.booked ? rupees(value.booked, true) : "nothing yet"}</Text>
+          <Text style={[styles.figure, { color: moneyColor(value.booked, styles) }]}>{value.booked ? rupees(value.booked, true) : "nothing yet"}</Text>
         </View>
         <View>
           <Text style={styles.figureLabel}>Open</Text>
-          <Text style={[styles.figure, { color: (value.open ?? 0) >= 0 ? GREEN : RED }]}>{rupees(value.open, true) ?? "no price"}</Text>
+          <Text style={[styles.figure, { color: moneyColor(value.open ?? 0, styles) }]}>{rupees(value.open, true) ?? "no price"}</Text>
         </View>
       </View>
       {(basket.working || value.unpriced || basket.warnings.length) ? (
         <Text style={styles.cardNote}>
           {[
             basket.working ? `${basket.working.label}: ${basket.working.filled} of ${basket.working.total} legs done` : null,
-            value.unpriced ? `${value.unpriced} leg${value.unpriced === 1 ? "" : "s"} without a price — not counted in Total` : null,
+            value.unpriced ? `${value.unpriced} without a price` : null,
             basket.warnings[0] ?? null,
           ].filter(Boolean).join("  ·  ")}
         </Text>
@@ -221,7 +266,7 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   const { useOptionChains, useStrategyAnalysis, usePlanningMargin, useRecordExitPrice, useRemoveLeg, useDeleteBasket } = useApi();
   const { width: screenWidth } = useWindowDimensions();
   const expiries = useMemo(() => payoffExpiries(basket), [basket]);
-  const chains = useOptionChains(basket.underlying, expiries, true);
+  const chains = useOptionChains(ladderUnderlying(basket), expiries, true);
   const built = useMemo(() => buildAnalysis(basket, chains.map(read => read.data)), [basket, chains]);
   const analysis = useStrategyAnalysis(built.body);
   const margin = usePlanningMargin(built.margin);
@@ -232,8 +277,14 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   const [note, setNote] = useState<string | null>(null);
 
   const value = basketPnl(basket.legs, basket.realized);
-  const model = analysis.data ? curves(analysis.data) : null;
-  const figures = analysis.data ? payoffFigures(analysis.data) : null;
+  // The model curves the units that are still open. The trader decides on the whole trade, so the exited
+  // money is added back before anything is drawn or printed: the dot on the chart is then the Total P&L.
+  const model = analysis.data ? curves(analysis.data, value.booked) : null;
+  // The same shift applied to the phone's own exact payoff of the held contracts, which needs no ladder and
+  // is what the card shows while the model read is still running.
+  const held = useMemo(() => heldPayoff(basket, value.booked), [basket, value.booked]);
+  const until = expiries.map(expiryKey).filter(Boolean).join(" and ") || null;
+  const figures = analysis.data ? payoffFigures(analysis.data, until, value.booked) : null;
   const priceable = basket.kind === "order" || basket.kind === "manual";
   const charges = basket.charges;
   // A wider basket than /v1/planning-margin takes is stated as such; the number for the first eight legs
@@ -262,15 +313,20 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   return (
     <ScrollView contentContainerStyle={{ gap: 10 }}>
       <TouchableOpacity style={styles.back} onPress={onBack} accessibilityRole="button" accessibilityLabel="Back to the basket list">
-        <Ionicons name="chevron-back" size={18} color={BRAND} />
+        <Ionicons name="chevron-back" size={18} color={styles.cBrand} />
         <Text style={styles.backText}>Baskets</Text>
       </TouchableOpacity>
 
       <View>
         <Text style={styles.basketTitle}>{basket.name?.trim() || basket.underlying}</Text>
         <Text style={styles.cardMeta}>
-          {`${basket.underlying} · ${dayWord(basket.expiry) || "expiry on record"} · spot ${formatNumber(basket.spot, 2)}` +
-            ` · ${basket.tau > 0 ? `${basket.tau.toFixed(1)} days to expiry` : "expiry date not stated"}`}
+          {[
+            basket.underlying,
+            dayWord(basket.expiry) ? `expiry ${dayWord(basket.expiry)}` : null,
+            Number.isFinite(basket.spot) && basket.spot > 0 ? `spot ${formatNumber(basket.spot, 2)}` : null,
+            basket.tau > 0 ? `${basket.tau.toFixed(1)} days to expiry` : null,
+            kindWord(basket),
+          ].filter(Boolean).join(" · ")}
         </Text>
       </View>
 
@@ -278,22 +334,22 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
         <View style={styles.aggregateRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.figureLabel}>Total P&amp;L</Text>
-            <Text style={[styles.figureBig, { color: (value.total ?? 0) >= 0 ? GREEN : RED }]}>{rupees(value.total, true) ?? "no price"}</Text>
+            <Text style={[styles.figureBig, { color: moneyColor(value.total ?? 0, styles) }]}>{rupees(value.total, true) ?? "no price"}</Text>
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.figureLabel}>Booked from exits</Text>
-            <Text style={[styles.figure, { color: value.booked >= 0 ? GREEN : RED }]}>{rupees(value.booked, true)}</Text>
+            <Text style={[styles.figure, { color: moneyColor(value.booked, styles) }]}>{rupees(value.booked, true)}</Text>
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.figureLabel}>Still open</Text>
-            <Text style={[styles.figure, { color: (value.open ?? 0) >= 0 ? GREEN : RED }]}>{rupees(value.open, true) ?? "no price"}</Text>
+            <Text style={[styles.figure, { color: moneyColor(value.open ?? 0, styles) }]}>{rupees(value.open, true) ?? "no price"}</Text>
           </View>
         </View>
         <Text style={styles.aggregateFoot}>
           {[
             basket.openedAt ? `opened ${dayWord(basket.openedAt.slice(0, 10))}` : null,
             basket.closedAt ? `last exit ${dayWord(basket.closedAt)}` : null,
-            value.unpriced ? `${value.unpriced} leg${value.unpriced === 1 ? "" : "s"} without a price — not counted` : "every open leg priced",
+            value.unpriced ? `${value.unpriced} without a price, not counted` : null,
             charges?.available ? `an exit now costs about ${rupees(charges.total ?? 0)}${charges.basis ? ` · ${charges.basis}` : ""}`
               : charges ? `exits not chargeable yet: ${charges.reason ?? "prod did not say why"}` : null,
           ].filter(Boolean).join("  ·  ")}
@@ -307,6 +363,7 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
         loading={chains.some(read => read.isFetching) || (analysis.isPending && !!built.body)}
         failed={analysis.isError ? analysis.error.message : null}
         model={model}
+        held={held}
         figures={figures}
         margin={marginLine}
         screenWidth={screenWidth}
@@ -378,17 +435,18 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
 
       {note ? <Text style={styles.note}>{note}</Text> : null}
       {basket.warnings.map(warning => <Text key={warning} style={styles.note}>{warning}</Text>)}
-      <Text style={styles.basis}>{`This basket is grouped from: ${basket.attribution}. ${basis}`}</Text>
+      <Text style={styles.basis}>{`Grouped from ${basket.attribution}${basis ? `  ·  ${basis}` : ""}`}</Text>
     </ScrollView>
   );
 }
 
 /**
- * The curve prod's model draws. Both lines are the server's own samples - the phone invents no grid, and
- * where the T+0 line is missing the card says the server's reason instead of passing the expiry line off
- * as what the basket is worth now.
+ * The payoff card. The expiry line is the phone's own exact arithmetic over the contracts the broker
+ * holds, so it is drawn the moment the basket opens; the T+0 line is prod's model and lands after the
+ * ladder and the model read answer. Where the model has no T+0 the card says the server's reason instead
+ * of passing the expiry line off as what the basket is worth now.
  */
-function Payoff({ basket, built, analysis, loading, failed, model, figures, margin, screenWidth, styles }: {
+function Payoff({ basket, built, analysis, loading, failed, model, held, figures, margin, screenWidth, styles }: {
   basket: Basket;
   built: ReturnType<typeof buildAnalysis>;
   analysis: StrategyAnalysis | null;
@@ -396,6 +454,8 @@ function Payoff({ basket, built, analysis, loading, failed, model, figures, marg
   /** The model's own error sentence, when the call to it failed. */
   failed: string | null;
   model: ReturnType<typeof curves>;
+  /** The exact payoff of the held contracts, which needs no ladder and no model. */
+  held: ReturnType<typeof heldPayoff>;
   figures: Record<string, string> | null;
   /** The margin line, already resolved to words where the read has nothing to show. */
   margin: string;
@@ -403,10 +463,23 @@ function Payoff({ basket, built, analysis, loading, failed, model, figures, marg
   styles: ReturnType<typeof sheet>;
 }) {
   const chart = useMemo(() => {
-    if (!model) return null;
-    const xs = model.spots;
-    const lines = [model.expiry, model.today].filter((line): line is number[] => !!line);
-    if (!lines.length) return null;
+    // Finding #7: Each curve's spots and values must stay paired. If model and held have different grids
+    // (e.g. model returns T+0 data but expiry: null), using model.spots with held.values produces NaN.
+    // Resample both curves onto a shared grid before drawing.
+    const modelSpots = model?.spots ?? [];
+    const heldSpots = held?.spots ?? [];
+    const xs = modelSpots.length >= heldSpots.length ? modelSpots : heldSpots;
+    const resample = (fromSpots: number[] | undefined, fromValues: number[] | null | undefined) => {
+      if (!fromValues || !fromSpots || fromSpots.length !== fromValues.length) return null;
+      if (fromSpots.length === xs.length && fromSpots.every((s, i) => s === xs[i])) return fromValues;
+      return xs.map(x => valueAt(fromSpots, fromValues, x) ?? 0);
+    };
+    const expiryLine = model?.expiry
+      ? resample(modelSpots, model.expiry)
+      : resample(heldSpots, held?.values);
+    const todayLine = model?.today ? resample(modelSpots, model.today) : null;
+    if (xs.length < 3 || (!expiryLine && !todayLine)) return null;
+    const lines = [expiryLine, todayLine].filter((line): line is number[] => !!line);
     const w = Math.round(screenWidth - 42);
     const h = 150;
     const padX = 5;
@@ -422,58 +495,75 @@ function Payoff({ basket, built, analysis, loading, failed, model, figures, marg
     const px = (x: number) => padX + ((x - lo) / (hi - lo || 1)) * (w - padX * 2);
     const py = (y: number) => padTop + (1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom);
     const path = (values: number[]) => values.map((y, i) => `${i === 0 ? "M" : "L"}${px(xs[i]).toFixed(1)},${py(y).toFixed(1)}`).join("");
-    return { w, h, px, py, zero: py(0), lo, hi, expiry: model.expiry ? path(model.expiry) : null, today: model.today ? path(model.today) : null };
-  }, [model, screenWidth]);
+    return {
+      w,
+      h,
+      px,
+      py,
+      zero: py(0),
+      lo,
+      hi,
+      expiry: expiryLine ? path(expiryLine) : null,
+      today: todayLine ? path(todayLine) : null,
+    };
+  }, [model, held, screenWidth]);
 
-  const spot = analysis ? Number(analysis.spot) : NaN;
-  const onChart = !!chart && Number.isFinite(spot) && spot >= chart.lo && spot <= chart.hi;
+  // The model's spot is the axis its T+0 line was priced on. Before it answers, the ladder the legs were
+  // read from carries the same number, and prod sends 0 as a broker-held basket's own spot, so the last
+  // fallback is often nothing - which the card says rather than clamping the reading to an edge.
+  const spot = Number(analysis?.spot ?? built.body?.spot ?? basket.spot);
+  const onChart = !!chart && Number.isFinite(spot) && spot > 0 && spot >= chart.lo && spot <= chart.hi;
   const noT0 = calibration(analysis);
-  const expiryNow = model?.atSpot ?? null;
+  const expiryNow = model
+    ? model.atSpot
+    : onChart && held ? valueAt(held.spots, held.values, spot) : null;
   const todayNow = model?.atSpotToday ?? null;
 
   return (
     <View style={styles.payoff}>
       <View style={styles.payoffHead}>
-        <Text style={styles.small}>Payoff · expiry and T+0 estimate</Text>
+        <Text style={styles.small}>{model ? "Payoff · expiry and T+0" : "Payoff · at expiry"}</Text>
         {todayNow !== null ? (
-          <Text style={[styles.figure, { color: todayNow >= 0 ? GREEN : RED }]}>{rupees(todayNow, true)}</Text>
+          <Text style={[styles.figure, { color: moneyColor(todayNow, styles) }]}>{rupees(todayNow, true)}</Text>
         ) : null}
       </View>
 
-      {loading ? (
-        <Text style={styles.small}>The server is pricing these legs</Text>
-      ) : failed ? (
-        <Text style={styles.small}>{`The model call failed: ${failed} Nothing was changed.`}</Text>
-      ) : !built.body ? (
-        <Text style={styles.small}>{`No model curve yet: ${built.unpriced.join(", ")} ${built.unpriced.length === 1 ? "has" : "have"} no price from the broker’s ladder, so nothing is drawn rather than a curve missing a leg.`}</Text>
-      ) : !chart ? (
-        <Text style={styles.small}>The model answered without a curve to draw.</Text>
+      {!chart ? (
+        loading ? (
+          <Text style={styles.small}>Reading these legs</Text>
+        ) : failed ? (
+          <Text style={styles.small}>{`Model read failed: ${failed}`}</Text>
+        ) : (
+          <Text style={styles.small}>{`No curve: ${held ? "no contracts to draw" : built.unpriced.join("  ·  ") || "the desk holds no exact contracts"}`}</Text>
+        )
       ) : (
         <>
           <Svg width={chart.w} height={chart.h}>
-            <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={BORDER} strokeWidth={1} strokeDasharray="4 3" />
-            {chart.today ? <Path d={chart.today} stroke={WARN} strokeWidth={1.5} fill="none" opacity={0.9} /> : null}
-            {chart.expiry ? <Path d={chart.expiry} stroke={BRAND} strokeWidth={2} fill="none" /> : null}
+            <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={styles.cBorder} strokeWidth={1} strokeDasharray="4 3" />
+            {chart.today ? <Path d={chart.today} stroke={styles.cWarn} strokeWidth={1.5} fill="none" opacity={0.9} /> : null}
+            {chart.expiry ? <Path d={chart.expiry} stroke={styles.cBrand} strokeWidth={2} fill="none" /> : null}
             {onChart ? (
-              <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={MUTED} strokeWidth={1} opacity={0.6} />
+              <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={styles.cMuted} strokeWidth={1} opacity={0.6} />
             ) : null}
             {onChart && expiryNow !== null && chart.expiry ? (
-              <Circle cx={chart.px(spot)} cy={chart.py(expiryNow)} r={3.5} fill={BRAND} />
+              <Circle cx={chart.px(spot)} cy={chart.py(expiryNow)} r={3.5} fill={styles.cBrand} />
             ) : null}
             {onChart && todayNow !== null && chart.today ? (
-              <Circle cx={chart.px(spot)} cy={chart.py(todayNow)} r={3} fill={WARN} />
+              <Circle cx={chart.px(spot)} cy={chart.py(todayNow)} r={3} fill={styles.cWarn} />
             ) : null}
           </Svg>
           <View style={styles.payoffAxis}>
             <Text style={styles.axisText}>{formatNumber(chart.lo, 0)}</Text>
-            <Text style={styles.axisText}>{`${basket.underlying} spot ${Number.isFinite(spot) ? formatNumber(spot, 2) : "unknown"}`}</Text>
+            <Text style={styles.axisText}>{onChart ? `${basket.underlying} spot ${formatNumber(spot, 2)}` : "expiry"}</Text>
             <Text style={styles.axisText}>{formatNumber(chart.hi, 0)}</Text>
           </View>
           <Text style={styles.legend}>
-            <Text style={{ color: BRAND }}>— expiry</Text>
-            {chart.today ? <Text>{`  ·  `}<Text style={{ color: WARN }}>— T+0 estimate</Text></Text> : null}
-            {model?.today === null ? <Text style={{ color: MUTED }}>{`  ·  T+0 unavailable: ${noT0 ?? "the model could not calibrate these legs"}`}</Text> : null}
+            <Text style={{ color: styles.cBrand }}>— expiry</Text>
+            {chart.today ? <Text>{`  ·  `}<Text style={{ color: styles.cWarn }}>— T+0</Text></Text> : null}
+            {!model && held ? <Text style={{ color: styles.cMuted }}>{`  ·  T+0 ${loading ? "reading" : "waiting on the ladder"}`}</Text> : null}
+            {model?.today === null ? <Text style={{ color: styles.cMuted }}>{`  ·  T+0: ${noT0 ?? "the model could not calibrate these legs"}`}</Text> : null}
           </Text>
+          {model ? <Text style={styles.note}>{priceProvenance(built.marks)}</Text> : null}
         </>
       )}
 
@@ -489,6 +579,20 @@ function Payoff({ basket, built, analysis, loading, failed, model, figures, marg
           <Figure styles={styles} label="Est. margin" value={margin} wide />
           <Figure styles={styles} label="Greeks" value={figures.greeks} wide />
           <Figure styles={styles} label="Horizon" value={figures.horizon} wide />
+        </View>
+      ) : held ? (
+        <View style={styles.figureGrid}>
+          <Figure
+            styles={styles}
+            label="If it expired today"
+            value={expiryNow !== null
+              ? rupees(expiryNow, true) ?? "no price"
+              : Number.isFinite(spot) && spot > 0 ? "spot outside the strikes drawn" : "no spot read yet"}
+          />
+          <Figure styles={styles} label={held.netDebit <= 0 ? "Net credit" : "Net debit"} value={rupees(Math.abs(held.netDebit)) ?? "unknown"} />
+          <Figure styles={styles} label="Max profit" value={held.max === null ? "Unlimited" : rupees(held.max) ?? "unknown"} />
+          <Figure styles={styles} label="Max loss" value={held.min === null ? "Unlimited" : rupees(Math.abs(held.min)) ?? "unknown"} />
+          <Figure styles={styles} label="Break-evens" value={held.breakEvens.length ? held.breakEvens.map(value => formatNumber(value, 2)).join("  ·  ") : "none inside the held strikes"} wide />
         </View>
       ) : null}
     </View>
@@ -530,7 +634,7 @@ function Legs({ basket, styles, priceable, onRemove, onRecord }: {
         return (
           <View key={leg.instrumentId} style={styles.legRow}>
             <View style={{ flex: 2 }}>
-              <Text style={[styles.legName, { color: leg.side === "BUY" ? GREEN : RED }]}>
+              <Text style={[styles.legName, { color: leg.side === "BUY" ? styles.cPos : styles.cNeg }]}>
                 {`${leg.side === "BUY" ? "B" : "S"} ${payoff ? contract(leg.symbol, payoff.strike, payoff.right, payoff.expiry) : leg.symbol}`}
               </Text>
               <Text style={styles.legState}>
@@ -553,7 +657,7 @@ function Legs({ basket, styles, priceable, onRemove, onRecord }: {
             <Text style={[styles.legNum, { flex: 1 }]}>{formatNumber(leg.entryPrice, 2)}</Text>
             <Text style={[styles.legNum, { flex: 1.2 }]}>{mark.price === null ? "no price" : formatNumber(mark.price, 2)}</Text>
             <View style={{ flex: 1.2, alignItems: "flex-end" }}>
-              <Text style={[styles.legNum, { color: (moved ?? 0) >= 0 ? GREEN : RED }]}>{moved === null ? "no price" : rupees(moved, true)}</Text>
+              <Text style={[styles.legNum, { color: moneyColor(moved ?? 0, styles) }]}>{moved === null ? "no price" : rupees(moved, true)}</Text>
               {leg.quantity <= 0 && moved !== null && leg.bookedBasis ? <Text style={styles.legState}>{leg.bookedBasis}</Text> : null}
             </View>
           </View>
@@ -583,7 +687,7 @@ function RecordExit({ basket, symbol, draft, setDraft, onSave, busy, styles }: {
           value={draft.price}
           onChangeText={value => setDraft({ ...draft, price: value })}
           placeholder="Exit ₹"
-          placeholderTextColor={MUTED}
+          placeholderTextColor={styles.cMuted}
           keyboardType="decimal-pad"
           accessibilityLabel={`Exit price for ${symbol}`}
         />
@@ -592,7 +696,7 @@ function RecordExit({ basket, symbol, draft, setDraft, onSave, busy, styles }: {
           value={draft.units}
           onChangeText={value => setDraft({ ...draft, units: value })}
           placeholder="units"
-          placeholderTextColor={MUTED}
+          placeholderTextColor={styles.cMuted}
           keyboardType="number-pad"
           accessibilityLabel={`Units that price closed for ${symbol}`}
         />
@@ -608,58 +712,67 @@ function RecordExit({ basket, symbol, draft, setDraft, onSave, busy, styles }: {
   );
 }
 
-const BRAND = "#38bdf8";
-const WARN = "#f59e0b";
-const GREEN = "#22c55e";
-const RED = "#ef4444";
-const MUTED = "#64748b";
-const BORDER = "#334155";
-
-/** Kept as one object because the desk is dark-only on this build; the Builder's own palette stays local to it. */
-function sheet() {
-  return StyleSheet.create({
-    empty: { padding: 28, alignItems: "center", gap: 10 },
-    deskHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-    deskTitle: { fontSize: 13, fontWeight: "700", color: "#f1f5f9" },
-    emptyTitle: { fontSize: 15, fontWeight: "700", color: "#f1f5f9" },
-    emptyBody: { fontSize: 13, color: MUTED, textAlign: "center", lineHeight: 19 },
-    aggregate: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, backgroundColor: "#1e293b", padding: 10, gap: 8 },
-    aggregateRow: { flexDirection: "row", gap: 10 },
-    aggregateFoot: { fontSize: 11, color: MUTED, lineHeight: 16 },
-    figureLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6, color: MUTED, textTransform: "uppercase" },
-    figure: { fontSize: 15, fontWeight: "700", color: "#f1f5f9" },
-    figureValue: { fontSize: 12.5, fontWeight: "600", color: "#f1f5f9", lineHeight: 17 },
-    figureBig: { fontSize: 19, fontWeight: "800" },
-    card: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, backgroundColor: "#1e293b", padding: 10, gap: 8 },
-    cardHead: { flexDirection: "row", alignItems: "center", gap: 8 },
-    cardTitle: { fontSize: 15, fontWeight: "700", color: "#f1f5f9" },
-    cardMeta: { fontSize: 11.5, color: MUTED, marginTop: 2, lineHeight: 16 },
-    cardFigures: { flexDirection: "row", gap: 16 },
-    cardNote: { fontSize: 11.5, color: WARN, lineHeight: 16 },
-    back: { flexDirection: "row", alignItems: "center", gap: 2, alignSelf: "flex-start" },
-    backText: { fontSize: 13, fontWeight: "700", color: BRAND },
-    basketTitle: { fontSize: 17, fontWeight: "700", color: "#f1f5f9" },
-    payoff: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, backgroundColor: "#1e293b", padding: 10, gap: 6 },
-    payoffHead: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
-    payoffAxis: { flexDirection: "row", justifyContent: "space-between" },
-    axisText: { fontSize: 11, color: MUTED },
-    legend: { fontSize: 11, color: "#f1f5f9" },
-    figureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: BORDER },
-    actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: BORDER, backgroundColor: "#1e293b" },
-    chipPrimary: { backgroundColor: BRAND, borderColor: BRAND },
-    chipText: { fontSize: 12.5, fontWeight: "700", color: "#f1f5f9" },
-    legs: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, backgroundColor: "#1e293b", padding: 10, gap: 8 },
-    legHead: { flexDirection: "row", gap: 6, borderBottomWidth: 1, borderBottomColor: BORDER, paddingBottom: 6 },
-    legHeadText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6, color: MUTED, textTransform: "uppercase" },
-    legRow: { flexDirection: "row", gap: 6, alignItems: "flex-start" },
-    legName: { fontSize: 12.5, fontWeight: "600" },
-    legNum: { fontSize: 12.5, color: "#f1f5f9", textAlign: "right" },
-    legState: { fontSize: 10.5, color: MUTED, lineHeight: 15 },
-    link: { fontSize: 11.5, fontWeight: "700", color: BRAND },
-    field: { borderWidth: 1, borderColor: BORDER, borderRadius: 8, backgroundColor: "#0f172a", paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: "#f1f5f9" },
-    note: { fontSize: 12, color: WARN, lineHeight: 17 },
-    basis: { fontSize: 11, color: MUTED, lineHeight: 16 },
-    small: { fontSize: 12, color: MUTED },
-  });
+/**
+ * The desk's palette, in the same two sets the Builder screen uses, so the tab bar and the desk under it
+ * are one screen rather than a light page carrying dark cards. The `c`-prefixed entries are plain colour
+ * values for the places that need one directly - an icon, an SVG stroke, a placeholder.
+ */
+function sheet(theme: string) {
+  const c = theme === "dark"
+    ? {
+      cBg: "#0f172a", cCard: "#1e293b", cText: "#f1f5f9", cMuted: "#64748b", cBorder: "#334155",
+      cBrand: "#38bdf8", cPos: "#22c55e", cNeg: "#ef4444", cWarn: "#f59e0b",
+    }
+    : {
+      cBg: "#f8fafc", cCard: "#ffffff", cText: "#0f172a", cMuted: "#64748b", cBorder: "#e2e8f0",
+      cBrand: "#0284c7", cPos: "#16a34a", cNeg: "#dc2626", cWarn: "#b45309",
+    };
+  return {
+    ...c,
+    ...StyleSheet.create({
+      empty: { padding: 28, alignItems: "center", gap: 10 },
+      deskHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+      deskTitle: { fontSize: 13, fontWeight: "700", color: c.cText },
+      emptyTitle: { fontSize: 15, fontWeight: "700", color: c.cText },
+      emptyBody: { fontSize: 13, color: c.cMuted, textAlign: "center", lineHeight: 19 },
+      aggregate: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 8 },
+      aggregateRow: { flexDirection: "row", gap: 10 },
+      aggregateFoot: { fontSize: 11, color: c.cMuted, lineHeight: 16 },
+      figureLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6, color: c.cMuted, textTransform: "uppercase" },
+      figure: { fontSize: 15, fontWeight: "700", color: c.cText },
+      figureValue: { fontSize: 12.5, fontWeight: "600", color: c.cText, lineHeight: 17 },
+      figureBig: { fontSize: 19, fontWeight: "800" },
+      card: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 8 },
+      cardHead: { flexDirection: "row", alignItems: "center", gap: 8 },
+      cardTitle: { fontSize: 15, fontWeight: "700", color: c.cText },
+      cardMeta: { fontSize: 11.5, color: c.cMuted, marginTop: 2, lineHeight: 16 },
+      cardFigures: { flexDirection: "row", gap: 16 },
+      cardNote: { fontSize: 11.5, color: c.cWarn, lineHeight: 16 },
+      back: { flexDirection: "row", alignItems: "center", gap: 2, alignSelf: "flex-start" },
+      backText: { fontSize: 13, fontWeight: "700", color: c.cBrand },
+      basketTitle: { fontSize: 17, fontWeight: "700", color: c.cText },
+      payoff: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 6 },
+      payoffHead: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
+      payoffAxis: { flexDirection: "row", justifyContent: "space-between" },
+      axisText: { fontSize: 11, color: c.cMuted },
+      legend: { fontSize: 11, color: c.cText },
+      figureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: c.cBorder },
+      actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+      chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: c.cBorder, backgroundColor: c.cCard },
+      chipPrimary: { backgroundColor: c.cBrand, borderColor: c.cBrand },
+      chipText: { fontSize: 12.5, fontWeight: "700", color: c.cText },
+      legs: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 8 },
+      legHead: { flexDirection: "row", gap: 6, borderBottomWidth: 1, borderBottomColor: c.cBorder, paddingBottom: 6 },
+      legHeadText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6, color: c.cMuted, textTransform: "uppercase" },
+      legRow: { flexDirection: "row", gap: 6, alignItems: "flex-start" },
+      legName: { fontSize: 12.5, fontWeight: "600" },
+      legNum: { fontSize: 12.5, color: c.cText, textAlign: "right" },
+      legState: { fontSize: 10.5, color: c.cMuted, lineHeight: 15 },
+      link: { fontSize: 11.5, fontWeight: "700", color: c.cBrand },
+      field: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 8, backgroundColor: c.cBg, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: c.cText },
+      note: { fontSize: 12, color: c.cWarn, lineHeight: 17 },
+      basis: { fontSize: 11, color: c.cMuted, lineHeight: 16 },
+      small: { fontSize: 12, color: c.cMuted },
+    }),
+  };
 }

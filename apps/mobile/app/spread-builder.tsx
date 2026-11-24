@@ -27,7 +27,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, queryKeys } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -40,6 +40,31 @@ interface Leg {
   right: "CE" | "PE";
   strike: string;
   lots: number;
+  /**
+   * The date this leg's contract lives on, and the only date its price, lot size and draft line are read
+   * off. On a held leg this is the broker's fact and nothing on this screen may move it - a close aimed at
+   * another date orders a contract nobody holds - while an added leg picks its own, so one press can widen
+   * a calendar basket.
+   */
+  expiry: string;
+  /**
+   * Set on a row that came from a live basket: what the broker actually holds, in lots, and what it was
+   * bought for. A held row is not a choice - its strike, right and side are facts about the book - so it
+   * carries no steppers, and its x marks a close rather than deleting the row.
+   */
+  held?: { lots: number; lotSize: number; entry: string } | null;
+}
+
+/** One contract line this press sends: a close of something held, or something new. */
+interface PlanLine {
+  kind: "close" | "add";
+  side: "BUY" | "SELL";
+  right: "CE" | "PE";
+  strike: string;
+  expiry: string;
+  lots: number;
+  lotSize: number;
+  price: number | null;
 }
 
 /**
@@ -49,22 +74,10 @@ interface Leg {
  */
 interface Staging {
   underlying: string;
-  expiry: string;
+  /** The date the ladder is put on to work this basket - the earliest one it was bought on. */
+  ladder: string;
   name: string;
   legs: Array<Omit<Leg, "id">>;
-}
-
-/**
- * The listed strike closest to the one the basket holds. A leg is clamped rather than dropped: losing a
- * wing silently would send the naked half of a spread.
- */
-function nearestStrike(ladder: readonly string[], strike: string): string {
-  const target = Number(strike);
-  if (!Number.isFinite(target)) return ladder[0];
-  return ladder.reduce(
-    (best, item) => (Math.abs(Number(item) - target) < Math.abs(Number(best) - target) ? item : best),
-    ladder[0],
-  );
 }
 
 /**
@@ -99,16 +112,30 @@ function amount(value: string | number | null | undefined): number | null {
 }
 
 /** The quote a leg would leave at: what that side of the book actually has to give, else the last trade. */
-function legPrice(chain: OptionChainData, strike: string, right: "CE" | "PE", side: "BUY" | "SELL"): number | null {
+function legQuote(
+  chain: OptionChainData,
+  strike: string,
+  right: "CE" | "PE",
+  side: "BUY" | "SELL",
+): { price: number; from: "bid" | "ask" | "ltp" } | null {
   const row = chain.rows.find(item => item.strike === strike);
   const quote = right === "CE" ? row?.call : row?.put;
   if (!quote) return null;
-  const candidates = side === "BUY" ? [quote.ask, quote.ltp, quote.bid] : [quote.bid, quote.ltp, quote.ask];
-  for (const value of candidates) {
+  const order: Array<["bid" | "ask" | "ltp", string | null]> = side === "BUY"
+    ? [["ask", quote.ask], ["ltp", quote.ltp], ["bid", quote.bid]]
+    : [["bid", quote.bid], ["ltp", quote.ltp], ["ask", quote.ask]];
+  for (const [from, value] of order) {
     const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) return { price: parsed, from };
   }
   return null;
+}
+
+/** Both sides of the book for one leg, so the screen can show what the placed price sits between. */
+function bookOf(chain: OptionChainData | undefined, strike: string, right: "CE" | "PE") {
+  const row = chain?.rows.find(item => item.strike === strike);
+  const quote = row ? (right === "CE" ? row.call : row.put) : undefined;
+  return { bid: amount(quote?.bid), ask: amount(quote?.ask), listed: !!row };
 }
 
 /** One line of the basket, reduced to what the payoff actually needs. */
@@ -182,7 +209,7 @@ function buildPayoff(lines: PayoffLine[], ladder: number[], spot: number | null)
 }
 
 export default function SpreadBuilderScreen() {
-  const { useOptionChain, useChainUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
+  const { useOptionChain, useOptionChains, useChainUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
   const { resolvedTheme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
   const {
@@ -216,6 +243,11 @@ export default function SpreadBuilderScreen() {
   const [sentId, setSentId] = useState("");
   const [tab, setTab] = useState<"builder" | "basket">("builder");
   const [staging, setStaging] = useState<Staging | null>(null);
+  // Held legs marked for closing, as leg id -> how many of its lots this press closes. Kept against the
+  // rows that still exist, so a leg that leaves the sheet takes its close mark with it instead of straining
+  // after a phantom contract.
+  const [marked, setMarked] = useState<Record<string, number>>({});
+  const [expiryFor, setExpiryFor] = useState<string | null>(null);
 
   const { data: destinations } = useOrderDestinations(true);
   const account = destinations?.accounts?.[0];
@@ -225,16 +257,46 @@ export default function SpreadBuilderScreen() {
 
   const wanted = chain ? chain.expiry : "";
 
+  /** The held legs the trader has marked to close, narrowed to rows still on the sheet. */
+  const closing = useMemo(() => Object.keys(marked).filter(id => legs.some(leg => leg.id === id && leg.held)), [marked, legs]);
+  const adjusting = legs.some(leg => leg.held);
+
+  /** How many lots of a marked held leg this press closes; the rest stays exactly as the broker holds it. */
+  const closeLotsOf = (leg: Leg) => (closing.includes(leg.id) ? Math.min(leg.held?.lots ?? 1, Math.max(1, marked[leg.id] ?? 1)) : 0);
+
+  // A leg on a date the ladder is not showing is priced off that date's own chain, so widening a calendar
+  // basket never pays this expiry's premium for a contract on the next one. These reads do not re-poll:
+  // the ladder on screen keeps its own three-second read and one broker lane places the trader's orders.
+  const offDates = useMemo(
+    () => [...new Set(legs.map(leg => leg.expiry))].filter(day => !!day && day !== wanted).sort(),
+    [legs, wanted],
+  );
+  const extra = useOptionChains(underlying, offDates, offDates.length > 0);
+  const chainOf = useMemo(() => {
+    const byDate = new Map<string, OptionChainData>();
+    if (chain) byDate.set(chain.expiry, chain);
+    offDates.forEach((day, index) => {
+      const read = extra[index];
+      if (read?.data) byDate.set(day, read.data);
+    });
+    return byDate;
+  }, [chain, offDates, extra]);
+
   // One reference per distinct basket, derived from what would actually be sent: the symbol, the expiry the
   // drafts are built for, then every leg. A retry of the same basket therefore keeps the reference prod
   // needs in order to answer it idempotently, while any real change gets a fresh one. The hand-rotated
   // reference this replaces got both halves wrong: the lot stepper clamps at one lot, so that tap burned a
   // reference on a basket that had not changed and let an identical one reach the broker twice, and tapping
   // another expiry changed every contract under the reference still held.
+  //
+  // A close mark is part of what would be sent, so it is part of the key: marking a wing and then undoing
+  // it returns to the same instruction, while adding a close to a basket that was already staged must not
+  // reuse the reference of the press that did not carry it.
   const basketKey = JSON.stringify([
     underlying,
-    wanted,
-    legs.map(leg => [leg.side, leg.right, String(leg.strike), leg.lots]),
+    legs.map(leg => leg.held
+      ? ["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg)]
+      : [leg.expiry, leg.side, leg.right, String(leg.strike), leg.lots]),
   ]);
   const references = useRef(new Map<string, string>());
   const referenceFor = (key: string) => {
@@ -265,9 +327,10 @@ export default function SpreadBuilderScreen() {
   };
 
   /**
-   * Stage a live basket's own contracts here so it can be widened, narrowed or re-sent. Nothing is sent by
-   * this: the trader presses Execute. The legs come from the desk's exact contracts, not from the symbol
-   * strings, because a broker token and the contract the ladder lists are not always the same name.
+   * Stage a live basket's own contracts here so it can be narrowed or widened. Nothing is sent by this: the
+   * trader presses Execute. The rows come from the desk's exact contracts, not from the symbol strings,
+   * because a broker token and the contract the ladder lists are not always the same name - and a close must
+   * be aimed at the contract the broker actually holds, so the held strike is kept as it arrived.
    */
   const adjustFromBasket = (row: Basket) => {
     setTab("builder");
@@ -278,24 +341,49 @@ export default function SpreadBuilderScreen() {
       setNote(`${title}: the desk does not hold this basket’s exact contracts, so there is nothing to stage. Its legs at the broker are unchanged.`);
       return;
     }
-    const dates = [...new Set(contracts.map(leg => leg.expiry))];
-    if (dates.length > 1) {
+    // Finding #2: Reject mixed-underlying baskets. All legs must share one underlying so the builder
+    // does not stage NIFTY + BANKNIFTY legs under one symbol and submit orders for the wrong underlying.
+    const underlyings = [...new Set(contracts.map(leg => leg.underlying).filter(Boolean))];
+    if (underlyings.length > 1) {
       setStaging(null);
-      setNote(`${title} spans ${dates.length} expiry dates. One press sends one date, so a calendar basket is worked from the web desk.`);
+      setNote(`${title}: this basket holds legs on ${underlyings.join(", ")}. The builder works on one underlying at a time — split it into separate baskets.`);
       return;
     }
+    const dates = [...new Set(contracts.map(leg => leg.expiry))].sort();
+    // The ladder and the drafts are both addressed by the canonical name, while the basket row carries the
+    // broker's own code - staging under BSESEN asked prod for a chain it does not serve, so the legs never
+    // arrived.
+    const symbol = ladderUnderlying(row);
+    // A leg the book shows fewer lots of than the payoff still carries has been partly exited, and closing
+    // the difference would open a fresh position under the name of a close.
+    const open = contracts.map(leg => {
+      const held = row.legs.find(item => item.instrumentId === leg.instrumentId);
+      return { leg, lots: held ? Math.min(leg.lots, held.lots) : leg.lots };
+    });
+    const flat = open.filter(item => item.lots > 0);
+    if (!flat.length) {
+      setStaging(null);
+      setNote(`${title}: the broker shows no lots open on any of its ${contracts.length} legs, so there is nothing left to close or widen.`);
+      return;
+    }
+    // Finding #3: Derive the ladder date from legs that remain open (not closed), not always dates[0].
+    // If the November leg is flat and December is open, dates[0] would pick November and reject the adjustment.
+    const openDates = [...new Set(flat.map(item => item.leg.expiry))].sort();
+    const ladderDate = openDates[0] || dates[0];
     setStaging({
-      underlying: row.underlying,
-      expiry: dates[0],
+      underlying: symbol,
+      ladder: ladderDate,
       name: title,
-      legs: contracts.map(leg => ({
+      legs: flat.map(({ leg, lots }) => ({
         side: leg.action === "buy" ? "BUY" : "SELL",
         right: leg.right,
         strike: leg.strike,
-        lots: Math.max(1, leg.lots),
+        lots,
+        expiry: leg.expiry,
+        held: { lots, lotSize: leg.lotSize, entry: leg.entryPrice },
       })),
     });
-    if (row.underlying.toUpperCase() !== underlying.toUpperCase()) setOptionChainUnderlying(row.underlying);
+    if (symbol.toUpperCase() !== underlying.toUpperCase()) setOptionChainUnderlying(symbol);
   };
 
   // The basket's legs land only once the ladder they will be priced against has answered, on the date the
@@ -303,30 +391,35 @@ export default function SpreadBuilderScreen() {
   // the held contracts, and an unlisted date means the held contracts no longer exist to adjust.
   useEffect(() => {
     if (!staging || !chain || chain.underlying.toUpperCase() !== staging.underlying.toUpperCase()) return;
-    if (!staging.expiry || !chain.expiries.includes(staging.expiry)) {
+    if (!staging.ladder || !chain.expiries.includes(staging.ladder)) {
       setStaging(null);
-      setNote(`${staging.expiry || "That expiry"} is no longer a listed ${staging.underlying} date, so its legs cannot be staged here. Nothing was sent.`);
+      setNote(`${staging.ladder || "That expiry"} is no longer a listed ${staging.underlying} date, so its legs cannot be staged here. Nothing was sent.`);
       return;
     }
-    if (chain.expiry !== staging.expiry) {
-      setDate(staging.expiry);
+    if (chain.expiry !== staging.ladder) {
+      setDate(staging.ladder);
       return;
     }
     const ladder = chain.rows.filter(row => row.call || row.put).map(row => row.strike);
     if (!ladder.length) {
       setStaging(null);
-      setNote(`${staging.underlying} answered ${staging.expiry} with no strikes, so nothing could be staged.`);
+      setNote(`${staging.underlying} answered ${staging.ladder} with no strikes, so nothing could be staged.`);
       return;
     }
-    const listed = new Set(ladder.map(Number));
-    const moved = staging.legs.filter(leg => !listed.has(Number(leg.strike))).length;
+    const listed = new Set(ladder);
+    // Only a leg on this ladder can be checked against it: a leg the broker holds on another date is
+    // priced off that date's own read, and an unpriced one stops the send rather than guessing.
+    const offLadder = staging.legs.filter(leg => leg.expiry === staging.ladder && !listed.has(leg.strike));
+    const dates = [...new Set(staging.legs.map(leg => leg.expiry))];
     setStaging(null);
-    edit(() => staging.legs.map((leg, index) => ({ ...leg, id: `adjust-${index}-${staging.expiry}`, strike: nearestStrike(ladder, leg.strike) })));
+    setMarked({});
+    edit(() => staging.legs.map((leg, index) => ({ ...leg, id: `hold-${index}-${leg.expiry}-${leg.strike}-${leg.right}` })));
     setBasket(staging.name);
     setNote(
-      `${staging.name} staged with ${staging.legs.length} legs from ${staging.expiry}.` +
-      (moved ? ` ${moved} strike${moved === 1 ? "" : "s"} not on this ladder moved to the nearest listed one.` : "") +
-      " Pressing Execute sends these as new orders - it does not change or close what the broker already holds.",
+      `${staging.name} staged with ${staging.legs.length} held legs${dates.length > 1 ? ` across ${dates.length} dates` : ` from ${dates[0]}`}. Press x on a leg to close it, then step the lots down to close only part of it; a leg without a mark is left exactly as the broker holds it.` +
+      (offLadder.length
+        ? ` ${offLadder.length} held strike${offLadder.length === 1 ? "" : "s"} (${offLadder.map(leg => `${leg.strike}${leg.right}`).join(", ")}) are not on this ladder, so they have no broker price and sending them is refused.`
+        : ""),
     );
   }, [staging, chain]);
 
@@ -334,9 +427,18 @@ export default function SpreadBuilderScreen() {
     () => (chain?.rows ?? []).filter(row => row.call || row.put).map(row => row.strike),
     [chain]
   );
+  /** The ladder a leg of one date may be stepped over, which is not necessarily the date on screen. */
+  const ladderOf = (day: string) => (chainOf.get(day)?.rows ?? []).filter(row => row.call || row.put).map(row => row.strike);
   /** Empty until the chain names one; both uses fall back to the middle of the listed ladder. */
   const atTheMoney = useMemo(() => (chain?.rows ?? []).find(row => row.isAtTheMoney)?.strike ?? "", [chain]);
   const lotSize = chain?.lotSize ?? 0;
+
+  /** What one leg would leave at, read off its own date's book. */
+  const quoteOf = (leg: Leg, side: "BUY" | "SELL") => {
+    const read = chainOf.get(leg.expiry);
+    return read ? legQuote(read, leg.strike, leg.right, side) : null;
+  };
+  const sizeOf = (leg: Leg) => leg.held?.lotSize || chainOf.get(leg.expiry)?.lotSize || lotSize;
 
   const stage = (template: Template) => {
     if (!strikes.length) return;
@@ -347,6 +449,7 @@ export default function SpreadBuilderScreen() {
       side: leg.side,
       right: leg.right,
       lots: leg.lots,
+      expiry: wanted,
       // Clamped rather than dropped: a three-step wing on a short stock ladder is still the furthest
       // listed strike the trader meant, and silently losing a leg would send a naked one.
       strike: strikes[Math.min(strikes.length - 1, Math.max(0, anchor + leg.step))],
@@ -360,6 +463,7 @@ export default function SpreadBuilderScreen() {
       side: "BUY",
       right: "CE",
       lots: 1,
+      expiry: wanted,
       strike: atTheMoney && strikes.includes(atTheMoney) ? atTheMoney : strikes[Math.floor(strikes.length / 2)],
     }]);
   };
@@ -368,9 +472,11 @@ export default function SpreadBuilderScreen() {
     edit(current => current.map(item => {
       if (item.id !== leg.id) return item;
       if (field === "lots") return { ...item, lots: Math.min(99, Math.max(1, item.lots + direction)) };
-      const index = strikes.indexOf(item.strike);
-      const next = Math.min(strikes.length - 1, Math.max(0, (index < 0 ? 0 : index) + direction));
-      return { ...item, strike: strikes[next] };
+      const ladder = ladderOf(item.expiry);
+      if (!ladder.length) return item;
+      const index = ladder.indexOf(item.strike);
+      const next = Math.min(ladder.length - 1, Math.max(0, (index < 0 ? 0 : index) + direction));
+      return { ...item, strike: ladder[next] };
     }));
 
   const flip = (leg: Leg, field: "side" | "right") =>
@@ -380,46 +486,136 @@ export default function SpreadBuilderScreen() {
 
   const remove = (leg: Leg) => edit(current => current.filter(item => item.id !== leg.id));
 
-  const priced = legs.map(leg => ({ leg, price: chain ? legPrice(chain, leg.strike, leg.right, leg.side) : null }));
-  const net = priced.reduce((sum, item) =>
-    item.price === null ? sum : sum + (item.leg.side === "BUY" ? 1 : -1) * item.price * item.leg.lots * lotSize, 0);
+  /** Mark a held leg to close all of it, or take the mark back off. Nothing is sent by this press of the x. */
+  const markClose = (leg: Leg) => {
+    setSentId("");
+    setNote(null);
+    setMarked(current => {
+      const next = { ...current };
+      if (next[leg.id]) delete next[leg.id];
+      else next[leg.id] = leg.held?.lots ?? 1;
+      return next;
+    });
+  };
+
+  /** Narrow a marked close to some of the leg's lots; the broker keeps the rest untouched. */
+  const setCloseLots = (leg: Leg, direction: 1 | -1) => {
+    setSentId("");
+    setNote(null);
+    const max = leg.held?.lots ?? 1;
+    setMarked(current => ({ ...current, [leg.id]: Math.min(max, Math.max(1, (current[leg.id] ?? max) + direction)) }));
+  };
+
+  /**
+   * Every contract line Execute would send. A held leg that was not marked appears nowhere: the broker
+   * keeps it and no order is raised for it. A marked one is bought back or sold on the opposite side at the
+   * strike and on the date the book holds it, for only the lots the trader left on the close.
+   */
+  const plan: PlanLine[] = legs.flatMap((leg): PlanLine[] => {
+    const closingNow = !!leg.held && closing.includes(leg.id);
+    if (leg.held && !closingNow) return [];
+    const side = closingNow ? (leg.side === "BUY" ? "SELL" : "BUY") : leg.side;
+    return [{
+      kind: leg.held ? "close" : "add",
+      side,
+      right: leg.right,
+      strike: leg.strike,
+      expiry: leg.expiry,
+      lots: closingNow ? closeLotsOf(leg) : leg.lots,
+      lotSize: sizeOf(leg),
+      price: quoteOf(leg, side)?.price ?? null,
+    }];
+  });
+  const closes = plan.filter(line => line.kind === "close").length;
+  const adds = plan.filter(line => line.kind === "add").length;
+  /** Lots this press takes off the book, which is not the number of legs when a close is partial. */
+  const closeLots = plan.reduce((sum, line) => sum + (line.kind === "close" ? line.lots : 0), 0);
+  // The button says whether a marked leg leaves whole or only partly trimmed, so a stepped-down close can
+  // never be read as the whole leg going out.
+  const wholeCloses = legs.filter(leg => !!leg.held && closing.includes(leg.id) && closeLotsOf(leg) === leg.held.lots).length;
+  const closeText = !closes ? "" : wholeCloses === closes ? `Close ${closes}` : `Close ${closeLots} lots`;
+
+  // The money this press moves: the closes it sends and the legs it adds, each at the price the book
+  // would actually leave at. Held legs nobody marked are not part of it - they were paid for already.
+  const net = plan.reduce((sum, line) =>
+    line.price === null ? sum : sum + (line.side === "BUY" ? 1 : -1) * line.price * line.lots * line.lotSize, 0);
+
+  /**
+   * The curve is drawn for the book this press leaves behind: a held leg nobody marked stays whole at the
+   * premium it was already bought for, a partly marked one keeps only the lots that were not closed, an
+   * added leg enters at its own date's price, and a fully closed leg has left the book.
+   */
+  const priced = legs.flatMap((leg) => {
+    const left = (leg.held?.lots ?? leg.lots) - closeLotsOf(leg);
+    if (left <= 0) return [];
+    const premium = leg.held ? amount(leg.held.entry) : quoteOf(leg, leg.side)?.price ?? null;
+    return [{ leg, qty: left * sizeOf(leg), premium }];
+  });
 
   // The payoff is drawn from the same premiums the leg rows show, so the curve and the net figure can
   // never disagree. No legs is a true flat line at zero; an unpriced leg is an unknown, and the curve
   // stops rather than drawing the payoff of a basket the trader did not stage.
-  const unpricedLeg = priced.find(item => item.price === null)?.leg ?? null;
+  const unpricedLeg = priced.find(item => item.premium === null)?.leg ?? null;
   const spotNow = chain ? amount(chain.spot.price) : null;
-  const payoff = !chain || unpricedLeg || lotSize <= 0 || strikes.length < 3 ? null : buildPayoff(
+  // A leg with no lot size has no quantity, and a zero-quantity wing draws a payoff the trader does not
+  // have - the curve stops and says which leg instead.
+  const sizeless = priced.find(item => item.qty <= 0)?.leg ?? null;
+  // A calendar basket kinks at every strike of every date it holds, so the curve spans the union of the
+  // ladders its legs are priced on rather than only the one currently on screen.
+  const curveLadder = useMemo(() => {
+    const grid = new Set<number>();
+    for (const day of new Set(legs.map(leg => leg.expiry))) {
+      for (const row of chainOf.get(day)?.rows ?? []) {
+        if (row.call || row.put) {
+          const value = Number(row.strike);
+          if (Number.isFinite(value)) grid.add(value);
+        }
+      }
+    }
+    return [...grid].sort((a, b) => a - b);
+  }, [legs, chainOf]);
+  // Finding #1: Detect calendar baskets (multiple distinct expiries). buildPayoff treats all legs as
+  // expiring at the same time, which incorrectly cancels calendar spread legs with different expiries.
+  // Only call buildPayoff for single-expiry baskets.
+  const distinctExpiries = new Set(legs.map(leg => leg.expiry));
+  const isCalendarBasket = distinctExpiries.size > 1;
+  const payoff = !chain || unpricedLeg || sizeless || curveLadder.length < 3 || isCalendarBasket ? null : buildPayoff(
     priced.map(item => ({
       strike: Number(item.leg.strike),
       right: item.leg.right,
       sign: item.leg.side === "BUY" ? 1 : -1,
-      premium: item.price as number,
-      qty: item.leg.lots * lotSize,
+      premium: item.premium as number,
+      qty: item.qty,
     })),
-    strikes.map(Number).filter(Number.isFinite).sort((a, b) => a - b),
+    curveLadder,
     spotNow,
   );
 
   const send = async () => {
     if (!chain || !wanted) { setNote("The chain has not answered yet. Nothing was sent."); return; }
     if (!legs.length) { setNote("Add a leg first."); return; }
-    if (legs.length > 8) { setNote("Prod takes eight legs in one instruction. Remove some."); return; }
+    if (!plan.length) {
+      setNote(`${closes} leg${closes === 1 ? "" : "s"} marked to close and ${adds} added - nothing to send. The broker still holds every leg of this basket.`);
+      return;
+    }
+    if (plan.length > 8) { setNote("Prod takes eight legs in one instruction. Remove some."); return; }
     if (!account) { setNote("No connected broker account for this sign-in. Nothing was sent."); return; }
-    const unpriced = legs.find(leg => legPrice(chain, leg.strike, leg.right, leg.side) === null);
+    const unpriced = plan.find(line => line.price === null);
     if (unpriced) {
-      setNote(`${unpriced.strike} ${unpriced.right} has no price from the broker. Nothing was sent.`);
+      setNote(`${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker. Nothing was sent.`);
       return;
     }
 
-    const draftLegs: OptionDraftLeg[] = legs.map(leg => ({
-      expiry: wanted,
-      strike: leg.strike,
-      right: leg.right,
-      side: leg.side,
-      lots: leg.lots,
-      lotSize,
-      price: (legPrice(chain, leg.strike, leg.right, leg.side) as number).toFixed(2),
+    // Each line names its own date: prod resolves a leg against the ladder of the expiry it is sent with,
+    // so a basket that spans two dates closes and adds on the right contracts rather than all on one.
+    const draftLegs: OptionDraftLeg[] = plan.map(line => ({
+      expiry: line.expiry,
+      strike: line.strike,
+      right: line.right,
+      side: line.side,
+      lots: line.lots,
+      lotSize: line.lotSize,
+      price: (line.price as number).toFixed(2),
     }));
 
     // Taken before the first await: the reference and the legs must be the same basket's, because a leg
@@ -497,6 +693,13 @@ export default function SpreadBuilderScreen() {
     stepper: { flexDirection: "row", alignItems: "center", gap: 8, flex: 1, justifyContent: "center" },
     stepButton: { width: 30, height: 30, borderRadius: 6, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
     strike: { fontSize: 15, fontWeight: "700", color: colors.brand, minWidth: 70, textAlign: "center" },
+    held: { fontSize: 15, fontWeight: "700", color: colors.text, flex: 1 },
+    struck: { textDecorationLine: "line-through", color: colors.muted },
+    expiry: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
+    expiryText: { fontSize: 11, fontWeight: "700", color: colors.muted, letterSpacing: 0.3 },
+    bid: { fontSize: 12, fontWeight: "700", color: colors.buy },
+    ask: { fontSize: 12, fontWeight: "700", color: colors.sell },
+    placed: { fontSize: 12, fontWeight: "700", color: colors.text },
     small: { fontSize: 12, color: colors.muted },
     price: { fontSize: 13, fontWeight: "600", color: colors.text },
     add: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed" },
@@ -551,6 +754,14 @@ export default function SpreadBuilderScreen() {
   const closePicker = () => {
     setSymbolOpen(false);
     setSearch("");
+  };
+
+  /** Re-aim one added leg at another listed date. Held legs never come here: their date is the broker's. */
+  const pickExpiry = (day: string) => {
+    const id = expiryFor;
+    setExpiryFor(null);
+    if (!id) return;
+    edit(current => current.map(item => item.id === id ? { ...item, expiry: day } : item));
   };
 
   // The two halves of one desk: stage and send on Builder, read what is held on Basket. The builder keeps
@@ -686,6 +897,42 @@ export default function SpreadBuilderScreen() {
     };
   })() : null;
 
+  // One leg's date is chosen from the same listed ladder the strip above offers, so a calendar basket is
+  // staged on this screen instead of being sent back to the web desk.
+  const expirySheet = (
+    <Modal visible={!!expiryFor} animationType="slide" onRequestClose={() => setExpiryFor(null)}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+        <View style={styles.sheet}>
+          <View style={styles.sheetHead}>
+            <Text style={styles.title}>Expiry of this leg</Text>
+            <TouchableOpacity
+              onPress={() => setExpiryFor(null)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Close the expiry list"
+            >
+              <Ionicons name="close" size={22} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.meta}>
+            The date this contract is bought on, sent with the leg. A strike the chosen date does not list has no price and stops the whole press.
+          </Text>
+          <FlatList
+            data={chain.expiries}
+            keyExtractor={day => day}
+            style={{ maxHeight: 380 }}
+            renderItem={({ item: day }) => (
+              <TouchableOpacity style={styles.row} onPress={() => pickExpiry(day)} accessibilityRole="button" accessibilityLabel={`Use ${day} for this leg`}>
+                <Text style={styles.rowName}>{day}</Text>
+                {day === legs.find(leg => leg.id === expiryFor)?.expiry ? <Ionicons name="checkmark" size={18} color={colors.brand} /> : null}
+              </TouchableOpacity>
+            )}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.body}>
       {tabs}
@@ -705,56 +952,145 @@ export default function SpreadBuilderScreen() {
         style={{ marginHorizontal: -12 }}
       />
 
-      <FlatList
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        data={TEMPLATES}
-        keyExtractor={template => template.id}
-        renderItem={({ item: template }) => (
-          <TouchableOpacity style={[styles.template, activeTemplate === template.id && styles.templateOn]} onPress={() => stage(template)}>
-            <Text style={styles.templateText}>{`${template.name} ${template.legs.length}`}</Text>
-          </TouchableOpacity>
-        )}
-        contentContainerStyle={styles.templates}
-        style={{ marginHorizontal: -12 }}
-      />
+      {/* A template replaces the whole sheet, so it has no place on a basket the broker is already holding. */}
+      {adjusting ? null : (
+        <FlatList
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          data={TEMPLATES}
+          keyExtractor={template => template.id}
+          renderItem={({ item: template }) => (
+            <TouchableOpacity style={[styles.template, activeTemplate === template.id && styles.templateOn]} onPress={() => stage(template)}>
+              <Text style={styles.templateText}>{`${template.name} ${template.legs.length}`}</Text>
+            </TouchableOpacity>
+          )}
+          contentContainerStyle={styles.templates}
+          style={{ marginHorizontal: -12 }}
+        />
+      )}
 
       {legs.map(leg => {
-        const price = legPrice(chain, leg.strike, leg.right, leg.side);
+        // A held leg is quoted at the price it would leave at, which is the opposite side of the book.
+        const closingNow = !!leg.held && closing.includes(leg.id);
+        const side = closingNow ? (leg.side === "BUY" ? "SELL" : "BUY") : leg.side;
+        const quote = quoteOf(leg, side);
+        const entry = leg.held ? amount(leg.held.entry) : null;
+        const heldLots = leg.held?.lots ?? leg.lots;
+        const going = closeLotsOf(leg);
+        const left = heldLots - going;
+        const size = sizeOf(leg);
+        const read = chainOf.get(leg.expiry);
+        const twoSided = bookOf(read, leg.strike, leg.right);
+        const price = (value: number | null) => (value === null ? "none" : formatNumber(value, 2));
         return (
-          <View key={leg.id} style={styles.leg}>
+          <View key={leg.id} style={[styles.leg, leg.held && { borderColor: closingNow ? colors.warn : colors.brand }]}>
             <View style={styles.legRow}>
-              <TouchableOpacity style={[styles.pill, { borderColor: colors[leg.side === "BUY" ? "buy" : "sell"] }]} onPress={() => flip(leg, "side")}>
-                <Text style={[styles.pillText, { color: colors[leg.side === "BUY" ? "buy" : "sell"] }]}>{leg.side}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.pill, { borderColor: colors[leg.right === "CE" ? "buy" : "sell"] }]} onPress={() => flip(leg, "right")}>
-                <Text style={[styles.pillText, { color: colors[leg.right === "CE" ? "buy" : "sell"] }]}>{leg.right}</Text>
-              </TouchableOpacity>
-              <View style={styles.stepper}>
-                <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "strike", -1)}>
-                  <Ionicons name="chevron-back" size={16} color={colors.text} />
-                </TouchableOpacity>
-                <Text style={styles.strike}>{leg.strike}</Text>
-                <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "strike", 1)}>
-                  <Ionicons name="chevron-forward" size={16} color={colors.text} />
-                </TouchableOpacity>
-              </View>
-              <TouchableOpacity style={styles.stepButton} onPress={() => remove(leg)}>
-                <Ionicons name="close" size={16} color={colors.muted} />
+              {leg.held ? (
+                // The contract is the broker's, not a choice: no flip, no strike stepper, only the close mark.
+                <Text style={[styles.held, closingNow && styles.struck]}>{`${leg.side} ${leg.strike} ${leg.right}`}</Text>
+              ) : (
+                <>
+                  <TouchableOpacity style={[styles.pill, { borderColor: colors[leg.side === "BUY" ? "buy" : "sell"] }]} onPress={() => flip(leg, "side")}>
+                    <Text style={[styles.pillText, { color: colors[leg.side === "BUY" ? "buy" : "sell"] }]}>{leg.side}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.pill, { borderColor: colors[leg.right === "CE" ? "buy" : "sell"] }]} onPress={() => flip(leg, "right")}>
+                    <Text style={[styles.pillText, { color: colors[leg.right === "CE" ? "buy" : "sell"] }]}>{leg.right}</Text>
+                  </TouchableOpacity>
+                  <View style={styles.stepper}>
+                    <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "strike", -1)}>
+                      <Ionicons name="chevron-back" size={16} color={colors.text} />
+                    </TouchableOpacity>
+                    <Text style={styles.strike}>{leg.strike}</Text>
+                    <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "strike", 1)}>
+                      <Ionicons name="chevron-forward" size={16} color={colors.text} />
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+              <TouchableOpacity
+                style={styles.stepButton}
+                onPress={() => (leg.held ? markClose(leg) : remove(leg))}
+                accessibilityRole="button"
+                accessibilityLabel={leg.held
+                  ? (closingNow ? `Keep ${leg.strike} ${leg.right} open` : `Close ${leg.strike} ${leg.right}`)
+                  : `Remove ${leg.strike} ${leg.right}`}
+              >
+                <Ionicons
+                  name={leg.held ? (closingNow ? "arrow-undo" : "close") : "close"}
+                  size={16}
+                  color={closingNow ? colors.warn : colors.muted}
+                />
               </TouchableOpacity>
             </View>
+
             <View style={styles.legRow}>
-              <View style={styles.stepper}>
-                <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "lots", -1)}>
-                  <Ionicons name="remove" size={16} color={colors.text} />
+              {leg.held ? (
+                // A held leg's date is the broker's fact, so it is named and never offered as a choice.
+                <Text style={styles.expiryText}>{leg.expiry}</Text>
+              ) : (
+                <TouchableOpacity
+                  style={styles.expiry}
+                  onPress={() => setExpiryFor(leg.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Change the expiry of this leg, currently ${leg.expiry}`}
+                >
+                  <Text style={styles.expiryText}>{leg.expiry}</Text>
+                  <Ionicons name="chevron-down" size={12} color={colors.muted} />
                 </TouchableOpacity>
-                <Text style={[styles.price, { minWidth: 60, textAlign: "center" }]}>{`${leg.lots} lot${leg.lots > 1 ? "s" : ""}`}</Text>
-                <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "lots", 1)}>
-                  <Ionicons name="add" size={16} color={colors.text} />
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.small}>{`${leg.lots * lotSize} qty`}</Text>
-              <Text style={styles.price}>{price === null ? "no price" : `at ${formatNumber(price, 2)}`}</Text>
+              )}
+              {leg.held ? (
+                closingNow ? (
+                  <>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity style={styles.stepButton} onPress={() => setCloseLots(leg, -1)} accessibilityLabel={`Close one lot fewer of ${leg.strike} ${leg.right}`}>
+                        <Ionicons name="remove" size={16} color={colors.text} />
+                      </TouchableOpacity>
+                      <Text style={[styles.price, { minWidth: 92, textAlign: "center" }]}>{`close ${going} of ${heldLots}`}</Text>
+                      <TouchableOpacity style={styles.stepButton} onPress={() => setCloseLots(leg, 1)} accessibilityLabel={`Close one more lot of ${leg.strike} ${leg.right}`}>
+                        <Ionicons name="add" size={16} color={colors.text} />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.small}>{left > 0 ? `${left} lot${left > 1 ? "s" : ""} left open` : "whole leg closes"}</Text>
+                  </>
+                ) : (
+                  <Text style={styles.small}>{`${heldLots} lot${heldLots > 1 ? "s" : ""}  ·  ${heldLots * size} qty`}</Text>
+                )
+              ) : (
+                <>
+                  <View style={styles.stepper}>
+                    <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "lots", -1)}>
+                      <Ionicons name="remove" size={16} color={colors.text} />
+                    </TouchableOpacity>
+                    <Text style={[styles.price, { minWidth: 60, textAlign: "center" }]}>{`${leg.lots} lot${leg.lots > 1 ? "s" : ""}`}</Text>
+                    <TouchableOpacity style={styles.stepButton} onPress={() => step(leg, "lots", 1)}>
+                      <Ionicons name="add" size={16} color={colors.text} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.small}>{`${leg.lots * size} qty`}</Text>
+                </>
+              )}
+            </View>
+
+            <View style={styles.legRow}>
+              {twoSided.listed ? (
+                <Text style={styles.small}>
+                  {"Bid "}
+                  <Text style={styles.bid}>{price(twoSided.bid)}</Text>
+                  {"   Ask "}
+                  <Text style={styles.ask}>{price(twoSided.ask)}</Text>
+                </Text>
+              ) : (
+                <Text style={styles.small}>
+                  {read ? `${leg.strike} ${leg.right} is not listed on ${leg.expiry}` : `Reading the ${leg.expiry} chain`}
+                </Text>
+              )}
+              <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
+                {leg.held && !closingNow
+                  ? `bought ${entry === null ? "price unknown" : formatNumber(entry, 2)}`
+                  : quote === null
+                    ? "no price"
+                    : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)} (${quote.from === "ltp" ? "last traded" : quote.from})`}
+              </Text>
             </View>
           </View>
         );
@@ -779,9 +1115,9 @@ export default function SpreadBuilderScreen() {
         />
       ) : null}
 
-      {legs.length ? (
+      {plan.length ? (
         <View style={styles.net}>
-          <Text style={styles.small}>{`Net ${net >= 0 ? "debit" : "credit"}`}</Text>
+          <Text style={styles.small}>{adjusting ? (net >= 0 ? "This press pays" : "This press receives") : `Net ${net >= 0 ? "debit" : "credit"}`}</Text>
           <Text style={[styles.netValue, { color: net >= 0 ? colors.sell : colors.buy }]}>{`₹${formatNumber(Math.abs(net), 2)}`}</Text>
         </View>
       ) : null}
@@ -789,7 +1125,7 @@ export default function SpreadBuilderScreen() {
       {payoff && chart ? (
         <View style={styles.payoff}>
           <View style={styles.payoffHead}>
-            <Text style={styles.small}>Payoff at expiry</Text>
+            <Text style={styles.small}>{adjusting ? "Payoff of what is left open" : "Payoff at expiry"}</Text>
             {payoff.atSpot === null ? null : (
               <Text style={[styles.price, { color: payoff.atSpot >= 0 ? colors.buy : colors.sell }]}>
                 {`${payoff.atSpot >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(payoff.atSpot), 0)}`}
@@ -813,7 +1149,7 @@ export default function SpreadBuilderScreen() {
           </View>
           <Text style={styles.payoffFoot}>
             {legs.length === 0
-              ? "Flat at zero - the payoff of no legs is nothing."
+              ? "No legs yet."
               : `${payoff.breakEvens.length
                   ? `Break even ${payoff.breakEvens.slice(0, 4).map(strike => formatNumber(strike, 0)).join("  ·  ")}`
                   : "No break-even inside the listed strikes"}  ·  ${payoff.tail}`}
@@ -827,14 +1163,22 @@ export default function SpreadBuilderScreen() {
           <Text style={styles.payoffFoot}>
             {unpricedLeg
               ? `${unpricedLeg.strike} ${unpricedLeg.right} has no price from the broker, so the curve is not drawn.`
-              : "The payoff needs a lot size and a priced leg at every strike."}
+              : sizeless
+                ? `${sizeless.strike} ${sizeless.right} has no lot size, so its quantity is unknown.`
+                : "The payoff needs a priced leg at every strike."}
           </Text>
         </View>
       ) : null}
 
-      <TouchableOpacity style={[styles.execute, (sending || !legs.length) && { opacity: 0.5 }]} onPress={send} disabled={sending}>
+      <TouchableOpacity style={[styles.execute, (sending || !plan.length) && { opacity: 0.5 }]} onPress={send} disabled={sending}>
         <Text style={styles.executeText}>
-          {sending ? "Sending" : legs.length ? `Execute ${legs.length} leg${legs.length === 1 ? "" : "s"}` : "Add a leg"}
+          {sending
+            ? "Sending"
+            : !legs.length
+              ? "Add a leg"
+              : !plan.length
+                ? "Mark a leg to close or add one"
+                : [closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}
         </Text>
       </TouchableOpacity>
 
@@ -861,6 +1205,7 @@ export default function SpreadBuilderScreen() {
       ) : null}
 
       {picker}
+      {expirySheet}
     </ScrollView>
   );
 }
