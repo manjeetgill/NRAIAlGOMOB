@@ -121,21 +121,37 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
                 close: item.close,
                 volume: item.volume || 0,
               }));
-              chart.applyNewData(klineData);
+              if (typeof chart.applyNewData === 'function') {
+                chart.applyNewData(klineData);
+              } else if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
+                chart._chartStore._addData(klineData, 'init');
+              } else if (typeof chart.setDataLoader === 'function') {
+                chart.setDataLoader({
+                  getBars: function(params) {
+                    params.callback(klineData);
+                  }
+                });
+                chart.setSymbol('CHART');
+                chart.setPeriod({ multiplier: 1, timespan: 'day' });
+              }
             } catch (e) {
               console.error('Update error:', e);
             }
           }
 
-          window.addEventListener('message', (event) => {
+          function handleRawMessage(event) {
             try {
-              const message = JSON.parse(event.data);
+              const rawData = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
+              const message = JSON.parse(rawData);
               if (message.type === 'init') initChart();
               else if (message.type === 'update') updateData(message.data);
             } catch (e) { 
               console.error('Message error:', e);
             }
-          });
+          }
+
+          window.addEventListener('message', handleRawMessage);
+          document.addEventListener('message', handleRawMessage);
 
           window.addEventListener('DOMContentLoaded', () => {
             initChart();
