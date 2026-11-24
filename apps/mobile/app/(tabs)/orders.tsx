@@ -31,12 +31,37 @@ function normalizeStatus(value: string | null | undefined): OrderStatus {
   return "OTHER";
 }
 
-/** ICICI timestamps arrive without a timezone but are always IST. Parse them as IST so the
- *  displayed time is correct regardless of the device's own zone. */
+/** ICICI timestamps arrive in multiple formats without timezone but are always IST.
+ *  Common formats: "24-Nov-2026 10:29:29", "2026-11-24 10:29:29", "2026-11-24T10:29:29"
+ *  Parse them as IST so the displayed time is correct regardless of the device's own zone. */
 function parseIstTimestamp(value: string | null): Date | null {
   if (!value) return null;
+  
+  // Check if already has timezone
   const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value);
-  const iso = hasZone ? value : `${value.replace(" ", "T")}+05:30`;
+  if (hasZone) {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? new Date(ms) : null;
+  }
+  
+  // Try to parse "DD-Mon-YYYY HH:MM:SS" format (e.g., "24-Nov-2026 10:29:29")
+  const dmyMatch = value.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}:\d{2}:\d{2})$/);
+  if (dmyMatch) {
+    const [, day, monStr, year, time] = dmyMatch;
+    const months: Record<string, string> = {
+      Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+      Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12"
+    };
+    const mon = months[monStr.charAt(0).toUpperCase() + monStr.slice(1).toLowerCase()];
+    if (mon) {
+      const iso = `${year}-${mon}-${day.padStart(2, "0")}T${time}+05:30`;
+      const ms = Date.parse(iso);
+      return Number.isFinite(ms) ? new Date(ms) : null;
+    }
+  }
+  
+  // Try ISO-like format "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
+  const iso = value.replace(" ", "T") + "+05:30";
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? new Date(ms) : null;
 }
