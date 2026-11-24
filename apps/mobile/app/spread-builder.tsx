@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   FlatList,
   Modal,
+  PanResponder,
   ScrollView,
   SectionList,
   StyleSheet,
@@ -27,7 +28,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -248,6 +249,8 @@ export default function SpreadBuilderScreen() {
   // after a phantom contract.
   const [marked, setMarked] = useState<Record<string, number>>({});
   const [expiryFor, setExpiryFor] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [touchPx, setTouchPx] = useState<number | null>(null);
 
   const { data: destinations } = useOrderDestinations(true);
   const account = destinations?.accounts?.[0];
@@ -591,6 +594,55 @@ export default function SpreadBuilderScreen() {
     spotNow,
   );
 
+  // Chart and panResponder must be computed before any early returns to satisfy React's rules of hooks.
+  const chart = payoff ? (() => {
+    const w = Math.round(screenWidth - 42);
+    const h = 132;
+    const padX = 5;
+    const padTop = 10;
+    const padBottom = 12;
+    const fullLo = Math.min(...payoff.xs);
+    const fullHi = Math.max(...payoff.xs);
+    const center = (fullLo + fullHi) / 2;
+    const halfRange = (fullHi - fullLo) / 2 / zoom;
+    const lo = center - halfRange;
+    const hi = center + halfRange;
+    const yMin = Math.min(...payoff.ys, 0);
+    const yMax = Math.max(...payoff.ys, 0);
+    const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
+    const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
+    const px = (x: number) => padX + (((x - lo) / (hi - lo || 1)) * (w - padX * 2));
+    const py = (y: number) => padTop + ((1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom));
+    const visibleIdx = payoff.xs.map((x, i) => i).filter(i => payoff.xs[i] >= lo && payoff.xs[i] <= hi);
+    const d = visibleIdx.map((i, j) => `${j === 0 ? "M" : "L"}${px(payoff.xs[i]).toFixed(1)},${py(payoff.ys[i]).toFixed(1)}`).join("");
+    return {
+      w,
+      h,
+      px,
+      py,
+      zero: py(0),
+      lo,
+      hi,
+      fullLo,
+      fullHi,
+      d,
+    };
+  })() : null;
+
+  const touchSpot = chart && touchPx !== null
+    ? chart.lo + ((touchPx - 5) / (chart.w - 10)) * (chart.hi - chart.lo)
+    : null;
+  const touchValue = touchSpot !== null && payoff ? valueAt(payoff.xs, payoff.ys, touchSpot) : null;
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: (evt) => setTouchPx(evt.nativeEvent.locationX),
+    onPanResponderMove: (evt) => setTouchPx(evt.nativeEvent.locationX),
+    onPanResponderRelease: () => setTouchPx(null),
+    onPanResponderTerminate: () => setTouchPx(null),
+  }), [chart]);
+
   const send = async () => {
     if (!chain || !wanted) { setNote("The chain has not answered yet. Nothing was sent."); return; }
     if (!legs.length) { setNote("Add a leg first."); return; }
@@ -712,6 +764,10 @@ export default function SpreadBuilderScreen() {
     payoffAxis: { flexDirection: "row", justifyContent: "space-between" },
     payoffAxisText: { fontSize: 11, color: colors.muted },
     payoffFoot: { fontSize: 11, color: colors.muted, lineHeight: 16 },
+    zoomBtn: { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", backgroundColor: colors.card },
+    tooltip: { position: "absolute", backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, gap: 2, elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2 },
+    tooltipSpot: { fontSize: 11, fontWeight: "700", color: colors.text },
+    tooltipValue: { fontSize: 10.5, fontWeight: "600" },
     execute: { height: 52, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.brand },
     executeText: { fontSize: 16, fontWeight: "700", color: "#ffffff" },
     note: { fontSize: 12, color: colors.warn, lineHeight: 17 },
@@ -741,13 +797,11 @@ export default function SpreadBuilderScreen() {
         </View>
         <Ionicons name="chevron-down" size={18} color={colors.muted} />
       </TouchableOpacity>
-      <Text style={styles.meta}>
-        {!chain
-          ? chainError
-            ? `Chain read failed: ${chainError.message}`
-            : `Reading the ${underlying} chain`
-          : `${spot === null ? "No spot from the broker" : `Spot ${formatNumber(spot, 2)}`}  ·  lot ${lotSize}  ·  ${strikes.length} strikes`}
-      </Text>
+      {chain ? (
+        <Text style={styles.meta}>
+          {`${spot === null ? "" : `Spot ${formatNumber(spot, 2)}`}  ·  lot ${lotSize}  ·  ${strikes.length} strikes`}
+        </Text>
+      ) : null}
     </View>
   );
 
@@ -822,7 +876,6 @@ export default function SpreadBuilderScreen() {
               <TouchableOpacity style={styles.row} onPress={() => choose(item.name)} accessibilityRole="button" accessibilityLabel={`Build on ${item.name}`}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowName}>{item.name}</Text>
-                  <Text style={styles.rowMeta}>{`1 lot = ${formatNumber(item.lotSize, 0)} units`}</Text>
                 </View>
                 {item.index ? <Text style={styles.tag}>Index</Text> : null}
                 {item.name === underlying ? <Ionicons name="checkmark" size={18} color={colors.brand} /> : null}
@@ -869,34 +922,6 @@ export default function SpreadBuilderScreen() {
     template.legs.every((leg, index) => legs[index]?.side === leg.side && legs[index]?.right === leg.right && legs[index]?.lots === leg.lots)
   )?.id;
 
-  // Rupees on the vertical, spot on the horizontal, both stretched to whatever this basket actually
-  // reaches - a two-leg spread and an iron condor share no useful axis.
-  const chart = payoff ? (() => {
-    const w = Math.round(screenWidth - 42);
-    const h = 132;
-    const padX = 5;
-    const padTop = 10;
-    const padBottom = 12;
-    const lo = Math.min(...payoff.xs);
-    const hi = Math.max(...payoff.xs);
-    // A basket with no legs has no rupee range at all; giving it one keeps the flat line in the middle
-    // of the frame instead of glued to the floor.
-    const yMin = Math.min(...payoff.ys, 0);
-    const yMax = Math.max(...payoff.ys, 0);
-    const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
-    const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
-    const px = (x: number) => padX + (((x - lo) / (hi - lo || 1)) * (w - padX * 2));
-    const py = (y: number) => padTop + ((1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom));
-    return {
-      w,
-      h,
-      px,
-      py,
-      zero: py(0),
-      d: payoff.xs.map((x, i) => `${i === 0 ? "M" : "L"}${px(x).toFixed(1)},${py(payoff.ys[i]).toFixed(1)}`).join(""),
-    };
-  })() : null;
-
   // One leg's date is chosen from the same listed ladder the strip above offers, so a calendar basket is
   // staged on this screen instead of being sent back to the web desk.
   const expirySheet = (
@@ -914,9 +939,6 @@ export default function SpreadBuilderScreen() {
               <Ionicons name="close" size={22} color={colors.muted} />
             </TouchableOpacity>
           </View>
-          <Text style={styles.meta}>
-            The date this contract is bought on, sent with the leg. A strike the chosen date does not list has no price and stops the whole press.
-          </Text>
           <FlatList
             data={chain.expiries}
             keyExtractor={day => day}
@@ -1079,17 +1101,13 @@ export default function SpreadBuilderScreen() {
                   {"   Ask "}
                   <Text style={styles.ask}>{price(twoSided.ask)}</Text>
                 </Text>
-              ) : (
-                <Text style={styles.small}>
-                  {read ? `${leg.strike} ${leg.right} is not listed on ${leg.expiry}` : `Reading the ${leg.expiry} chain`}
-                </Text>
-              )}
+              ) : null}
               <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
                 {leg.held && !closingNow
-                  ? `bought ${entry === null ? "price unknown" : formatNumber(entry, 2)}`
+                  ? entry === null ? "" : formatNumber(entry, 2)
                   : quote === null
-                    ? "no price"
-                    : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)} (${quote.from === "ltp" ? "last traded" : quote.from})`}
+                    ? ""
+                    : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)}`}
               </Text>
             </View>
           </View>
@@ -1117,7 +1135,6 @@ export default function SpreadBuilderScreen() {
 
       {plan.length ? (
         <View style={styles.net}>
-          <Text style={styles.small}>{adjusting ? (net >= 0 ? "This press pays" : "This press receives") : `Net ${net >= 0 ? "debit" : "credit"}`}</Text>
           <Text style={[styles.netValue, { color: net >= 0 ? colors.sell : colors.buy }]}>{`₹${formatNumber(Math.abs(net), 2)}`}</Text>
         </View>
       ) : null}
@@ -1125,48 +1142,89 @@ export default function SpreadBuilderScreen() {
       {payoff && chart ? (
         <View style={styles.payoff}>
           <View style={styles.payoffHead}>
-            <Text style={styles.small}>{adjusting ? "Payoff of what is left open" : "Payoff at expiry"}</Text>
-            {payoff.atSpot === null ? null : (
-              <Text style={[styles.price, { color: payoff.atSpot >= 0 ? colors.buy : colors.sell }]}>
-                {`${payoff.atSpot >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(payoff.atSpot), 0)}`}
-              </Text>
-            )}
+            <Text style={styles.small}>Payoff</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              {payoff.atSpot === null ? null : (
+                <Text style={[styles.price, { color: payoff.atSpot >= 0 ? colors.buy : colors.sell }]}>
+                  {`${payoff.atSpot >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(payoff.atSpot), 0)}`}
+                </Text>
+              )}
+              <View style={{ flexDirection: "row", gap: 4 }}>
+                <TouchableOpacity
+                  style={styles.zoomBtn}
+                  onPress={() => setZoom(z => Math.min(z * 1.5, 10))}
+                  accessibilityRole="button"
+                  accessibilityLabel="Zoom in on the payoff chart"
+                >
+                  <Ionicons name="add" size={16} color={colors.brand} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.zoomBtn, zoom <= 1 && { opacity: 0.3 }]}
+                  onPress={() => setZoom(z => Math.max(z / 1.5, 1))}
+                  disabled={zoom <= 1}
+                  accessibilityRole="button"
+                  accessibilityLabel="Zoom out on the payoff chart"
+                >
+                  <Ionicons name="remove" size={16} color={colors.brand} />
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
-          <Svg width={chart.w} height={chart.h}>
-            <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={colors.border} strokeWidth={1} strokeDasharray="4 3" />
-            <Path d={chart.d} stroke={colors.brand} strokeWidth={2} fill="none" />
-            {payoff.breakEvens.map(strike => (
-              <Circle key={`break-${strike}`} cx={chart.px(strike)} cy={chart.zero} r={3} fill={colors.warn} />
-            ))}
-            {spot !== null && spot >= payoff.xs[0] && spot <= payoff.xs[payoff.xs.length - 1] && payoff.atSpot !== null ? (
-              <Circle cx={chart.px(spot)} cy={chart.py(payoff.atSpot)} r={3.5} fill={colors.text} />
+          <View {...panResponder.panHandlers} style={{ position: "relative" }}>
+            <Svg width={chart.w} height={chart.h}>
+              <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={colors.border} strokeWidth={1} strokeDasharray="4 3" />
+              <Path d={chart.d} stroke={colors.brand} strokeWidth={2} fill="none" />
+              {payoff.breakEvens.filter(strike => strike >= chart.lo && strike <= chart.hi).map(strike => (
+                <Circle key={`break-${strike}`} cx={chart.px(strike)} cy={chart.zero} r={3} fill={colors.warn} />
+              ))}
+              {spot !== null && spot >= chart.lo && spot <= chart.hi && payoff.atSpot !== null ? (
+                <>
+                  <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={colors.muted} strokeWidth={1} opacity={0.6} />
+                  <Circle cx={chart.px(spot)} cy={chart.py(payoff.atSpot)} r={3.5} fill={colors.text} />
+                </>
+              ) : null}
+              {touchSpot !== null && touchPx !== null && touchPx >= 5 && touchPx <= chart.w - 5 ? (
+                <>
+                  <Line x1={chart.px(touchSpot)} y1={0} x2={chart.px(touchSpot)} y2={chart.h} stroke={colors.text} strokeWidth={0.5} opacity={0.4} />
+                  {touchValue !== null ? (
+                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchValue)} r={3} fill={colors.brand} />
+                  ) : null}
+                </>
+              ) : null}
+            </Svg>
+            {touchSpot !== null && touchPx !== null ? (
+              <View style={[
+                styles.tooltip,
+                {
+                  left: Math.min(Math.max(touchPx - 50, 0), chart.w - 100),
+                  top: 4,
+                },
+              ]}>
+                <Text style={styles.tooltipSpot}>{formatNumber(touchSpot, 0)}</Text>
+                {touchValue !== null ? (
+                  <Text style={[styles.tooltipValue, { color: touchValue >= 0 ? colors.buy : colors.sell }]}>
+                    {`${touchValue >= 0 ? "+" : ""}${rupees(touchValue, true) ?? "—"}`}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
-          </Svg>
-          <View style={styles.payoffAxis}>
-            <Text style={styles.payoffAxisText}>{formatNumber(payoff.xs[0], 0)}</Text>
-            <Text style={styles.payoffAxisText}>{spot === null ? "no spot" : `spot ${formatNumber(spot, 0)}`}</Text>
-            <Text style={styles.payoffAxisText}>{formatNumber(payoff.xs[payoff.xs.length - 1], 0)}</Text>
           </View>
-          <Text style={styles.payoffFoot}>
-            {legs.length === 0
-              ? "No legs yet."
-              : `${payoff.breakEvens.length
-                  ? `Break even ${payoff.breakEvens.slice(0, 4).map(strike => formatNumber(strike, 0)).join("  ·  ")}`
-                  : "No break-even inside the listed strikes"}  ·  ${payoff.tail}`}
-          </Text>
+          <View style={styles.payoffAxis}>
+            <Text style={styles.payoffAxisText}>{formatNumber(chart.lo, 0)}</Text>
+            <Text style={styles.payoffAxisText}>{spot === null ? "no spot" : `spot ${formatNumber(spot, 0)}`}</Text>
+            <Text style={styles.payoffAxisText}>{formatNumber(chart.hi, 0)}</Text>
+          </View>
+          {payoff.breakEvens.length ? (
+            <Text style={styles.payoffFoot}>
+              {`Break even ${payoff.breakEvens.slice(0, 4).map(strike => formatNumber(strike, 0)).join("  ·  ")}`}
+            </Text>
+          ) : null}
         </View>
       ) : legs.length ? (
         <View style={styles.payoff}>
           <View style={styles.payoffHead}>
-            <Text style={styles.small}>Payoff at expiry</Text>
+            <Text style={styles.small}>Payoff</Text>
           </View>
-          <Text style={styles.payoffFoot}>
-            {unpricedLeg
-              ? `${unpricedLeg.strike} ${unpricedLeg.right} has no price from the broker, so the curve is not drawn.`
-              : sizeless
-                ? `${sizeless.strike} ${sizeless.right} has no lot size, so its quantity is unknown.`
-                : "The payoff needs a priced leg at every strike."}
-          </Text>
         </View>
       ) : null}
 
@@ -1181,8 +1239,6 @@ export default function SpreadBuilderScreen() {
                 : [closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}
         </Text>
       </TouchableOpacity>
-
-      {note ? <Text style={styles.note}>{note}</Text> : null}
 
       {sentId && outcome ? (
         <View style={styles.outcome}>
@@ -1200,7 +1256,6 @@ export default function SpreadBuilderScreen() {
               </Text>
             </View>
           ))}
-          <Text style={styles.small}>{"The broker has the instruction; the outcome shows in Orders."}</Text>
         </View>
       ) : null}
 

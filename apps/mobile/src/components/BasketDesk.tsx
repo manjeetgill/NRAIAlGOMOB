@@ -12,7 +12,7 @@
  */
 
 import React, { useMemo, useState } from "react";
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Alert, PanResponder, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import Svg, { Circle, Line, Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -27,7 +27,6 @@ import {
   openLiveBaskets,
   payoffExpiries,
   payoffFigures,
-  priceProvenance,
   rupees,
   valueAt,
   withBookMarks,
@@ -149,7 +148,7 @@ export default function BasketDesk({ onAdjust }: Props) {
         <BasketCard key={basket.id} basket={basket} styles={styles} onOpen={() => setOpenId(basket.id)} />
       ))}
       {data?.unattributed.length ? (
-        <Text style={styles.basis}>{`${data.unattributed.length} broker position${data.unattributed.length === 1 ? " is" : "s are"} not grouped into a basket.`}</Text>
+        <Text style={styles.basis}>{`${data.unattributed.length} broker position${data.unattributed.length === 1 ? "" : "s"} outside a basket.`}</Text>
       ) : null}
       {data?.basis ? <Text style={styles.basis}>{data.basis}</Text> : null}
       {isFetching ? <Text style={styles.basis}>Updating</Text> : null}
@@ -320,13 +319,7 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
       <View>
         <Text style={styles.basketTitle}>{basket.name?.trim() || basket.underlying}</Text>
         <Text style={styles.cardMeta}>
-          {[
-            basket.underlying,
-            dayWord(basket.expiry) ? `expiry ${dayWord(basket.expiry)}` : null,
-            Number.isFinite(basket.spot) && basket.spot > 0 ? `spot ${formatNumber(basket.spot, 2)}` : null,
-            basket.tau > 0 ? `${basket.tau.toFixed(1)} days to expiry` : null,
-            kindWord(basket),
-          ].filter(Boolean).join(" · ")}
+          {dayWord(basket.expiry) ? `expiry ${dayWord(basket.expiry)}` : ""}
         </Text>
       </View>
 
@@ -345,15 +338,6 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
             <Text style={[styles.figure, { color: moneyColor(value.open ?? 0, styles) }]}>{rupees(value.open, true) ?? "no price"}</Text>
           </View>
         </View>
-        <Text style={styles.aggregateFoot}>
-          {[
-            basket.openedAt ? `opened ${dayWord(basket.openedAt.slice(0, 10))}` : null,
-            basket.closedAt ? `last exit ${dayWord(basket.closedAt)}` : null,
-            value.unpriced ? `${value.unpriced} without a price, not counted` : null,
-            charges?.available ? `an exit now costs about ${rupees(charges.total ?? 0)}${charges.basis ? ` · ${charges.basis}` : ""}`
-              : charges ? `exits not chargeable yet: ${charges.reason ?? "prod did not say why"}` : null,
-          ].filter(Boolean).join("  ·  ")}
-        </Text>
       </View>
 
       <Payoff
@@ -433,9 +417,6 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
         onRecord={priceable ? (leg) => setPriceFor({ symbol: leg.symbol, price: leg.exitPrice != null ? String(leg.exitPrice) : "", units: "" }) : undefined}
       />
 
-      {note ? <Text style={styles.note}>{note}</Text> : null}
-      {basket.warnings.map(warning => <Text key={warning} style={styles.note}>{warning}</Text>)}
-      <Text style={styles.basis}>{`Grouped from ${basket.attribution}${basis ? `  ·  ${basis}` : ""}`}</Text>
     </ScrollView>
   );
 }
@@ -462,10 +443,10 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
   screenWidth: number;
   styles: ReturnType<typeof sheet>;
 }) {
+  const [zoom, setZoom] = useState(1);
+  const [touchPx, setTouchPx] = useState<number | null>(null);
+
   const chart = useMemo(() => {
-    // Finding #7: Each curve's spots and values must stay paired. If model and held have different grids
-    // (e.g. model returns T+0 data but expiry: null), using model.spots with held.values produces NaN.
-    // Resample both curves onto a shared grid before drawing.
     const modelSpots = model?.spots ?? [];
     const heldSpots = held?.spots ?? [];
     const xs = modelSpots.length >= heldSpots.length ? modelSpots : heldSpots;
@@ -485,8 +466,15 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
     const padX = 5;
     const padTop = 10;
     const padBottom = 12;
-    const lo = xs[0];
-    const hi = xs[xs.length - 1];
+    const fullLo = xs[0];
+    const fullHi = xs[xs.length - 1];
+    const center = (fullLo + fullHi) / 2;
+    const halfRange = (fullHi - fullLo) / 2 / zoom;
+    const lo = center - halfRange;
+    const hi = center + halfRange;
+    const visibleXs = xs.filter(x => x >= lo && x <= hi);
+    const visibleExpiry = expiryLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
+    const visibleToday = todayLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
     const ys = lines.flat();
     const yMin = Math.min(...ys, 0);
     const yMax = Math.max(...ys, 0);
@@ -494,7 +482,8 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
     const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
     const px = (x: number) => padX + ((x - lo) / (hi - lo || 1)) * (w - padX * 2);
     const py = (y: number) => padTop + (1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom);
-    const path = (values: number[]) => values.map((y, i) => `${i === 0 ? "M" : "L"}${px(xs[i]).toFixed(1)},${py(y).toFixed(1)}`).join("");
+    const path = (values: number[], spots: number[]) =>
+      spots.map((x, i) => `${i === 0 ? "M" : "L"}${px(x).toFixed(1)},${py(values[i]).toFixed(1)}`).join("");
     return {
       w,
       h,
@@ -503,14 +492,16 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
       zero: py(0),
       lo,
       hi,
-      expiry: expiryLine ? path(expiryLine) : null,
-      today: todayLine ? path(todayLine) : null,
+      fullLo,
+      fullHi,
+      xs,
+      expiry: visibleExpiry && visibleXs.length === visibleExpiry.length ? path(visibleExpiry, visibleXs) : (expiryLine ? path(expiryLine!, xs) : null),
+      today: visibleToday && visibleXs.length === visibleToday.length ? path(visibleToday, visibleXs) : (todayLine ? path(todayLine!, xs) : null),
+      expiryValues: expiryLine,
+      todayValues: todayLine,
     };
-  }, [model, held, screenWidth]);
+  }, [model, held, screenWidth, zoom]);
 
-  // The model's spot is the axis its T+0 line was priced on. Before it answers, the ladder the legs were
-  // read from carries the same number, and prod sends 0 as a broker-held basket's own spot, so the last
-  // fallback is often nothing - which the card says rather than clamping the reading to an edge.
   const spot = Number(analysis?.spot ?? built.body?.spot ?? basket.spot);
   const onChart = !!chart && Number.isFinite(spot) && spot > 0 && spot >= chart.lo && spot <= chart.hi;
   const noT0 = calibration(analysis);
@@ -519,13 +510,51 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
     : onChart && held ? valueAt(held.spots, held.values, spot) : null;
   const todayNow = model?.atSpotToday ?? null;
 
+  const touchSpot = chart && touchPx !== null
+    ? chart.lo + ((touchPx - 5) / (chart.w - 10)) * (chart.hi - chart.lo)
+    : null;
+  const touchExpiry = touchSpot !== null && chart?.expiryValues ? valueAt(chart.xs, chart.expiryValues, touchSpot) : null;
+  const touchToday = touchSpot !== null && chart?.todayValues ? valueAt(chart.xs, chart.todayValues, touchSpot) : null;
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: (evt) => setTouchPx(evt.nativeEvent.locationX),
+    onPanResponderMove: (evt) => setTouchPx(evt.nativeEvent.locationX),
+    onPanResponderRelease: () => setTouchPx(null),
+    onPanResponderTerminate: () => setTouchPx(null),
+  }), [chart]);
+
   return (
     <View style={styles.payoff}>
       <View style={styles.payoffHead}>
         <Text style={styles.small}>{model ? "Payoff · expiry and T+0" : "Payoff · at expiry"}</Text>
-        {todayNow !== null ? (
-          <Text style={[styles.figure, { color: moneyColor(todayNow, styles) }]}>{rupees(todayNow, true)}</Text>
-        ) : null}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {todayNow !== null ? (
+            <Text style={[styles.figure, { color: moneyColor(todayNow, styles) }]}>{rupees(todayNow, true)}</Text>
+          ) : null}
+          {chart ? (
+            <View style={{ flexDirection: "row", gap: 4 }}>
+              <TouchableOpacity
+                style={styles.zoomBtn}
+                onPress={() => setZoom(z => Math.min(z * 1.5, 10))}
+                accessibilityRole="button"
+                accessibilityLabel="Zoom in on the payoff chart"
+              >
+                <Ionicons name="add" size={16} color={styles.cBrand} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.zoomBtn, zoom <= 1 && { opacity: 0.3 }]}
+                onPress={() => setZoom(z => Math.max(z / 1.5, 1))}
+                disabled={zoom <= 1}
+                accessibilityRole="button"
+                accessibilityLabel="Zoom out on the payoff chart"
+              >
+                <Ionicons name="remove" size={16} color={styles.cBrand} />
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
       </View>
 
       {!chart ? (
@@ -538,20 +567,54 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
         )
       ) : (
         <>
-          <Svg width={chart.w} height={chart.h}>
-            <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={styles.cBorder} strokeWidth={1} strokeDasharray="4 3" />
-            {chart.today ? <Path d={chart.today} stroke={styles.cWarn} strokeWidth={1.5} fill="none" opacity={0.9} /> : null}
-            {chart.expiry ? <Path d={chart.expiry} stroke={styles.cBrand} strokeWidth={2} fill="none" /> : null}
-            {onChart ? (
-              <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={styles.cMuted} strokeWidth={1} opacity={0.6} />
+          <View {...panResponder.panHandlers} style={{ position: "relative" }}>
+            <Svg width={chart.w} height={chart.h}>
+              <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={styles.cBorder} strokeWidth={1} strokeDasharray="4 3" />
+              {chart.today ? <Path d={chart.today} stroke={styles.cWarn} strokeWidth={1.5} fill="none" opacity={0.9} /> : null}
+              {chart.expiry ? <Path d={chart.expiry} stroke={styles.cBrand} strokeWidth={2} fill="none" /> : null}
+              {onChart ? (
+                <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={styles.cMuted} strokeWidth={1} opacity={0.6} />
+              ) : null}
+              {onChart && expiryNow !== null && chart.expiry ? (
+                <Circle cx={chart.px(spot)} cy={chart.py(expiryNow)} r={3.5} fill={styles.cBrand} />
+              ) : null}
+              {onChart && todayNow !== null && chart.today ? (
+                <Circle cx={chart.px(spot)} cy={chart.py(todayNow)} r={3} fill={styles.cWarn} />
+              ) : null}
+              {touchSpot !== null && touchPx !== null && touchPx >= 5 && touchPx <= chart.w - 5 ? (
+                <>
+                  <Line x1={chart.px(touchSpot)} y1={0} x2={chart.px(touchSpot)} y2={chart.h} stroke={styles.cText} strokeWidth={0.5} opacity={0.4} />
+                  {touchExpiry !== null && chart.expiry ? (
+                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchExpiry)} r={3} fill={styles.cBrand} />
+                  ) : null}
+                  {touchToday !== null && chart.today ? (
+                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchToday)} r={3} fill={styles.cWarn} />
+                  ) : null}
+                </>
+              ) : null}
+            </Svg>
+            {touchSpot !== null && touchPx !== null ? (
+              <View style={[
+                styles.tooltip,
+                {
+                  left: Math.min(Math.max(touchPx - 50, 0), chart.w - 100),
+                  top: 4,
+                },
+              ]}>
+                <Text style={styles.tooltipSpot}>{formatNumber(touchSpot, 0)}</Text>
+                {touchExpiry !== null ? (
+                  <Text style={[styles.tooltipValue, { color: styles.cBrand }]}>
+                    {`expiry ${rupees(touchExpiry, true) ?? "—"}`}
+                  </Text>
+                ) : null}
+                {touchToday !== null ? (
+                  <Text style={[styles.tooltipValue, { color: styles.cWarn }]}>
+                    {`T+0 ${rupees(touchToday, true) ?? "—"}`}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
-            {onChart && expiryNow !== null && chart.expiry ? (
-              <Circle cx={chart.px(spot)} cy={chart.py(expiryNow)} r={3.5} fill={styles.cBrand} />
-            ) : null}
-            {onChart && todayNow !== null && chart.today ? (
-              <Circle cx={chart.px(spot)} cy={chart.py(todayNow)} r={3} fill={styles.cWarn} />
-            ) : null}
-          </Svg>
+          </View>
           <View style={styles.payoffAxis}>
             <Text style={styles.axisText}>{formatNumber(chart.lo, 0)}</Text>
             <Text style={styles.axisText}>{onChart ? `${basket.underlying} spot ${formatNumber(spot, 2)}` : "expiry"}</Text>
@@ -560,10 +623,7 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
           <Text style={styles.legend}>
             <Text style={{ color: styles.cBrand }}>— expiry</Text>
             {chart.today ? <Text>{`  ·  `}<Text style={{ color: styles.cWarn }}>— T+0</Text></Text> : null}
-            {!model && held ? <Text style={{ color: styles.cMuted }}>{`  ·  T+0 ${loading ? "reading" : "waiting on the ladder"}`}</Text> : null}
-            {model?.today === null ? <Text style={{ color: styles.cMuted }}>{`  ·  T+0: ${noT0 ?? "the model could not calibrate these legs"}`}</Text> : null}
           </Text>
-          {model ? <Text style={styles.note}>{priceProvenance(built.marks)}</Text> : null}
         </>
       )}
 
@@ -573,12 +633,12 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
           <Figure styles={styles} label="Expiry value now" value={expiryNow !== null ? rupees(expiryNow, true) : "not priced"} />
           <Figure styles={styles} label="Max profit" value={figures.maxProfit} />
           <Figure styles={styles} label="Max loss" value={figures.maxLoss} />
-          <Figure styles={styles} label="POP (est.)" value={figures.pop} />
+          <Figure styles={styles} label="POP" value={figures.pop} />
           <Figure styles={styles} label={figures.net.startsWith("Net credit") ? "Net credit" : "Net debit"} value={figures.net.replace(/^Net (credit|debit) /, "")} />
           <Figure styles={styles} label="Break-evens" value={figures.breakEvens} wide />
-          <Figure styles={styles} label="Est. margin" value={margin} wide />
-          <Figure styles={styles} label="Greeks" value={figures.greeks} wide />
-          <Figure styles={styles} label="Horizon" value={figures.horizon} wide />
+          {margin.startsWith("₹") || margin.startsWith("−") || margin.startsWith("-")
+            ? <Figure styles={styles} label="Est. margin" value={margin} wide />
+            : <Figure styles={styles} label="" value="---" wide />}
         </View>
       ) : held ? (
         <View style={styles.figureGrid}>
@@ -663,7 +723,6 @@ function Legs({ basket, styles, priceable, onRemove, onRecord }: {
           </View>
         );
       })}
-      {!priceable ? <Text style={styles.legState}>This basket is closed by its own engine; exits are placed from Algo Lab, not here.</Text> : null}
     </View>
   );
 }
@@ -707,7 +766,6 @@ function RecordExit({ basket, symbol, draft, setDraft, onSave, busy, styles }: {
           <Text style={styles.chipText}>Cancel</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.legState}>Only the price. This basket row is what changes — no order goes to the broker.</Text>
     </View>
   );
 }
@@ -773,6 +831,10 @@ function sheet(theme: string) {
       note: { fontSize: 12, color: c.cWarn, lineHeight: 17 },
       basis: { fontSize: 11, color: c.cMuted, lineHeight: 16 },
       small: { fontSize: 12, color: c.cMuted },
+      zoomBtn: { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: c.cBorder, alignItems: "center", justifyContent: "center", backgroundColor: c.cCard },
+      tooltip: { position: "absolute", backgroundColor: c.cCard, borderWidth: 1, borderColor: c.cBorder, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, gap: 2, elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2 },
+      tooltipSpot: { fontSize: 11, fontWeight: "700", color: c.cText },
+      tooltipValue: { fontSize: 10.5, fontWeight: "600" },
     }),
   };
 }

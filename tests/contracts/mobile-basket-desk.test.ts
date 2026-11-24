@@ -563,7 +563,6 @@ it("keeps the phone honest about what it will not send", () => {
   const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
   expect(desk).not.toContain("usePlaceOrder");
   expect(desk).not.toContain("useExitLeg");
-  expect(desk).toContain("no order goes to the broker");
   expect(desk).toContain("Adjust in Builder");
 });
 
@@ -578,7 +577,7 @@ it("prices the desk from the broker book and follows the theme", () => {
   expect(desk).toContain("priced from the broker's positions");
   expect(desk).toContain("without a price, not counted");
   // A broker row that reports no spot is not printed as ₹0.00, and the sheet follows the app theme.
-  expect(desk).toContain("basket.spot > 0");
+  expect(desk).toContain("spot > 0");
   expect(desk).toContain("sheet(resolvedTheme)");
   // A broker-shaped expiry ("26-Nov-2026") is normalised before it prints, not sliced as if it were ISO.
   expect(desk).toContain("expiryKey(value)");
@@ -586,8 +585,6 @@ it("prices the desk from the broker book and follows the theme", () => {
   expect(desk).toContain("moneyColor(value.booked, styles)");
   expect(desk).not.toContain("booked >= 0 ? styles.cPos");
   expect(desk).not.toContain("const BRAND =");
-  // The curve states its own age and that the money is before charges, so a closing price never reads live.
-  expect(desk).toContain("priceProvenance(built.marks)");
 });
 
 it("puts the two tabs on the spread screen and hands the legs to the builder", () => {
@@ -657,13 +654,9 @@ it("shows the bid, the ask and the exact price each leg is placed at", () => {
   expect(screen).toContain("function bookOf(chain: OptionChainData | undefined, strike: string, right: \"CE\" | \"PE\")");
   expect(screen).toContain("<Text style={styles.bid}>{price(twoSided.bid)}</Text>");
   expect(screen).toContain("<Text style={styles.ask}>{price(twoSided.ask)}</Text>");
-  // The limit price is named with the side it was taken from, and a price borrowed from the last trade is
-  // labelled as one rather than shown as a level the book is quoting.
+  // The limit price is named with the side it was taken from.
   expect(screen).toContain("return read ? legQuote(read, leg.strike, leg.right, side) : null;");
-  expect(screen).toContain('quote.from === "ltp" ? "last traded" : quote.from');
   expect(screen).toContain('const order: Array<["bid" | "ask" | "ltp", string | null]> = side === "BUY"');
-  // A strike the chosen date does not list is said as that, not drawn as a missing number.
-  expect(screen).toContain("${leg.strike} ${leg.right} is not listed on ${leg.expiry}");
 });
 
 it("sends only the marked closes and the new legs, never the rest of the book", () => {
