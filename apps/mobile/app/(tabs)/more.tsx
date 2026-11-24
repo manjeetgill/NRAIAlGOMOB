@@ -170,7 +170,7 @@ export default function MoreScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.row, styles.rowDivider]}
-            onPress={() => router.push("/(tabs)/scanner")}
+            onPress={() => router.push("/scanner")}
             onPressIn={prefetchScanner}
           >
             <View style={styles.labelRow}>

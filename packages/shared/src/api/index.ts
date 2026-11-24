@@ -108,6 +108,7 @@ export {
   type LiveTrade,
   type ScannerSignal,
   type ScannerSignalType,
+  type ScannerEvent,
   type TechnicalEventsResponse,
   type FleetItem,
   type RunHealth,

@@ -2,7 +2,8 @@
  * Scanner Screen - Technical signals from the built-in scanner
  *
  * Shows breakout, breakdown, support/resistance signals from the technical events scanner.
- * Lightweight mobile view: list of signals with basic info, filterable by signal type.
+ * Lightweight mobile view: one row per event with the figures `/v1/technical-events` files beside it —
+ * the instrument, the saved session and timeframe, and the close of the candle the rule matched on.
  */
 
 import React, { useState, useMemo } from "react";
@@ -10,11 +11,11 @@ import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, 
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
-import type { ScannerSignal, ScannerSignalType } from "@nraialgo/shared/api";
+import type { ScannerSignalType } from "@nraialgo/shared/api";
 
 type SignalFilter = "all" | "breakout" | "breakdown" | "support" | "resistance" | "hm";
 
-const FILTERS: { id: SignalFilter; label: string; kinds: Set<ScannerSignalType> }[] = [
+const FILTERS: { id: SignalFilter; label: string; kinds: Set<string> }[] = [
   { id: "all", label: "All", kinds: new Set(["breakout", "breakdown", "support_touch", "resistance_touch", "breakout_retest", "breakdown_retest", "hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"]) },
   { id: "breakout", label: "Breakout", kinds: new Set(["breakout"]) },
   { id: "breakdown", label: "Breakdown", kinds: new Set(["breakdown"]) },
@@ -22,6 +23,16 @@ const FILTERS: { id: SignalFilter; label: string; kinds: Set<ScannerSignalType> 
   { id: "resistance", label: "Resistance", kinds: new Set(["resistance_touch", "breakdown_retest"]) },
   { id: "hm", label: "HM RSI+ST", kinds: new Set(["hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"]) },
 ];
+
+/** The server files the candle as epoch milliseconds. Its day is the session row already, so the number
+ *  earns a line only when it carries a time, which is how an intraday candle differs from a daily one. */
+const candleTime = (value: string): string => {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const ist = new Date(ms + 19_800_000);
+  if (ist.getUTCHours() === 0 && ist.getUTCMinutes() === 0) return "";
+  return `${String(ist.getUTCHours()).padStart(2, "0")}:${String(ist.getUTCMinutes()).padStart(2, "0")}`;
+};
 
 const SIGNAL_LABELS: Record<ScannerSignalType, string> = {
   breakout: "Breakout",
@@ -79,64 +90,69 @@ export default function ScannerScreen() {
     statusText: { fontSize: 11, color: colors.muted, textAlign: "center" },
   }), [colors]);
 
-  const filteredSignals = useMemo(() => {
-    if (!data?.items) return [];
-    const selectedFilter = FILTERS.find(f => f.id === filter);
-    if (!selectedFilter || filter === "all") return data.items;
-    return data.items.filter(item => selectedFilter.kinds.has(item.signal_type));
-  }, [data, filter]);
+  /** One card per rule match: the server files every event under its instrument, so a stock that broke out
+   *  and then retested its level is listed twice, each row with its own kind and candle. */
+  const signals = useMemo(() => (data?.items ?? []).flatMap((item, itemIndex) =>
+    (item.result?.events ?? []).map((event, eventIndex) => ({
+      id: `${item.instrument}-${item.session}-${itemIndex}-${eventIndex}`,
+      instrument: item.instrument,
+      kind: event.kind,
+      at: event.timestamp ?? "",
+      close: typeof event.close === "number" && Number.isFinite(event.close) ? event.close : null,
+      session: item.session,
+      timeframe: item.timeframe ?? item.result?.timeframe ?? "",
+    }))
+  ), [data]);
 
-  const getBadgeStyle = (signalType: ScannerSignalType) => {
-    if (signalType === "breakout" || signalType === "hm_rsi_supertrend_buy") return styles.badgeBreakout;
-    if (signalType === "breakdown" || signalType === "hm_rsi_supertrend_sell") return styles.badgeBreakdown;
-    if (signalType === "support_touch" || signalType === "breakout_retest") return styles.badgeSupport;
-    if (signalType === "resistance_touch" || signalType === "breakdown_retest") return styles.badgeResistance;
+  const filteredSignals = useMemo(() => {
+    const selectedFilter = FILTERS.find(f => f.id === filter);
+    return !selectedFilter || filter === "all" ? signals : signals.filter(row => selectedFilter.kinds.has(row.kind));
+  }, [signals, filter]);
+
+  const getBadgeStyle = (kind: string) => {
+    if (kind === "breakout" || kind === "hm_rsi_supertrend_buy") return styles.badgeBreakout;
+    if (kind === "breakdown" || kind === "hm_rsi_supertrend_sell") return styles.badgeBreakdown;
+    if (kind === "support_touch" || kind === "breakout_retest") return styles.badgeSupport;
+    if (kind === "resistance_touch" || kind === "breakdown_retest") return styles.badgeResistance;
     return styles.badgeHM;
   };
 
-  const renderSignalCard = (signal: ScannerSignal) => {
-    const isBuy = signal.signal_type.includes("buy") || signal.signal_type === "breakout";
-    return (
-      <View key={`${signal.instrument}-${signal.session}`} style={styles.card}>
-        <View style={styles.header}>
-          <Text style={styles.symbol}>{signal.instrument}</Text>
-          <Text style={[styles.badge, getBadgeStyle(signal.signal_type)]}>
-            {SIGNAL_LABELS[signal.signal_type]}
+  /** A stored scan can carry a kind this list has never seen, and its own server word beats a blank badge. */
+  const getBadgeLabel = (kind: string) =>
+    SIGNAL_LABELS[kind as ScannerSignalType] ?? kind.replace(/_/g, " ");
+
+  const renderSignalCard = (signal: { instrument: string; kind: string; at: string; close: number | null; session: string; timeframe: string }) => (
+    <View style={styles.card}>
+      <View style={styles.header}>
+        <Text style={styles.symbol}>{signal.instrument}</Text>
+        <Text style={[styles.badge, getBadgeStyle(signal.kind)]}>{getBadgeLabel(signal.kind)}</Text>
+      </View>
+      {signal.close !== null ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>Candle close</Text>
+          <Text style={[styles.value, { color: signal.kind.includes("buy") || signal.kind === "breakout" ? colors.buy : colors.sell }]}>
+            {formatRupees(signal.close)}
           </Text>
         </View>
-        <View style={styles.row}>
-          <Text style={styles.label}>Session</Text>
-          <Text style={styles.value}>{signal.session}</Text>
-        </View>
-        {signal.price != null && (
-          <View style={styles.row}>
-            <Text style={styles.label}>Price</Text>
-            <Text style={[styles.value, { color: isBuy ? colors.buy : colors.sell }]}>
-              {formatRupees(signal.price)}
-            </Text>
-          </View>
-        )}
-        {signal.timeframe && (
-          <View style={styles.row}>
-            <Text style={styles.label}>Timeframe</Text>
-            <Text style={styles.value}>{signal.timeframe}</Text>
-          </View>
-        )}
-        {signal.result?.resistance != null && (
-          <View style={styles.row}>
-            <Text style={styles.label}>Resistance</Text>
-            <Text style={styles.value}>{formatRupees(signal.result.resistance)}</Text>
-          </View>
-        )}
-        {signal.result?.support != null && (
-          <View style={styles.row}>
-            <Text style={styles.label}>Support</Text>
-            <Text style={styles.value}>{formatRupees(signal.result.support)}</Text>
-          </View>
-        )}
+      ) : null}
+      <View style={styles.row}>
+        <Text style={styles.label}>Session</Text>
+        <Text style={styles.value}>{signal.session}</Text>
       </View>
-    );
-  };
+      {signal.timeframe ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>Timeframe</Text>
+          <Text style={styles.value}>{signal.timeframe}</Text>
+        </View>
+      ) : null}
+      {candleTime(signal.at) ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>Candle at</Text>
+          <Text style={styles.value}>{candleTime(signal.at)}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
 
   if (isLoading) {
     return (
@@ -193,7 +209,7 @@ export default function ScannerScreen() {
       ) : (
         <FlatList
           data={filteredSignals}
-          keyExtractor={(item) => `${item.instrument}-${item.session}`}
+          keyExtractor={(item) => item.id}
           renderItem={({ item }) => renderSignalCard(item)}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}

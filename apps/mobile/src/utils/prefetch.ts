@@ -19,6 +19,7 @@ import {
   type IciciAccountPayload,
   type OptionChainData,
   type OrderIntent,
+  type TechnicalEventsResponse,
   type UnderlyingList,
 } from "@nraialgo/shared/api";
 
@@ -75,8 +76,8 @@ export function prefetchAlgoLab() {
 
 export function prefetchScanner() {
   queryClient.prefetchQuery({
-    queryKey: queryKeys.scanner.automations(),
-    queryFn: () => client.get("/v1/scanner-automations"),
+    queryKey: queryKeys.scanner.technicalEvents(),
+    queryFn: () => client.get<TechnicalEventsResponse>("/v1/technical-events"),
     staleTime: 10 * 1000,
   }).catch(() => {});
 }

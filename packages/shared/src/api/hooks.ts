@@ -88,6 +88,7 @@ export const queryKeys = {
     automations: () => ["scanner", "automations"] as const,
     liveTrades: () => ["scanner", "live-trades"] as const,
     results: (params?: QueryParams) => ["scanner", "results", params] as const,
+    technicalEvents: () => ["scanner", "technical-events"] as const,
   },
 
   // Algo Lab
@@ -194,18 +195,26 @@ export type ScannerSignalType =
   | "hm_rsi_supertrend_buy"
   | "hm_rsi_supertrend_sell";
 
+/** One rule match inside a saved scan. `/v1/technical-events` answers with the event's kind, the candle it
+ *  was seen on and that candle's close; the owner's copy carries the rule explanation beside them. */
+export interface ScannerEvent {
+  kind: string;
+  timestamp?: string;
+  close?: number | null;
+  explanation?: string;
+}
+
 export interface ScannerSignal {
   instrument: string;
   session: string;
-  signal_type: ScannerSignalType;
-  price?: number | null;
   timeframe?: string;
   run_id?: string;
   read?: boolean;
   result?: {
-    support?: number;
-    resistance?: number;
-    previousClose?: number;
+    events?: ScannerEvent[];
+    timeframe?: string;
+    previousClose?: number | null;
+    signalCompletedAt?: string | null;
   };
 }
 
@@ -759,7 +768,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // ===== TECHNICAL EVENTS (SCANNER) =====
   const useTechnicalEvents = (options?: UseQueryOptions<TechnicalEventsResponse, ApiError>) => {
     return useQuery({
-      queryKey: ["scanner", "technical-events"],
+      queryKey: queryKeys.scanner.technicalEvents(),
       queryFn: () => client.get<TechnicalEventsResponse>("/v1/technical-events"),
       staleTime: 30 * 1000,
       refetchInterval: 60 * 1000,
