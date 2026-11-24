@@ -9,6 +9,7 @@ import { Slot, usePathname } from "expo-router";
 import { View } from "react-native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import IndexStrip from "@/components/IndexStrip";
 import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
 import { queryClient, initializeQueryClient } from "@/utils/queryClient";
@@ -28,9 +29,10 @@ SplashScreen.preventAutoHideAsync();
 function Shell() {
   const { resolvedTheme } = useTheme();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
   const bg = resolvedTheme === "dark" ? "#0f172a" : "#f8fafc";
   return (
-    <View style={{ flex: 1, backgroundColor: bg }}>
+    <View style={{ flex: 1, backgroundColor: bg, paddingTop: insets.top }}>
       {pathname !== "/login" ? <IndexStrip /> : null}
       <View style={{ flex: 1 }}>
         <Slot />
@@ -71,11 +73,13 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <Shell />
-        </ThemeProvider>
-      </QueryClientProvider>
+      <SafeAreaProvider>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <Shell />
+          </ThemeProvider>
+        </QueryClientProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

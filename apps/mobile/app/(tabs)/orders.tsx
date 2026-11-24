@@ -1,5 +1,8 @@
 /**
- * Orders Screen - Pending, Executed, and GTT Orders
+ * Orders Screen - Live broker orders from ICICI
+ *
+ * Fetches orders directly from the broker account, so every order in the account
+ * appears here — whether placed from this app or from the broker's own app.
  */
 
 import React, { useState, useMemo } from "react";
@@ -7,23 +10,28 @@ import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, 
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
-import type { OrderIntent, OrderLine, GttOrder } from "@nraialgo/shared/api";
+import { iciciOrders, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
 
-type TabId = "pending" | "executed" | "gtt";
+type TabId = "open" | "closed" | "gtt";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "pending", label: "Pending" },
-  { id: "executed", label: "Executed" },
+  { id: "open", label: "Open" },
+  { id: "closed", label: "Closed" },
   { id: "gtt", label: "GTT Orders" },
 ];
 
-export default function OrdersScreen() {
-  const { useOrderIntents, useGttOrders } = useApi();
-  const { resolvedTheme } = useTheme();
-  const [tab, setTab] = useState<TabId>("pending");
+const OPEN_STATUSES = new Set(["OPEN", "PENDING", "TRIGGER PENDING", "ORDER PLACED"]);
+const CLOSED_STATUSES = new Set(["COMPLETE", "FILLED", "CANCELLED", "REJECTED", "CANCEL"]);
 
-  const { data: intents, isLoading: intentsLoading, isError: intentsError, refetch: refetchIntents } = useOrderIntents({ limit: 100 });
+export default function OrdersScreen() {
+  const { useIciciAccount, useGttOrders } = useApi();
+  const { resolvedTheme } = useTheme();
+  const [tab, setTab] = useState<TabId>("open");
+
+  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount();
   const { data: gtts, isLoading: gttLoading, isError: gttError, refetch: refetchGtts } = useGttOrders();
+
+  const allOrders = useMemo(() => iciciAccount ? iciciOrders(iciciAccount) : [], [iciciAccount]);
 
   const colors = resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
@@ -65,53 +73,40 @@ export default function OrdersScreen() {
     sectionHeader: { fontSize: 11, fontWeight: "600", color: colors.muted, textTransform: "uppercase", paddingVertical: 8, paddingHorizontal: 4, backgroundColor: colors.bg },
   });
 
-  const pendingOrders = useMemo(() => {
-    if (!intents) return [];
-    return intents.filter(o => o.status === "queued" || o.status === "working" || o.status === "unknown");
-  }, [intents]);
+  const openOrders = useMemo(() => {
+    return allOrders.filter(o => OPEN_STATUSES.has(o.status.toUpperCase()));
+  }, [allOrders]);
 
-  const executedOrders = useMemo(() => {
-    if (!intents) return [];
-    return intents.filter(o => o.status === "filled" || o.status === "partial" || o.status === "cancelled" || o.status === "failed");
-  }, [intents]);
+  const closedOrders = useMemo(() => {
+    return allOrders.filter(o => CLOSED_STATUSES.has(o.status.toUpperCase()));
+  }, [allOrders]);
 
-  const isLoading = tab === "gtt" ? gttLoading : intentsLoading;
-  const isError = tab === "gtt" ? gttError : intentsError;
-  const refetch = tab === "gtt" ? refetchGtts : refetchIntents;
+  const isLoading = tab === "gtt" ? gttLoading : ordersLoading;
+  const isError = tab === "gtt" ? gttError : ordersError;
+  const refetch = tab === "gtt" ? refetchGtts : refetchOrders;
 
-  const renderOrderCard = (intent: OrderIntent) => {
-    const legs = intent.orders || [];
-    const firstLeg = legs[0];
+  const renderOrderCard = (order: BrokerOrder) => {
+    const statusUpper = order.status.toUpperCase();
+    const isOpen = OPEN_STATUSES.has(statusUpper);
     return (
-      <View key={intent.clientId} style={styles.card}>
+      <View key={order.orderId} style={styles.card}>
         <View style={styles.header}>
-          <Text style={styles.symbol}>{firstLeg?.tradingsymbol || intent.basketName || "Order"}</Text>
-          <Text style={[styles.badge, intent.status === "queued" || intent.status === "working" || intent.status === "unknown" ? styles.badgeWorking : intent.status === "filled" ? styles.badgeDone : intent.status === "cancelled" || intent.status === "failed" ? styles.badgeRejected : styles.badgePartial]}>
-            {intent.status.toUpperCase()}
+          <Text style={styles.symbol}>{order.symbol || order.orderId}</Text>
+          <Text style={[styles.badge, isOpen ? styles.badgeWorking : statusUpper === "COMPLETE" || statusUpper === "FILLED" ? styles.badgeDone : styles.badgeRejected]}>
+            {order.status}
           </Text>
         </View>
-        {legs.map((leg: OrderLine, i: number) => (
-          <View key={i}>
-            {legs.length > 1 ? <Text style={styles.label}>{leg.tradingsymbol}</Text> : null}
-            <View style={styles.row}>
-              <Text style={[styles.value, leg.side === "BUY" ? styles.buyValue : styles.sellValue]}>
-                {leg.side} {formatNumber(leg.filledQuantity)}/{formatNumber(leg.quantity)}
-              </Text>
-              <Text style={styles.value}>
-                {leg.averagePrice ? formatRupees(Number(leg.averagePrice)) : leg.state.toUpperCase()}
-              </Text>
-            </View>
-            {leg.message ? <Text style={styles.label}>{leg.message}</Text> : null}
-          </View>
-        ))}
-        {intent.message && (
-          <View style={styles.row}>
-            <Text style={styles.label}>Reason</Text>
-            <Text style={styles.value}>{intent.message}</Text>
-          </View>
-        )}
+        <View style={styles.row}>
+          <Text style={[styles.value, order.side === "BUY" ? styles.buyValue : styles.sellValue]}>
+            {order.side} {formatNumber(order.filledQuantity)}/{formatNumber(order.quantity)}
+          </Text>
+          <Text style={styles.value}>
+            {order.price ? formatRupees(order.price) : "—"}
+          </Text>
+        </View>
+        {order.message ? <Text style={styles.label}>{order.message}</Text> : null}
         <View style={[styles.row, { marginTop: 4 }]}>
-          <Text style={styles.label}>{intent.provider} · {new Date(intent.createdAt).toLocaleTimeString()}</Text>
+          <Text style={styles.label}>{order.exchange} · {order.timestamp ? new Date(order.timestamp).toLocaleTimeString() : "—"}</Text>
         </View>
       </View>
     );
@@ -184,32 +179,32 @@ export default function OrdersScreen() {
     const pane = statusPane();
     if (pane) return pane;
 
-    if (tab === "pending") {
-      if (pendingOrders.length === 0) {
-        return <View style={styles.empty}><Text style={styles.emptyText}>No pending orders</Text></View>;
+    if (tab === "open") {
+      if (openOrders.length === 0) {
+        return <View style={styles.empty}><Text style={styles.emptyText}>No open orders</Text></View>;
       }
       return (
         <FlatList
-          data={pendingOrders}
-          keyExtractor={(item) => item.clientId}
+          data={openOrders}
+          keyExtractor={(item) => item.orderId}
           renderItem={({ item }) => renderOrderCard(item)}
           contentContainerStyle={styles.listContent}
-          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchIntents()} colors={[colors.accent]} />}
+          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
     }
 
-    if (tab === "executed") {
-      if (executedOrders.length === 0) {
-        return <View style={styles.empty}><Text style={styles.emptyText}>No executed orders</Text></View>;
+    if (tab === "closed") {
+      if (closedOrders.length === 0) {
+        return <View style={styles.empty}><Text style={styles.emptyText}>No closed orders</Text></View>;
       }
       return (
         <FlatList
-          data={executedOrders}
-          keyExtractor={(item) => item.clientId}
+          data={closedOrders}
+          keyExtractor={(item) => item.orderId}
           renderItem={({ item }) => renderOrderCard(item)}
           contentContainerStyle={styles.listContent}
-          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchIntents()} colors={[colors.accent]} />}
+          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
     }

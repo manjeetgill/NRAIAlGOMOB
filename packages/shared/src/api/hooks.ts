@@ -68,6 +68,7 @@ export const queryKeys = {
   // Orders
   orders: {
     intents: (params?: QueryParams) => ["orders", "intents", params] as const,
+    live: ["orders", "live"] as const,
     ticket: (symbol: string) => ["orders", "ticket", symbol] as const,
     quote: (exchange: string, symbol: string) => ["orders", "quote", exchange, symbol] as const,
     destinations: () => ["orders", "destinations"] as const,
@@ -545,6 +546,19 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  const useBrokerLiveOrders = (options?: UseQueryOptions<BrokerLiveOrder[], ApiError>) => {
+    return useQuery({
+      queryKey: queryKeys.orders.live,
+      queryFn: async () => {
+        const response = await client.get<{ orders: BrokerLiveOrder[] }>("/v1/orders/broker-live");
+        return response.orders;
+      },
+      staleTime: 5 * 1000,
+      refetchInterval: 10 * 1000,
+      ...options,
+    });
+  };
+
   const usePlaceOrder = (options?: UseMutationOptions<OrderResponse, ApiError, PlaceOrderRequest>) => {
     return useMutation({
       mutationFn: (body) => client.post<OrderResponse>("/v1/orders", body),
@@ -764,6 +778,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     usePlanningMargin,
     // Orders
     useOrderIntents,
+    useBrokerLiveOrders,
     usePlaceOrder,
     useOptionDrafts,
     useOrderSnapshot,
@@ -1059,7 +1074,33 @@ export interface IciciAccountPayload {
     portfoliopositions?: IciciSection<IciciPositionRow> | null;
     portfolioholdings?: IciciSection<IciciHoldingRow> | null;
     dematholdings?: IciciSection<Record<string, unknown>> | null;
+    order?: IciciSection<IciciOrderRow> | null;
+    orders_NSE?: IciciSection<IciciOrderRow> | null;
+    orders_NFO?: IciciSection<IciciOrderRow> | null;
   } | null;
+}
+
+export interface IciciOrderRow {
+  order_id?: string | number | null;
+  exchange_code?: string | null;
+  stock_code?: string | null;
+  product_type?: string | null;
+  action?: string | null;
+  order_type?: string | null;
+  price?: string | number | null;
+  quantity?: string | number | null;
+  pending_quantity?: string | number | null;
+  cancelled_quantity?: string | number | null;
+  filled_quantity?: string | number | null;
+  average_price?: string | number | null;
+  status?: string | null;
+  order_datetime?: string | null;
+  order_time?: string | null;
+  exchange_time?: string | null;
+  message?: string | null;
+  remark?: string | null;
+  validity?: string | null;
+  user_remark?: string | null;
 }
 
 /** Prod sends some figures as numbers and others as text, so every figure is read the same way.
@@ -1171,6 +1212,68 @@ export function iciciHoldings(payload: IciciAccountPayload): Holding[] {
     });
 }
 
+/** One broker order, normalized from ICICI's native row shape. */
+export interface BrokerOrder {
+  orderId: string;
+  provider: string;
+  exchange: string;
+  symbol: string | null;
+  side: "BUY" | "SELL" | null;
+  product: string | null;
+  orderType: string | null;
+  quantity: number;
+  price: number | null;
+  filledQuantity: number | null;
+  pendingQuantity: number | null;
+  status: string;
+  timestamp: string | null;
+  message: string | null;
+}
+
+/** All orders from the ICICI account snapshot — the single source of truth for broker orders. */
+export function iciciOrders(payload: IciciAccountPayload): BrokerOrder[] {
+  const account = payload.accountId ?? "unknown";
+  // ICICI stores orders in multiple sections: orders_NSE, orders_NFO, and sometimes 'order'
+  const sections = [
+    payload.sections?.orders_NSE,
+    payload.sections?.orders_NFO,
+    payload.sections?.order,
+  ].filter((s): s is IciciSection<IciciOrderRow> => !!s?.rows?.length);
+
+  const orders: BrokerOrder[] = [];
+  for (const section of sections) {
+    for (const row of section.rows) {
+      const qty = toNumber(row.quantity) ?? 0;
+      const filled = toNumber(row.filled_quantity) ?? toNumber(row.quantity) ?? 0;
+      const pending = toNumber(row.pending_quantity) ?? 0;
+      const action = String(row.action ?? "").trim().toUpperCase();
+      orders.push({
+        orderId: String(row.order_id ?? ""),
+        provider: "icici",
+        exchange: String(row.exchange_code ?? ""),
+        symbol: row.stock_code ? String(row.stock_code) : null,
+        side: action === "BUY" ? "BUY" : action === "SELL" ? "SELL" : null,
+        product: row.product_type ? String(row.product_type) : null,
+        orderType: row.order_type ? String(row.order_type) : null,
+        quantity: Math.abs(qty),
+        price: iciciPrice(row.price),
+        filledQuantity: Math.abs(filled),
+        pendingQuantity: Math.abs(pending),
+        status: String(row.status ?? "UNKNOWN"),
+        timestamp: row.order_datetime ?? row.order_time ?? row.exchange_time ?? null,
+        message: row.message ?? row.remark ?? null,
+      });
+    }
+  }
+  // Deduplicate by order_id (same order may appear in multiple sections)
+  const seen = new Set<string>();
+  return orders.filter(o => {
+    if (seen.has(o.orderId)) return false;
+    seen.add(o.orderId);
+    return true;
+  });
+}
+
 export type AccountSectionKind = "cold" | "ready" | "stale" | "degraded" | "unavailable";
 
 /** Which of prod's five answers this list is in, with the server's own words for why. A screen uses
@@ -1270,6 +1373,16 @@ export interface SecuritySearch {
 
 /** What the server knows about one quoted price. A chain never fabricates a change figure. */
 export type QuoteQuality = "live" | "delayed" | "stale" | "eod" | "manual" | "unavailable";
+
+/** Prod names its quote states in code; every screen says the same words for what they mean. */
+export const QUALITY_WORD: Record<string, string> = {
+  live: "live price",
+  delayed: "delayed price",
+  stale: "old price",
+  eod: "last close",
+  manual: "a hand-entered price",
+  unavailable: "no price from the broker",
+};
 
 export interface OptionChainData {
   underlying: string;
@@ -1477,6 +1590,24 @@ export interface OrderLine {
   state: string;
   message?: string | null;
   orderId?: string;
+}
+
+export interface BrokerLiveOrder {
+  order_id: string;
+  provider: string;
+  exchange: string;
+  tradingsymbol: string | null;
+  product: string | null;
+  transaction_type: "BUY" | "SELL";
+  order_type: string;
+  quantity: number;
+  price: number | null;
+  filled_quantity: number | null;
+  pending_quantity: number | null;
+  status: string;
+  order_timestamp: string | null;
+  tag?: string | null;
+  message?: string | null;
 }
 
 export interface GttOrder {
