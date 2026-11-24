@@ -20,8 +20,16 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "gtt", label: "GTT Orders" },
 ];
 
-const OPEN_STATUSES = new Set(["OPEN", "PENDING", "TRIGGER PENDING", "ORDER PLACED"]);
-const CLOSED_STATUSES = new Set(["COMPLETE", "FILLED", "CANCELLED", "REJECTED", "CANCEL"]);
+/** Match the web app's normalizeStatus — ICICI uses many status words that all map to three states. */
+type OrderStatus = "COMPLETE" | "REJECTED" | "OPEN" | "CANCELLED" | "OTHER";
+function normalizeStatus(value: string | null | undefined): OrderStatus {
+  const text = String(value ?? "").trim().toUpperCase();
+  if (/^(COMPLETE|COMPLETED|EXECUTED|FILLED|TRADED)$/.test(text)) return "COMPLETE";
+  if (/^REJECT/.test(text)) return "REJECTED";
+  if (/^(CANCEL|CANCELLED|CANCELED)/.test(text)) return "CANCELLED";
+  if (/^(OPEN|PENDING|TRIGGER PENDING|ORDERED|REQUESTED|PARTIALLY|PUT ORDER REQ|VALIDATION PENDING|AMO REQ)/.test(text)) return "OPEN";
+  return "OTHER";
+}
 
 /** ICICI timestamps arrive without a timezone but are always IST. Parse them as IST so the
  *  displayed time is correct regardless of the device's own zone. */
@@ -90,11 +98,14 @@ export default function OrdersScreen() {
   });
 
   const openOrders = useMemo(() => {
-    return allOrders.filter(o => OPEN_STATUSES.has(o.status.toUpperCase()));
+    return allOrders.filter(o => normalizeStatus(o.status) === "OPEN");
   }, [allOrders]);
 
   const closedOrders = useMemo(() => {
-    return allOrders.filter(o => CLOSED_STATUSES.has(o.status.toUpperCase()));
+    return allOrders.filter(o => {
+      const s = normalizeStatus(o.status);
+      return s === "COMPLETE" || s === "CANCELLED" || s === "REJECTED";
+    });
   }, [allOrders]);
 
   const isLoading = tab === "gtt" ? gttLoading : ordersLoading;
@@ -102,13 +113,14 @@ export default function OrdersScreen() {
   const refetch = tab === "gtt" ? refetchGtts : refetchOrders;
 
   const renderOrderCard = (order: BrokerOrder) => {
-    const statusUpper = order.status.toUpperCase();
-    const isOpen = OPEN_STATUSES.has(statusUpper);
+    const status = normalizeStatus(order.status);
+    const isOpen = status === "OPEN";
+    const isComplete = status === "COMPLETE";
     return (
       <View key={order.orderId} style={styles.card}>
         <View style={styles.header}>
           <Text style={styles.symbol}>{order.symbol || order.orderId}</Text>
-          <Text style={[styles.badge, isOpen ? styles.badgeWorking : statusUpper === "COMPLETE" || statusUpper === "FILLED" ? styles.badgeDone : styles.badgeRejected]}>
+          <Text style={[styles.badge, isOpen ? styles.badgeWorking : isComplete ? styles.badgeDone : styles.badgeRejected]}>
             {order.status}
           </Text>
         </View>
