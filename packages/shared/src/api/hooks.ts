@@ -570,8 +570,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.optionChain.analysis(body as StrategyAnalysisRequest),
       queryFn: () => client.post<StrategyAnalysis>("/v1/strategy-analysis", body),
       enabled: !!body,
-      staleTime: 5 * 1000,
-      refetchInterval: 15 * 1000,
+      staleTime: 30 * 1000,
+      refetchInterval: 30 * 1000,
       ...options,
     });
   };

@@ -530,6 +530,9 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
       <View style={styles.payoffHead}>
         <Text style={styles.small}>{model ? "Payoff · expiry and T+0" : "Payoff · at expiry"}</Text>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {loading && !model ? (
+            <Text style={[styles.cardMeta, { fontSize: 10 }]}>Loading T+0...</Text>
+          ) : null}
           {todayNow !== null ? (
             <Text style={[styles.figure, { color: moneyColor(todayNow, styles) }]}>{rupees(todayNow, true)}</Text>
           ) : null}

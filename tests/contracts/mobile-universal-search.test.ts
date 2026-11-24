@@ -59,17 +59,15 @@ it("draws only the fields the server sent for a hit", () => {
 
 /** A notification or a link can open either screen as the first route in the stack, where pressing back
  *  used to throw an unhandled GO_BACK, and popping back into the tab group restored the More tab whatever
- *  tab the trader came from. Both arrows now name their own destination: a tab is navigated, the search
- *  results are popped to, and a screen with nothing beneath it is replaced. */
+ *  tab the trader came from. Both arrows now name where they return to, and only a route the app has. */
 it("returns to the screen the trader came from and never throws", () => {
   const overview = readFileSync(resolve("apps/mobile/app/stock.tsx"), "utf8");
   for (const source of [screen, overview]) {
-    expect(source).toContain("!canGoBack ? router.replace(backTo)");
+    expect(source).toContain("!canGoBack ? router.replace(backTo) : router.navigate(backTo)");
     expect(source).toContain("const backTo = tabRoute(");
     expect(source).toContain("onPress={goBack}");
     expect(source).not.toContain("onPress={() => router.back()}");
   }
-  expect(overview).toContain('backTo === "/search" ? router.back() : router.navigate(backTo)');
 });
 
 /** The destination is whatever the caller put in the URL, and a link is user input: only the five tabs and

@@ -87,6 +87,10 @@ export default function TabLayout() {
           ),
         }}
       />
+      {/* The scanner left the bottom bar, but its screen still has to exist: a Tabs layout with explicit
+          children only knows the screens it declares, so More's entry used to resolve to the group's first
+          tab - the Positions book - instead of the scanner. `href: null` keeps it off the bar. */}
+      <Tabs.Screen name="scanner" options={{ href: null }} />
     </Tabs>
   );
 }
