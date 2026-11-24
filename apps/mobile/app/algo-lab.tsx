@@ -1,435 +1,400 @@
 /**
- * Algo Lab Screen - strategy conditions, backtest entry and live exposure.
+ * Algo Lab — the owner's live algos on one screen: what is running now, and a gated press that starts a
+ * saved strategy live.
  *
- * Every figure here comes from prod: the fleet is /v1/algo-lab/fleet, the exposure is the same account
- * read the Portfolio tab uses. What this app cannot do is said out loud rather than left as a button that
- * answers nothing: no route turns these conditions into a saved strategy, runs a backtest, or stores a
- * risk limit, so those actions are disabled with the reason instead of silently doing nothing.
+ * Live only. This screen has no paper path and cannot place anything the trader has not deliberately
+ * acknowledged: a start needs the broker gates open (live-readiness), an explicit "I reviewed these rules
+ * for real broker orders" checkbox, and one final press. Every number shown is prod's own — the runs are
+ * the engine's ledger (/v1/algo-lab/engine), the strategies are /v1/strategy-drafts, the broker state is
+ * the same readiness the web running-algos desk reads. Where prod refuses a live start it says why, in its
+ * own words, rather than leaving a button that silently does nothing.
  */
 
 import React, { useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import type { FleetItem } from "@nraialgo/shared/api";
-import { formatNumber } from "@nraialgo/shared/utils";
-import { queryKeys } from "@nraialgo/shared/api";
+import { newClientId } from "@nraialgo/shared/hooks";
+import type { ManagedRun, StrategyDraftSummary } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
 
-type TabId = "builder" | "backtest" | "risk" | "fleet";
-type ConditionType = "Entry" | "Exit" | "Filter";
+type TabId = "running" | "strategies";
 
-/** One locally staged rule. It is this screen's draft, not a strategy prod has accepted. */
-interface Condition {
-  key: number;
-  type: ConditionType;
-  text: string;
-}
+/** A run the engine has not finished managing. Only these get a stop. */
+const isOpen = (run: ManagedRun) => !["closed", "cancelled", "completed", "withdrawn"].includes(run.status);
 
-const CYCLE: Record<ConditionType, ConditionType> = { Entry: "Exit", Exit: "Filter", Filter: "Entry" };
+/** Which colour a status is painted in, so an entry, an exit and a review-needed run never look alike. */
+const statusTone = (run: ManagedRun): "live" | "pending" | "review" | "done" => {
+  if (run.health?.state === "review" || run.status === "attention" || run.status === "unresolved") return "review";
+  if (["entry-pending", "exit-pending"].includes(run.status) || run.status === "armed") return "pending";
+  if (isOpen(run)) return "live";
+  return "done";
+};
 
-/** What prod has no route for from this screen, so a press cannot promise an outcome it cannot deliver. */
-const UNSAVED = "Saving needs the web desk: prod has no route that turns these conditions into a strategy.";
-const NO_BACKTEST = "Backtests are not run from this app. The fields are kept so the desk can take them later.";
-const NO_LIMITS = "Risk limits live in the owner console. This app reads exposure; it cannot set a limit.";
-
-const rupee = (value: number | null): string =>
-  value === null ? "not priced" : `${value < 0 ? "-" : ""}₹${formatNumber(Math.abs(value))}`;
+const ruleTemplate = (draft: StrategyDraftSummary) => draft.strategySetup?.template ?? "saved strategy";
 
 export default function AlgoLabScreen() {
-  const { useFleet, useOpenPositions } = useApi();
+  const { useManagedRuns, useStrategyDrafts, useLiveReadiness, useStartLiveCopy, useCloseRun } = useApi();
   const { resolvedTheme } = useTheme();
-  const [activeTab, setActiveTab] = useState<TabId>("builder");
+  const [activeTab, setActiveTab] = useState<TabId>("running");
 
-  const [name, setName] = useState("");
-  const [underlying, setUnderlying] = useState("");
-  const [conditions, setConditions] = useState<Condition[]>([]);
+  const [startFor, setStartFor] = useState<StrategyDraftSummary | null>(null);
+  const [ack, setAck] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirmStop, setConfirmStop] = useState<ManagedRun | null>(null);
 
-  const [strategy, setStrategy] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [capital, setCapital] = useState("");
-
-  const [maxPosition, setMaxPosition] = useState("");
-  const [dailyLoss, setDailyLoss] = useState("");
-  const [maxDrawdown, setMaxDrawdown] = useState("");
-  const [maxOpen, setMaxOpen] = useState("");
-
-  const { data: fleet, isLoading: fleetLoading, isError: fleetFailed, error: fleetError, refetch: refetchFleet } = useFleet({
-    queryKey: queryKeys.algoLab.fleet(),
-    enabled: activeTab === "fleet",
-  });
-  const { data: positions, isLoading: positionsLoading } = useOpenPositions({
-    queryKey: queryKeys.positions.open(),
-    enabled: activeTab === "risk",
-  });
+  const runs = useManagedRuns({ enabled: activeTab === "running" });
+  const drafts = useStrategyDrafts({ enabled: activeTab === "strategies" });
+  const readiness = useLiveReadiness({ enabled: activeTab === "strategies" });
+  const startLive = useStartLiveCopy();
+  const closeRun = useCloseRun();
 
   const colors = useMemo(() => resolvedTheme === "dark"
-    ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", inputBg: "#0f172a", up: "#22c55e", down: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", inputBg: "#ffffff", up: "#16a34a", down: "#dc2626" }, [resolvedTheme]);
+    ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", brand: "#38bdf8", buy: "#22c55e", sell: "#ef4444", warn: "#f59e0b" }
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7", buy: "#16a34a", sell: "#dc2626", warn: "#b45309" }, [resolvedTheme]);
 
   const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
-    header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
+    header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
     title: { fontSize: 24, fontWeight: "700", color: colors.text },
-    tabContainer: { flexDirection: "row", backgroundColor: colors.card, marginHorizontal: 16, marginTop: 12, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
-    tabButton: { flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 6 },
-    tabButtonActive: { backgroundColor: colors.accent },
-    tabLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
-    tabLabelActive: { color: "#ffffff" },
-    content: { flexGrow: 1, padding: 16, gap: 16 },
-    sectionTitle: { fontSize: 16, fontWeight: "600", color: colors.text },
-    card: { backgroundColor: colors.card, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: colors.border, gap: 8 },
-    label: { fontSize: 12, fontWeight: "600", color: colors.muted },
-    input: {
-      height: 44, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.inputBg,
-      paddingHorizontal: 12, fontSize: 16, color: colors.text,
-    },
-    button: { height: 44, borderRadius: 8, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" },
-    buttonText: { fontSize: 16, fontWeight: "600", color: "#ffffff" },
-    buttonSecondary: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
-    buttonSecondaryText: { color: colors.text },
-    buttonOff: { opacity: 0.45 },
-    note: { fontSize: 12, color: colors.muted, lineHeight: 18 },
-    emptyState: { alignItems: "center", padding: 24, gap: 6 },
-    emptyTitle: { fontSize: 16, fontWeight: "600", color: colors.text },
-    emptyDesc: { fontSize: 14, color: colors.muted, textAlign: "center", lineHeight: 20 },
-    conditionRow: {
-      flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 8,
-      backgroundColor: colors.inputBg, borderRadius: 8, borderWidth: 1, borderColor: colors.border,
-    },
-    conditionType: { fontSize: 12, fontWeight: "700", color: colors.accent, minWidth: 52 },
-    conditionInput: { flex: 1, fontSize: 15, color: colors.text, paddingVertical: 8 },
-    metric: { flex: 1, minWidth: 130, gap: 2 },
-    metricValue: { fontSize: 20, fontWeight: "700", color: colors.text },
+    subtitle: { fontSize: 12, color: colors.muted, marginTop: 2 },
+    tabs: { flexDirection: "row", gap: 6, marginHorizontal: 16, marginTop: 12 },
+    tab: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card },
+    tabOn: { borderColor: colors.brand, backgroundColor: `${colors.brand}22` },
+    tabText: { fontSize: 14, fontWeight: "700", color: colors.muted },
+    tabTextOn: { color: colors.text },
+    body: { padding: 16, gap: 12 },
+    card: { backgroundColor: colors.card, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: colors.border, gap: 6 },
+    rowHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    name: { fontSize: 15, fontWeight: "700", color: colors.text, flexShrink: 1 },
+    meta: { fontSize: 12, color: colors.muted },
+    badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, overflow: "hidden" },
+    badgeText: { fontSize: 11, fontWeight: "700" },
+    detail: { fontSize: 12, color: colors.text, marginTop: 2 },
+    error: { fontSize: 12, color: colors.sell, marginTop: 2 },
+    metricRow: { flexDirection: "row", gap: 16, marginTop: 2 },
+    metricValue: { fontSize: 15, fontWeight: "700", color: colors.text },
     metricLabel: { fontSize: 11, color: colors.muted, textTransform: "uppercase" },
-    metricRow: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-    fleetItem: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-    fleetInfo: { flex: 1 },
-    fleetName: { fontSize: 15, fontWeight: "600", color: colors.text },
-    fleetMeta: { fontSize: 12, color: colors.muted, marginTop: 2 },
-    fleetPnL: { fontSize: 15, fontWeight: "600" },
-    retry: { alignSelf: "flex-start", paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.accent },
-    retryText: { fontSize: 13, fontWeight: "600", color: colors.accent },
-  }), [colors]);
+    button: { height: 46, borderRadius: 10, backgroundColor: colors.sell, alignItems: "center", justifyContent: "center", marginTop: 4 },
+    buttonGhost: { height: 38, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+    buttonOff: { opacity: 0.4 },
+    buttonText: { fontSize: 14, fontWeight: "700", color: "#ffffff" },
+    buttonGhostText: { fontSize: 13, fontWeight: "600", color: colors.text },
+    empty: { alignItems: "center", paddingVertical: 32, gap: 8 },
+    emptyTitle: { fontSize: 16, fontWeight: "600", color: colors.text },
+    emptyDesc: { fontSize: 13, color: colors.muted, textAlign: "center", lineHeight: 19, paddingHorizontal: 12 },
+    retry: { alignSelf: "center", paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.brand, marginTop: 4 },
+    retryText: { fontSize: 13, fontWeight: "600", color: colors.brand },
+    scrim: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+    sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 18, gap: 12, maxHeight: "88%" },
+    sheetHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+    sheetTitle: { fontSize: 18, fontWeight: "700", color: colors.text, flexShrink: 1 },
+    sheetNote: { fontSize: 13, color: colors.muted, lineHeight: 19 },
+    field: { flexDirection: "row", justifyContent: "space-between", gap: 12 },
+    fieldLabel: { fontSize: 12, color: colors.muted },
+    fieldText: { fontSize: 13, fontWeight: "600", color: colors.text, flexShrink: 1, textAlign: "right" },
+    gate: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
+    gateText: { fontSize: 12.5, color: colors.text, flex: 1 },
+    ackRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+    ackBox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: ack ? colors.sell : colors.border, backgroundColor: ack ? colors.sell : "transparent", alignItems: "center", justifyContent: "center", marginTop: 1 },
+    ackText: { fontSize: 13, color: colors.text, flex: 1, lineHeight: 19 },
+    startBtn: { backgroundColor: colors.sell },
+  }), [colors, ack]);
 
-  const tabs: { id: TabId; label: string; icon: "construct-outline" | "analytics-outline" | "shield-outline" | "layers-outline" }[] = [
-    { id: "builder", label: "Builder", icon: "construct-outline" },
-    { id: "backtest", label: "Backtest", icon: "analytics-outline" },
-    { id: "risk", label: "Risk", icon: "shield-outline" },
-    { id: "fleet", label: "Fleet", icon: "layers-outline" },
+  const badgeColor = (tone: "live" | "pending" | "review" | "done") =>
+    tone === "live" ? colors.buy : tone === "pending" ? colors.warn : tone === "review" ? colors.sell : colors.muted;
+
+  const toneLabel: Record<string, string> = {
+    live: "running", pending: "pending", review: "needs review", done: "closed",
+  };
+
+  const tabs: { id: TabId; label: string; icon: "radio-button-on-outline" | "list-outline" }[] = [
+    { id: "running", label: "Running", icon: "radio-button-on-outline" },
+    { id: "strategies", label: "My strategies", icon: "list-outline" },
   ];
 
-  const addCondition = () =>
-    setConditions(current => [...current, { key: Date.now(), type: "Entry", text: "" }]);
+  const openStart = (draft: StrategyDraftSummary) => {
+    setStartFor(draft);
+    setAck(false);
+    setStartError(null);
+    setNotice(null);
+    if (!readiness.data) void readiness.refetch();
+  };
 
-  const writeCondition = (key: number, patch: Partial<Condition>) =>
-    setConditions(current => current.map(condition => (condition.key === key ? { ...condition, ...patch } : condition)));
+  const submitStart = async () => {
+    const draft = startFor;
+    const ready = readiness.data;
+    if (!draft || !ack || !ready?.available || ready.executionReady === false || !ready.provider || !ready.accountId) return;
+    setStartError(null);
+    try {
+      const result = await startLive.mutateAsync({
+        copyId: draft.id,
+        body: {
+          requestId: newClientId(),
+          draftVersion: draft.updatedAt,
+          mode: "live",
+          provider: ready.provider,
+          accountId: ready.accountId,
+          acknowledge: true,
+        },
+      });
+      setNotice(result.queued
+        ? `Armed for the next market open. ${draft.name} picks its strikes from these saved rules when the market opens and sends the entry to ${ready.provider}.`
+        : result.status === "open"
+          ? `Live run opened with its saved rules. Track it under Running.`
+          : `Live start accepted · ${result.status}. Acceptance is not a confirmed fill.`);
+      setStartFor(null);
+      void runs.refetch();
+    } catch (cause) {
+      setStartError(cause instanceof Error ? cause.message : "The live start could not be confirmed.");
+    }
+  };
 
-  const dropCondition = (key: number) => setConditions(current => current.filter(c => c.key !== key));
+  const confirmClose = async () => {
+    const run = confirmStop;
+    if (!run) return;
+    setConfirmStop(null);
+    setNotice(null);
+    try {
+      await closeRun.mutateAsync(run.id);
+      setNotice(`Stop requested for ${run.name}. A pending adjustment is cancelled and every remaining leg closes on fresh quotes.`);
+      void runs.refetch();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? `Stop failed: ${cause.message}` : "The stop could not be confirmed.");
+    }
+  };
 
-  const exposure = useMemo(() => {
-    const rows = positions ?? [];
-    const priced = rows.filter(row => row.markPrice !== null);
-    const withPnl = rows.filter(row => row.unrealizedPnl !== null);
-    return {
-      count: rows.length,
-      // A position the broker never marked stays admitted as unpriced instead of counting as zero.
-      notional: priced.reduce((total, row) => total + Math.abs(row.quantity) * (row.markPrice as number), 0),
-      pricedCount: priced.length,
-      unrealized: withPnl.length ? withPnl.reduce((total, row) => total + (row.unrealizedPnl as number), 0) : null,
-      pnlCount: withPnl.length,
-    };
-  }, [positions]);
-
-  const deployed = useMemo(() => (fleet ?? []).reduce((total, item) => total + item.deployed, 0), [fleet]);
-
-  const renderBuilder = () => (
-    <ScrollView contentContainerStyle={styles.content}>
-      <Text style={styles.sectionTitle}>Strategy Builder</Text>
-      <View style={styles.card}>
-        <Text style={styles.label}>Strategy name</Text>
-        <TextInput
-          style={styles.input}
-          value={name}
-          onChangeText={setName}
-          placeholder="My Strategy"
-          placeholderTextColor={colors.muted}
-          autoCapitalize="none"
-        />
-        <Text style={styles.label}>Underlying</Text>
-        <TextInput
-          style={styles.input}
-          value={underlying}
-          onChangeText={setUnderlying}
-          placeholder="NIFTY / BANKNIFTY"
-          placeholderTextColor={colors.muted}
-          autoCapitalize="characters"
-        />
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Conditions</Text>
-        {conditions.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="add-circle-outline" size={44} color={colors.muted} />
-            <Text style={styles.emptyTitle}>No conditions added</Text>
-            <Text style={styles.emptyDesc}>Tap + to add an entry, exit, or filter condition</Text>
+  const renderRun = (run: ManagedRun) => {
+    const tone = statusTone(run);
+    const pnl = run.pnl === null || run.pnl === undefined ? null : Number(run.pnl);
+    return (
+      <View key={run.id} style={styles.card}>
+        <View style={styles.rowHead}>
+          <Text style={styles.name} numberOfLines={1}>{run.name}</Text>
+          <View style={[styles.badge, { backgroundColor: `${badgeColor(tone)}22` }]}>
+            <Text style={[styles.badgeText, { color: badgeColor(tone) }]}>{toneLabel[tone]}</Text>
           </View>
-        ) : (
-          conditions.map(condition => (
-            <View key={condition.key} style={styles.conditionRow}>
-              {/* The chip is the rule's own type: press it to move to the next one. */}
-              <TouchableOpacity onPress={() => writeCondition(condition.key, { type: CYCLE[condition.type] })} hitSlop={8}>
-                <Text style={styles.conditionType}>{condition.type}</Text>
-              </TouchableOpacity>
-              <TextInput
-                style={styles.conditionInput}
-                value={condition.text}
-                onChangeText={text => writeCondition(condition.key, { text })}
-                placeholder="RSI(14) < 30 AND Close > EMA(20)"
-                placeholderTextColor={colors.muted}
-                autoCapitalize="none"
-              />
-              <TouchableOpacity onPress={() => dropCondition(condition.key)} hitSlop={10} accessibilityLabel="Remove condition">
-                <Ionicons name="trash-outline" size={20} color={colors.muted} />
-              </TouchableOpacity>
-            </View>
-          ))
-        )}
-        <TouchableOpacity style={[styles.button, styles.buttonSecondary]} onPress={addCondition}>
-          <Text style={[styles.buttonText, styles.buttonSecondaryText]}>+ Add Condition</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.card}>
-        <TouchableOpacity style={[styles.button, styles.buttonOff]} disabled>
-          <Text style={styles.buttonText}>Save Strategy</Text>
-        </TouchableOpacity>
-        <Text style={styles.note}>{UNSAVED}</Text>
-      </View>
-    </ScrollView>
-  );
-
-  const renderBacktest = () => (
-    <ScrollView contentContainerStyle={styles.content}>
-      <Text style={styles.sectionTitle}>Backtest Configuration</Text>
-      <View style={styles.card}>
-        <Text style={styles.label}>Strategy</Text>
-        <TextInput
-          style={styles.input}
-          value={strategy}
-          onChangeText={setStrategy}
-          placeholder="Select Strategy"
-          placeholderTextColor={colors.muted}
-          autoCapitalize="none"
-        />
-        <Text style={styles.label}>From</Text>
-        <TextInput
-          style={styles.input}
-          value={from}
-          onChangeText={setFrom}
-          placeholder="YYYY-MM-DD"
-          placeholderTextColor={colors.muted}
-          autoCapitalize="none"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>To</Text>
-        <TextInput
-          style={styles.input}
-          value={to}
-          onChangeText={setTo}
-          placeholder="YYYY-MM-DD"
-          placeholderTextColor={colors.muted}
-          autoCapitalize="none"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>Initial capital (₹)</Text>
-        <TextInput
-          style={styles.input}
-          value={capital}
-          onChangeText={setCapital}
-          placeholder="100000"
-          placeholderTextColor={colors.muted}
-          keyboardType="number-pad"
-        />
-        <TouchableOpacity style={[styles.button, styles.buttonOff]} disabled>
-          <Text style={styles.buttonText}>Run Backtest</Text>
-        </TouchableOpacity>
-        <Text style={styles.note}>{NO_BACKTEST}</Text>
-      </View>
-
-      <Text style={styles.sectionTitle}>Results</Text>
-      <View style={styles.card}>
-        <View style={styles.emptyState}>
-          <Ionicons name="analytics-outline" size={44} color={colors.muted} />
-          <Text style={styles.emptyTitle}>No backtest run yet</Text>
-          <Text style={styles.emptyDesc}>Configure and run a backtest to see results</Text>
         </View>
+        <Text style={styles.meta}>{`${run.status}${run.provider ? ` · ${run.provider}` : ""}${run.management_mode ? ` · ${run.management_mode}` : ""}`}</Text>
+        {run.health?.detail ? <Text style={styles.detail}>{run.health.label ? `${run.health.label}: ${run.health.detail}` : run.health.detail}</Text> : null}
+        {run.last_error ? <Text style={styles.error}>{run.last_error}</Text> : null}
+        <View style={styles.metricRow}>
+          <View>
+            <Text style={[styles.metricValue, { color: pnl === null ? colors.muted : pnl >= 0 ? colors.buy : colors.sell }]}>
+              {pnl === null ? "—" : `${pnl >= 0 ? "+" : "-"}₹${Math.abs(pnl).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`}
+            </Text>
+            <Text style={styles.metricLabel}>P&L{run.mark_quality === "stale" ? " · stale mark" : ""}</Text>
+          </View>
+          <View>
+            <Text style={styles.metricValue}>{run.positions?.length ?? 0}</Text>
+            <Text style={styles.metricLabel}>Legs</Text>
+          </View>
+          {run.expires_at ? (
+            <View>
+              <Text style={styles.metricValue}>{run.expires_at.slice(0, 10)}</Text>
+              <Text style={styles.metricLabel}>Authority expires</Text>
+            </View>
+          ) : null}
+        </View>
+        {isOpen(run) ? (
+          <TouchableOpacity style={[styles.buttonGhost, { borderColor: colors.sell }]} onPress={() => setConfirmStop(run)} accessibilityRole="button" accessibilityLabel={`Stop and close ${run.name}`}>
+            <Text style={[styles.buttonGhostText, { color: colors.sell }]}>Stop and close</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
-    </ScrollView>
-  );
+    );
+  };
 
-  const renderRisk = () => (
-    <ScrollView contentContainerStyle={styles.content}>
-      <Text style={styles.sectionTitle}>Risk Limits</Text>
-      <View style={styles.card}>
-        <Text style={styles.label}>Max position size (₹)</Text>
-        <TextInput
-          style={styles.input}
-          value={maxPosition}
-          onChangeText={setMaxPosition}
-          placeholder="Not set by this app"
-          placeholderTextColor={colors.muted}
-          keyboardType="number-pad"
-        />
-        <Text style={styles.label}>Daily loss limit (₹)</Text>
-        <TextInput
-          style={styles.input}
-          value={dailyLoss}
-          onChangeText={setDailyLoss}
-          placeholder="Not set by this app"
-          placeholderTextColor={colors.muted}
-          keyboardType="number-pad"
-        />
-        <Text style={styles.label}>Max drawdown (%)</Text>
-        <TextInput
-          style={styles.input}
-          value={maxDrawdown}
-          onChangeText={setMaxDrawdown}
-          placeholder="Not set by this app"
-          placeholderTextColor={colors.muted}
-          keyboardType="decimal-pad"
-        />
-        <Text style={styles.label}>Max open positions</Text>
-        <TextInput
-          style={styles.input}
-          value={maxOpen}
-          onChangeText={setMaxOpen}
-          placeholder="Not set by this app"
-          placeholderTextColor={colors.muted}
-          keyboardType="number-pad"
-        />
-        <TouchableOpacity style={[styles.button, styles.buttonOff]} disabled>
-          <Text style={styles.buttonText}>Save Limits</Text>
-        </TouchableOpacity>
-        <Text style={styles.note}>{NO_LIMITS}</Text>
-      </View>
+  const renderRunning = () => {
+    if (runs.isLoading && !runs.data) {
+      return <View style={styles.empty}><ActivityIndicator color={colors.brand} /><Text style={styles.emptyDesc}>Reading the engine's live runs</Text></View>;
+    }
+    if (runs.isError) {
+      return (
+        <View style={styles.empty}>
+          <Ionicons name="cloud-offline-outline" size={40} color={colors.muted} />
+          <Text style={styles.emptyTitle}>Running algos could not be read</Text>
+          <Text style={styles.emptyDesc}>{runs.error?.message ?? "The server did not answer."}</Text>
+          <TouchableOpacity style={styles.retry} onPress={() => runs.refetch()}><Text style={styles.retryText}>Try again</Text></TouchableOpacity>
+        </View>
+      );
+    }
+    const live = (runs.data?.runs ?? []).filter(run => run.mode === "live");
+    if (!live.length) {
+      return (
+        <View style={styles.empty}>
+          <Ionicons name="radio-button-off-outline" size={40} color={colors.muted} />
+          <Text style={styles.emptyTitle}>No live algos running</Text>
+          <Text style={styles.emptyDesc}>Nothing is live right now. Start a saved strategy from "My strategies".</Text>
+        </View>
+      );
+    }
+    return (
+      <>
+        {live.map(renderRun)}
+      </>
+    );
+  };
 
-      <Text style={styles.sectionTitle}>Current Exposure</Text>
-      <View style={styles.card}>
-        {positionsLoading && !positions ? (
-          <View style={styles.emptyState}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.emptyDesc}>Reading the broker's position book</Text>
-          </View>
-        ) : exposure.count === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="shield-outline" size={44} color={colors.muted} />
-            <Text style={styles.emptyTitle}>No open positions</Text>
-            <Text style={styles.emptyDesc}>Risk figures appear once the broker's book holds something.</Text>
-          </View>
-        ) : (
-          <View style={styles.metricRow}>
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>{exposure.count}</Text>
-              <Text style={styles.metricLabel}>Open positions</Text>
+  const renderStrategies = () => {
+    if (drafts.isLoading && !drafts.data) {
+      return <View style={styles.empty}><ActivityIndicator color={colors.brand} /><Text style={styles.emptyDesc}>Reading your saved strategies</Text></View>;
+    }
+    if (drafts.isError) {
+      return (
+        <View style={styles.empty}>
+          <Ionicons name="cloud-offline-outline" size={40} color={colors.muted} />
+          <Text style={styles.emptyTitle}>Strategies could not be read</Text>
+          <Text style={styles.emptyDesc}>{drafts.error?.message ?? "The server did not answer."}</Text>
+          <TouchableOpacity style={styles.retry} onPress={() => drafts.refetch()}><Text style={styles.retryText}>Try again</Text></TouchableOpacity>
+        </View>
+      );
+    }
+    const copies = (drafts.data?.drafts ?? []).filter(draft => !!draft.strategySetup);
+    if (!copies.length) {
+      return (
+        <View style={styles.empty}>
+          <Ionicons name="albums-outline" size={40} color={colors.muted} />
+          <Text style={styles.emptyTitle}>No saved strategies to start</Text>
+          <Text style={styles.emptyDesc}>Save a strategy copy on the web desk first; this screen starts saved copies live, it does not build new rules.</Text>
+        </View>
+      );
+    }
+    return (
+      <>
+        {copies.map(draft => (
+          <View key={draft.id} style={styles.card}>
+            <View style={styles.rowHead}>
+              <Text style={styles.name} numberOfLines={1}>{draft.name}</Text>
+              <Text style={styles.meta}>{draft.underlying}</Text>
             </View>
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>₹{formatNumber(exposure.notional)}</Text>
-              <Text style={styles.metricLabel}>Marked exposure · {exposure.pricedCount} of {exposure.count} priced</Text>
-            </View>
-            <View style={styles.metric}>
-              <Text style={[styles.metricValue, { color: (exposure.unrealized ?? 0) >= 0 ? colors.up : colors.down }]}>
-                {rupee(exposure.unrealized)}
-              </Text>
-              <Text style={styles.metricLabel}>
-                Unrealized · {exposure.pnlCount === 0 ? "no position marked yet" : `${exposure.pnlCount} of ${exposure.count} marked`}
-              </Text>
-            </View>
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>₹{formatNumber(deployed)}</Text>
-              <Text style={styles.metricLabel}>Deployed by the fleet</Text>
-            </View>
-          </View>
-        )}
-      </View>
-    </ScrollView>
-  );
-
-  const renderFleet = () => (
-    <ScrollView contentContainerStyle={styles.content}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-        <Text style={styles.sectionTitle}>Strategy Fleet</Text>
-        <TouchableOpacity style={[styles.button, { width: 150 }]} onPress={() => setActiveTab("builder")}>
-          <Text style={styles.buttonText}>+ New Strategy</Text>
-        </TouchableOpacity>
-      </View>
-      <View style={styles.card}>
-        {fleetLoading && !fleet ? (
-          <View style={styles.emptyState}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.emptyDesc}>Reading the deployed strategies</Text>
-          </View>
-        ) : fleetFailed ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="cloud-offline-outline" size={44} color={colors.muted} />
-            <Text style={styles.emptyTitle}>The fleet could not be read</Text>
-            <Text style={styles.emptyDesc}>{fleetError?.message ?? "The server did not answer."}</Text>
-            <TouchableOpacity style={styles.retry} onPress={() => refetchFleet()}>
-              <Text style={styles.retryText}>Try again</Text>
+            <Text style={styles.meta}>{`${ruleTemplate(draft)} · ${draft.legCount} legs · saved ${draft.updatedAt.slice(0, 10)}`}</Text>
+            <TouchableOpacity style={styles.button} onPress={() => openStart(draft)} accessibilityRole="button" accessibilityLabel={`Start ${draft.name} live`}>
+              <Text style={styles.buttonText}>Start live</Text>
             </TouchableOpacity>
           </View>
-        ) : !fleet?.length ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="layers-outline" size={44} color={colors.muted} />
-            <Text style={styles.emptyTitle}>No strategies deployed</Text>
-            <Text style={styles.emptyDesc}>Prod's fleet list is empty for this account.</Text>
-          </View>
-        ) : (
-          fleet.map((item: FleetItem) => (
-            <View key={item.id} style={styles.fleetItem}>
-              <View style={{ width: 44, height: 44, borderRadius: 8, backgroundColor: `${colors.accent}20`, alignItems: "center", justifyContent: "center" }}>
-                <Ionicons name="construct-outline" size={20} color={colors.accent} />
-              </View>
-              <View style={styles.fleetInfo}>
-                <Text style={styles.fleetName}>{item.name}</Text>
-                <Text style={styles.fleetMeta}>{`${item.strategy} · ₹${formatNumber(item.capital)} capital · ₹${formatNumber(item.deployed)} deployed`}</Text>
-              </View>
-              <View style={{ alignItems: "flex-end" }}>
-                <Text style={[styles.fleetPnL, { color: item.pnl >= 0 ? colors.up : colors.down }]}>
-                  {`${item.pnl >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(item.pnl))}`}
-                </Text>
-                <Text style={{ fontSize: 11, color: colors.muted }}>{item.status}</Text>
-              </View>
+        ))}
+      </>
+    );
+  };
+
+  const startSheet = startFor ? (() => {
+    const ready = readiness.data;
+    const gateOpen = !!ready?.available && ready?.executionReady !== false && !!ready?.provider && !!ready?.accountId;
+    const reason = ready?.reason ?? (ready ? "Broker ready." : "Checking broker readiness…");
+    return (
+      <Modal visible animationType="slide" onRequestClose={() => setStartFor(null)}>
+        <View style={styles.scrim}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Start live</Text>
+              <TouchableOpacity onPress={() => setStartFor(null)} hitSlop={10} accessibilityLabel="Cancel the live start">
+                <Ionicons name="close" size={24} color={colors.muted} />
+              </TouchableOpacity>
             </View>
-          ))
-        )}
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Strategy</Text>
+              <Text style={styles.fieldText}>{startFor.name}</Text>
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Underlying · template</Text>
+              <Text style={styles.fieldText}>{`${startFor.underlying} · ${ruleTemplate(startFor)}`}</Text>
+            </View>
+            <Text style={styles.sheetNote}>
+              Live picks its strikes from these saved rules at the moment it starts, on the strategy's saved expiry. Current prices, funds, margin and broker readiness are re-checked by the server when you start.
+            </Text>
+
+            <View style={styles.gate}>
+              <Ionicons name={gateOpen ? "shield-checkmark" : "alert-circle"} size={18} color={gateOpen ? colors.buy : colors.warn} />
+              <Text style={styles.gateText}>{ready?.available && ready.provider ? `${ready.provider} · account ${ready.accountId}` : reason}</Text>
+            </View>
+            <TouchableOpacity style={styles.retry} onPress={() => readiness.refetch()}><Text style={styles.retryText}>Refresh broker readiness</Text></TouchableOpacity>
+
+            <TouchableOpacity style={styles.ackRow} onPress={() => setAck(value => !value)} accessibilityRole="checkbox" accessibilityState={{ checked: ack }}>
+              <View style={styles.ackBox}>{ack ? <Ionicons name="checkmark" size={15} color="#ffffff" /> : null}</View>
+              <Text style={styles.ackText}>I reviewed these saved rules and authorize real broker orders from this strategy.</Text>
+            </TouchableOpacity>
+
+            {startError ? <Text style={styles.error}>{startError}</Text> : null}
+
+            <TouchableOpacity
+              style={[styles.button, styles.startBtn, (!gateOpen || !ack || startLive.isPending) && styles.buttonOff]}
+              disabled={!gateOpen || !ack || startLive.isPending}
+              onPress={() => void submitStart()}
+              accessibilityRole="button"
+              accessibilityLabel="Start the live algo"
+            >
+              {startLive.isPending ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.buttonText}>Start Live Algo</Text>}
+            </TouchableOpacity>
+            {!gateOpen && <Text style={styles.sheetNote}>Start is disabled until the broker gates are open.</Text>}
+          </View>
+        </View>
+      </Modal>
+    );
+  })() : null;
+
+  const stopSheet = confirmStop ? (
+    <Modal visible animationType="fade" transparent onRequestClose={() => setConfirmStop(null)}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <View style={[styles.card, { width: "100%", maxWidth: 380 }]}>
+          <Text style={styles.sheetTitle}>Stop and close?</Text>
+          <Text style={styles.sheetNote}>
+            This stops {confirmStop.name} and closes every remaining leg on fresh quotes. A pending adjustment is cancelled and its replacement is never ordered.
+          </Text>
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+            <TouchableOpacity style={[styles.buttonGhost, { flex: 1 }]} onPress={() => setConfirmStop(null)}>
+              <Text style={styles.buttonGhostText}>Keep running</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.button, { flex: 1, marginTop: 0 }]} onPress={() => void confirmClose()}>
+              <Text style={styles.buttonText}>Confirm stop</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
-    </ScrollView>
-  );
+    </Modal>
+  ) : null;
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Algo Lab</Text>
+        <View>
+          <Text style={styles.title}>Algo Lab</Text>
+          <Text style={styles.subtitle}>Live algos and one-press live starts</Text>
+        </View>
       </View>
-      <View style={styles.tabContainer}>
+
+      <View style={styles.tabs}>
         {tabs.map(tab => (
           <TouchableOpacity
             key={tab.id}
-            style={[styles.tabButton, activeTab === tab.id && styles.tabButtonActive]}
+            style={[styles.tab, activeTab === tab.id && styles.tabOn]}
             onPress={() => setActiveTab(tab.id)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === tab.id }}
           >
-            <Ionicons name={tab.icon} size={18} color={activeTab === tab.id ? "#ffffff" : colors.muted} style={{ marginBottom: 2 }} />
-            <Text style={[styles.tabLabel, activeTab === tab.id && styles.tabLabelActive]}>{tab.label}</Text>
+            <Ionicons name={tab.icon} size={16} color={activeTab === tab.id ? colors.text : colors.muted} />
+            <Text style={[styles.tabText, activeTab === tab.id && styles.tabTextOn]}>{tab.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
-      {activeTab === "builder" && renderBuilder()}
-      {activeTab === "backtest" && renderBacktest()}
-      {activeTab === "risk" && renderRisk()}
-      {activeTab === "fleet" && renderFleet()}
+
+      <ScrollView
+        contentContainerStyle={styles.body}
+        refreshControl={<RefreshControl refreshing={activeTab === "running" ? runs.isRefetching : drafts.isRefetching} onRefresh={() => void (activeTab === "running" ? runs.refetch() : drafts.refetch())} tintColor={colors.brand} />}
+      >
+        {notice ? (
+          <TouchableOpacity style={[styles.card, { borderColor: colors.brand }]} onPress={() => setNotice(null)}>
+            <Text style={styles.detail}>{notice}</Text>
+            <Text style={styles.meta}>Tap to dismiss</Text>
+          </TouchableOpacity>
+        ) : null}
+        {activeTab === "running" ? renderRunning() : renderStrategies()}
+      </ScrollView>
+
+      {startSheet}
+      {stopSheet}
     </View>
   );
 }

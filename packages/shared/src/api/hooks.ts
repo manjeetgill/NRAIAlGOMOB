@@ -93,7 +93,12 @@ export const queryKeys = {
   // Algo Lab
   algoLab: {
     fleet: () => ["algo-lab", "fleet"] as const,
+    // The engine's own managed runs, which is the only honest source for "what is running now".
+    engine: () => ["algo-lab", "engine", "runs"] as const,
+    // /v1/strategy-drafts carries the saved strategy copies; /v1/algo-lab/drafts is not a real route.
     drafts: () => ["algo-lab", "drafts"] as const,
+    strategyDrafts: () => ["strategy-drafts", "list"] as const,
+    liveReadiness: () => ["scanner-automations", "live-readiness"] as const,
     strategies: (params?: QueryParams) => ["algo-lab", "strategies", params] as const,
   },
 
@@ -780,6 +785,70 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  /**
+   * What the engine is managing right now. `/v1/algo-lab/engine` is the run ledger; each row names its
+   * own mode, so the caller filters to live. Reads the same workspace the web running-algos desk shows.
+   */
+  const useManagedRuns = (options?: Omit<UseQueryOptions<ManagedRunsResponse, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.algoLab.engine(),
+      queryFn: () => client.get<ManagedRunsResponse>("/v1/algo-lab/engine"),
+      staleTime: 10 * 1000,
+      ...options,
+    });
+  };
+
+  /** The signed-in workspace's saved strategies. Only rows carrying `strategySetup` are startable copies. */
+  const useStrategyDrafts = (options?: Omit<UseQueryOptions<{ drafts: StrategyDraftSummary[] }, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.algoLab.strategyDrafts(),
+      queryFn: () => client.get<{ drafts: StrategyDraftSummary[] }>("/v1/strategy-drafts"),
+      staleTime: 20 * 1000,
+      ...options,
+    });
+  };
+
+  /**
+   * The broker gates for live execution. `available` answers only the broker selection/connection;
+   * `executionReady` is the dispatch worker's own health. A live start needs both true and a provider +
+   * account, so a caller must never treat `available` alone as permission to send.
+   */
+  const useLiveReadiness = (options?: Omit<UseQueryOptions<LiveReadiness, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.algoLab.liveReadiness(),
+      queryFn: () => client.get<LiveReadiness>("/v1/scanner-automations/live-readiness"),
+      staleTime: 15 * 1000,
+      ...options,
+    });
+  };
+
+  /**
+   * Start one saved strategy copy live, exactly as the web desk does: an idempotent request reference,
+   * the copy version it was reviewed against, and an explicit acknowledgement. Requires the X-Algo-Lab
+   * header or prod refuses the write. Nothing here places an order the owner has not acknowledged.
+   */
+  const useStartLiveCopy = (options?: UseMutationOptions<LiveStartResult, ApiError, { copyId: string; body: LiveStartRequest }>) => {
+    return useMutation({
+      mutationFn: ({ copyId, body }) =>
+        client.post<LiveStartResult>(`/v1/strategy-copies/${encodeURIComponent(copyId)}/start`, body, { headers: { "X-Algo-Lab": "1" } }),
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: queryKeys.algoLab.engine() });
+        qc.invalidateQueries({ queryKey: queryKeys.positions.open() });
+      },
+      ...options,
+    });
+  };
+
+  /** Ask the engine to stop managing a run and close every remaining leg on fresh quotes. */
+  const useCloseRun = (options?: UseMutationOptions<{ status: string }, ApiError, string>) => {
+    return useMutation({
+      mutationFn: (runId) =>
+        client.post<{ status: string }>(`/v1/algo-lab/engine/${encodeURIComponent(runId)}/close`, {}, { headers: { "X-Algo-Lab": "1" } }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.algoLab.engine() }),
+      ...options,
+    });
+  };
+
   // ===== TERMINAL =====
   /** Candles for one chart key at one interval. `name` may be a bare symbol; it is prefixed for the route. */
   const useTerminalChart = (name: string, interval: string, options?: Omit<UseQueryOptions<ChartData, ApiError>, "queryKey" | "queryFn">) => {
@@ -857,6 +926,11 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     // Algo Lab
     useFleet,
     useDrafts,
+    useManagedRuns,
+    useStrategyDrafts,
+    useLiveReadiness,
+    useStartLiveCopy,
+    useCloseRun,
     // Terminal
     useTerminalChart,
     // History
@@ -1943,6 +2017,100 @@ export interface FleetItem {
   deployed: number;
   pnl: number;
   strategy: string;
+}
+
+/** The engine's own recovery label for a run: waiting, actively monitoring, or needs a human review. */
+export interface RunHealth {
+  state: "waiting" | "monitoring" | "review";
+  label: string;
+  detail: string;
+}
+
+/**
+ * One managed run as the engine stores it. Field names are the server's snake_case and are kept verbatim
+ * because they are read straight off the rows; only the parts the running list renders are typed here.
+ * `mode` separates paper from live and `status` is open / entry-pending / exit-pending / attention / closed.
+ */
+export interface ManagedRun {
+  id: string;
+  name: string;
+  mode: string;
+  status: string;
+  strategy?: string;
+  strategy_copy_id?: string | null;
+  provider?: string | null;
+  account_id?: string | null;
+  expires_at?: string | null;
+  pnl?: string | null;
+  last_error?: string | null;
+  mark_at?: string | null;
+  mark_quality?: string | null;
+  unresolved?: boolean;
+  management_mode?: "manual" | "automated" | null;
+  created_at?: string | null;
+  health?: RunHealth | null;
+  pending_order_states?: string[] | null;
+  positions?: {
+    instrumentId: string;
+    action: string;
+    strike: string;
+    right: string;
+    expiry: string;
+    openQuantity: number;
+    entryPrice?: string | null;
+    markPrice?: string | null;
+  }[];
+}
+
+export interface ManagedRunsResponse {
+  runs: ManagedRun[];
+  events?: unknown[];
+}
+
+/** The saved configuration that turns a draft into a startable strategy copy. `config` holds the rules. */
+export interface StrategySetup {
+  template: string;
+  version: number;
+  config: Record<string, unknown>;
+  preview?: unknown;
+}
+
+/** One row of `/v1/strategy-drafts`. `updatedAt` is the optimistic-lock version a live start must echo. */
+export interface StrategyDraftSummary {
+  id: string;
+  name: string;
+  underlying: string;
+  status: string;
+  legCount: number;
+  createdAt: string;
+  updatedAt: string;
+  strategySetup?: StrategySetup | null;
+}
+
+export interface LiveReadiness {
+  available: boolean;
+  executionReady: boolean | null;
+  provider: string | null;
+  accountId: string | null;
+  reason: string | null;
+}
+
+/** Body of `/v1/strategy-copies/{id}/start` for live mode. `acknowledge` must be literally true. */
+export interface LiveStartRequest {
+  requestId: string;
+  draftVersion: string;
+  mode: "live";
+  provider: string;
+  accountId: string;
+  acknowledge: true;
+  ownerRiskConsent?: boolean;
+}
+
+export interface LiveStartResult {
+  id: string;
+  status: string;
+  created: boolean;
+  queued?: boolean;
 }
 
 export interface Draft {
