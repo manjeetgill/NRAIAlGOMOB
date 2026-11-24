@@ -17,17 +17,26 @@ describe("Orders screen shows three tabs", () => {
     expect(screen).toContain("GTT Orders");
   });
 
-  it("splits orders by status: working/partial go to pending, done/rejected go to executed", () => {
+  it("splits orders by the statuses the server actually returns", () => {
+    expect(screen).toContain('o.status === "queued"');
     expect(screen).toContain('o.status === "working"');
+    expect(screen).toContain('o.status === "unknown"');
+    expect(screen).toContain('o.status === "filled"');
     expect(screen).toContain('o.status === "partial"');
-    expect(screen).toContain('o.status === "done"');
-    expect(screen).toContain('o.status === "rejected"');
+    expect(screen).toContain('o.status === "cancelled"');
+    expect(screen).toContain('o.status === "failed"');
+  });
+
+  it("unwraps the {intents:[...]} envelope so the list is never a non-array", () => {
+    expect(hooks).toMatch(/\/v1\/orders"[\s\S]{0,200}?response\.intents/);
+    expect(hooks).toMatch(/client\.get<\{\s*intents:\s*OrderIntent\[\]\s*\}>/);
   });
 
   it("fetches GTT orders from the backend", () => {
     expect(screen).toContain("useGttOrders");
     expect(hooks).toContain("useGttOrders");
     expect(hooks).toContain("/v1/orders/gtt");
+    expect(hooks).toMatch(/\/v1\/orders\/gtt"[\s\S]{0,200}?response\.gtts/);
   });
 
   it("exports the GttOrder type", () => {
@@ -35,15 +44,25 @@ describe("Orders screen shows three tabs", () => {
     expect(index).toContain("type GttOrder");
   });
 
-  it("shows GTT state badges: active, triggered, expired", () => {
+  it("badges the GTT states the check constraint allows", () => {
     expect(screen).toContain("gtt.state");
-    expect(screen).toContain("badgeActive");
-    expect(screen).toContain("badgeTriggered");
+    expect(screen).toContain('gtt.state === "active"');
+    expect(screen).toContain('gtt.state === "failed"');
+    expect(screen).toContain('gtt.state === "cancelled"');
+    expect(hooks).toContain('"requested" | "placing" | "active" | "failed"');
   });
 
-  it("displays trigger price for GTT orders", () => {
+  it("shows GTT trigger and limit prices as numbers, not string blanks", () => {
     expect(screen).toContain("trigger_price");
     expect(screen).toContain("Trigger:");
+    expect(screen).toContain("Number(spec?.price)");
+    expect(screen).toContain("Number(spec?.quantity)");
+  });
+
+  it("shows the server's reason instead of a blank when a leg or GTT is unexplained", () => {
+    expect(screen).toContain("leg.state.toUpperCase()");
+    expect(screen).toContain("intent.message");
+    expect(screen).toContain("gtt.last_error");
   });
 
   it("refreshes on pull-to-refresh for each tab", () => {

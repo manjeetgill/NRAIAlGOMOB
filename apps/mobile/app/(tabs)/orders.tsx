@@ -53,7 +53,6 @@ export default function OrdersScreen() {
     badgeRejected: { backgroundColor: "rgba(239,68,68,0.15)", color: "#ef4444" },
     badgePartial: { backgroundColor: "rgba(245,158,11,0.15)", color: "#f59e0b" },
     badgeActive: { backgroundColor: "rgba(56,189,248,0.15)", color: "#38bdf8" },
-    badgeTriggered: { backgroundColor: "rgba(34,197,94,0.15)", color: "#22c55e" },
     badgeExpired: { backgroundColor: "rgba(100,116,139,0.15)", color: "#64748b" },
     row: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
     label: { fontSize: 11, color: colors.muted },
@@ -68,12 +67,12 @@ export default function OrdersScreen() {
 
   const pendingOrders = useMemo(() => {
     if (!intents) return [];
-    return intents.filter(o => o.status === "working" || o.status === "partial");
+    return intents.filter(o => o.status === "queued" || o.status === "working" || o.status === "unknown");
   }, [intents]);
 
   const executedOrders = useMemo(() => {
     if (!intents) return [];
-    return intents.filter(o => o.status === "done" || o.status === "rejected");
+    return intents.filter(o => o.status === "filled" || o.status === "partial" || o.status === "cancelled" || o.status === "failed");
   }, [intents]);
 
   const isLoading = tab === "gtt" ? gttLoading : intentsLoading;
@@ -106,7 +105,7 @@ export default function OrdersScreen() {
       <View key={intent.clientId} style={styles.card}>
         <View style={styles.header}>
           <Text style={styles.symbol}>{firstLeg?.tradingsymbol || intent.basketName || "Order"}</Text>
-          <Text style={[styles.badge, intent.status === "working" ? styles.badgeWorking : intent.status === "done" ? styles.badgeDone : intent.status === "rejected" ? styles.badgeRejected : styles.badgePartial]}>
+          <Text style={[styles.badge, intent.status === "queued" || intent.status === "working" || intent.status === "unknown" ? styles.badgeWorking : intent.status === "filled" ? styles.badgeDone : intent.status === "cancelled" || intent.status === "failed" ? styles.badgeRejected : styles.badgePartial]}>
             {intent.status.toUpperCase()}
           </Text>
         </View>
@@ -116,10 +115,16 @@ export default function OrdersScreen() {
               {leg.side} {formatNumber(leg.filledQuantity)}/{formatNumber(leg.quantity)}
             </Text>
             <Text style={styles.value}>
-              {leg.averagePrice ? formatRupees(leg.averagePrice) : "—"}
+              {leg.averagePrice ? formatRupees(Number(leg.averagePrice)) : leg.state.toUpperCase()}
             </Text>
           </View>
         ))}
+        {intent.message && (
+          <View style={styles.row}>
+            <Text style={styles.label}>Reason</Text>
+            <Text style={styles.value}>{intent.message}</Text>
+          </View>
+        )}
         <View style={[styles.row, { marginTop: 4 }]}>
           <Text style={styles.label}>{intent.provider} · {new Date(intent.createdAt).toLocaleTimeString()}</Text>
         </View>
@@ -131,14 +136,15 @@ export default function OrdersScreen() {
     const spec = gtt.order_spec as Record<string, unknown>;
     const symbol = (spec?.tradingsymbol as string) || (spec?.symbol as string) || "GTT";
     const side = (spec?.side as string) || "";
-    const quantity = (spec?.quantity as number) || 0;
-    const price = (spec?.price as number) || 0;
+    const quantity = Number(spec?.quantity) || 0;
+    const price = Number(spec?.price) || 0;
+    const exchange = (spec?.exchange as string) || "";
     return (
       <View key={gtt.id} style={styles.card}>
         <View style={styles.header}>
           <Text style={styles.symbol}>{symbol}</Text>
-          <Text style={[styles.badge, gtt.state === "active" ? styles.badgeActive : gtt.state === "triggered" ? styles.badgeTriggered : styles.badgeExpired]}>
-            {gtt.state.toUpperCase()}
+          <Text style={[styles.badge, gtt.state === "active" ? styles.badgeActive : gtt.state === "failed" ? styles.badgeRejected : gtt.state === "cancelled" ? styles.badgeExpired : styles.badgeWorking]}>
+            {gtt.state.toUpperCase().replace("_", " ")}
           </Text>
         </View>
         <View style={styles.row}>
@@ -153,8 +159,16 @@ export default function OrdersScreen() {
             <Text style={styles.value}>{formatRupees(price)}</Text>
           </View>
         )}
+        {gtt.last_error && (
+          <View style={styles.row}>
+            <Text style={styles.label}>Reason</Text>
+            <Text style={styles.value}>{gtt.last_error}</Text>
+          </View>
+        )}
         <View style={[styles.row, { marginTop: 4 }]}>
-          <Text style={styles.label}>{gtt.provider} · {new Date(gtt.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.label}>
+            {gtt.provider}{exchange ? ` · ${exchange}` : ""} · {new Date(gtt.created_at).toLocaleDateString()}
+          </Text>
         </View>
       </View>
     );

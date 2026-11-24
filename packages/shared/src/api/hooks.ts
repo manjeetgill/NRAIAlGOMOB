@@ -509,7 +509,10 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useOrderIntents = (params?: QueryParams, options?: UseQueryOptions<OrderIntent[], ApiError>) => {
     return useQuery({
       queryKey: queryKeys.orders.intents(params),
-      queryFn: () => client.get<OrderIntent[]>("/v1/orders", { params }),
+      queryFn: async () => {
+        const response = await client.get<{ intents: OrderIntent[] }>("/v1/orders", { params });
+        return response.intents;
+      },
       staleTime: 5 * 1000,
       refetchInterval: 10 * 1000,
       ...options,
@@ -1273,20 +1276,25 @@ export interface OrderIntent {
   accountId?: string;
   basketName?: string;
   createdAt: string;
+  updatedAt?: string | null;
   orders: OrderLine[];
-  status: "working" | "done" | "rejected" | "partial";
+  status: "queued" | "working" | "unknown" | "filled" | "partial" | "cancelled" | "failed";
+  message?: string | null;
 }
 
 export interface OrderLine {
+  index?: number;
   tradingsymbol: string;
   symbol?: string;
   side: "BUY" | "SELL";
   exchange: string;
   product: string;
   quantity: number;
+  price?: string | number;
   filledQuantity: number;
-  averagePrice?: number;
-  status: string;
+  averagePrice: string | null;
+  state: string;
+  message?: string | null;
   orderId?: string;
 }
 
@@ -1297,7 +1305,7 @@ export interface GttOrder {
   account_id: string;
   order_spec: Record<string, unknown>;
   trigger_price: string;
-  state: "requested" | "placing" | "active" | "triggered" | "expired" | "cancelled" | "cancel_requested" | "cancelling" | "unknown";
+  state: "requested" | "placing" | "active" | "failed" | "cancelled" | "cancel_requested" | "cancelling" | "unknown";
   broker_gtt_id: string | null;
   last_error: string | null;
   created_at: string;
