@@ -177,6 +177,49 @@ export function chartPickerSections(
   ].filter((section) => section.data.length > 0);
 }
 
+// ===== TECHNICAL EVENTS (SCANNER) TYPES =====
+export type ScannerSignalType = 
+  | "breakout" 
+  | "breakdown" 
+  | "support_touch" 
+  | "resistance_touch" 
+  | "breakout_retest" 
+  | "breakdown_retest"
+  | "hm_rsi_supertrend_buy"
+  | "hm_rsi_supertrend_sell";
+
+export interface ScannerSignal {
+  instrument: string;
+  session: string;
+  signal_type: ScannerSignalType;
+  price?: number | null;
+  timeframe?: string;
+  run_id?: string;
+  read?: boolean;
+  result?: {
+    support?: number;
+    resistance?: number;
+    previousClose?: number;
+  };
+}
+
+export interface TechnicalEventsResponse {
+  items: ScannerSignal[];
+  session?: string;
+  coverage?: { status: string; count: number }[];
+  run?: {
+    id: string;
+    status: string;
+    session: string;
+    created_at?: string;
+  };
+  preferences?: {
+    universe: string;
+    event_kinds?: string[];
+    timeframe?: string;
+  };
+}
+
 // Hook factory for creating typed API hooks
 /** The caller's own query client is required: the cache operations in these hooks run outside React, so
  *  whatever is passed here is the only cache they can reach. A client invented here would leave every
@@ -700,6 +743,17 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  // ===== TECHNICAL EVENTS (SCANNER) =====
+  const useTechnicalEvents = (options?: UseQueryOptions<TechnicalEventsResponse, ApiError>) => {
+    return useQuery({
+      queryKey: ["scanner", "technical-events"],
+      queryFn: () => client.get<TechnicalEventsResponse>("/v1/technical-events"),
+      staleTime: 30 * 1000,
+      refetchInterval: 60 * 1000,
+      ...options,
+    });
+  };
+
   // ===== ALGO LAB =====
   const useFleet = (options?: UseQueryOptions<FleetItem[], ApiError>) => {
     return useQuery({
@@ -792,6 +846,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     // Scanner
     useAutomations,
     useLiveTrades,
+    useTechnicalEvents,
     // Algo Lab
     useFleet,
     useDrafts,
