@@ -9,10 +9,10 @@
 
 import React, { useRef, useEffect, useCallback, useMemo, useState } from "react";
 import { View, StyleSheet, ActivityIndicator, Text, Platform } from "react-native";
-import { WebView, WebViewMessageEvent } from "react-native-webview";
+import { WebView } from "react-native-webview";
+import type { WebViewMessageEvent } from "react-native-webview";
 import { useTheme } from "@/components/ThemeProvider";
-import { Asset } from "expo-asset";
-import * as FileSystem from "expo-file-system";
+import { KLINECHARTS_LIB } from "./klinecharts_lib";
 import type { Candle } from "@nraialgo/shared/api";
 
 interface KLineChartProps {
@@ -30,39 +30,15 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
   const isReady = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [libContent, setLibContent] = useState<string>("");
-
-  // Load klinecharts library from local asset on mount
-  useEffect(() => {
-    async function loadLibrary() {
-      try {
-        // Load the local klinecharts file
-        const asset = Asset.fromModule(require("../../assets/vendor/klinecharts.min.js"));
-        await asset.downloadAsync();
-        
-        if (asset.localUri) {
-          const content = await FileSystem.readAsStringAsync(asset.localUri);
-          setLibContent(content);
-        }
-      } catch (e) {
-        console.error("Failed to load klinecharts library:", e);
-        setError("Failed to load chart library");
-      }
-    }
-    
-    loadLibrary();
-  }, []);
 
   const chartHtml = useMemo(() => {
-    if (!libContent) return null;
-    
     return `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <script>${libContent}</script>
+        <script>${KLINECHARTS_LIB}</script>
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           html, body { width: 100%; height: 100%; overflow: hidden; background: ${resolvedTheme === 'dark' ? '#0f172a' : '#ffffff'}; }
@@ -121,7 +97,6 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
 
               chart.createIndicator('MA', false, { id: 'candle_pane' });
               chart.createIndicator('VOL', true, { id: 'indicator_pane' });
-              chart.setCrosshair({});
               
               window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
             } catch (e) {
@@ -163,7 +138,7 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
       </body>
       </html>
     `;
-  }, [resolvedTheme, libContent]);
+  }, [resolvedTheme]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -197,7 +172,7 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color={resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"} />
           <Text style={[styles.loadingText, { color: resolvedTheme === "dark" ? "#f1f5f9" : "#0f172a" }]}>
-            {libContent ? "Loading chart..." : "Loading library..."}
+            Loading chart...
           </Text>
         </View>
       )}
@@ -209,7 +184,7 @@ export default function KLineChart({ data, height = 400 }: KLineChartProps) {
       )}
       {chartHtml && (
         <WebView
-          ref={webViewRef}
+          ref={webViewRef as any}
           source={{ html: chartHtml }}
           style={styles.webview}
           onMessage={handleMessage}
@@ -242,7 +217,11 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.05)",
@@ -253,7 +232,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.8)",
