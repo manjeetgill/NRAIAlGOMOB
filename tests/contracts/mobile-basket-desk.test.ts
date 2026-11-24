@@ -689,6 +689,9 @@ it("asks for a basket name at Execute and sends every order under it", () => {
   // Execute opens the naming sheet; only the sheet's Send talks to prod.
   expect(screen).toContain("onPress={ask}");
   expect(screen).toContain("setSendSheet(true);");
+  // An adjustment of a basket the desk already names skips the prompt and keeps that name; clearing the
+  // name is the one case that brings the prompt back.
+  expect(screen).toContain("if (adjusting && basket.trim()) { send(); return; }");
   // A basket that cannot go out never gets a sheet: the same refusals run before it opens.
   expect(screen).toContain("const reason = refusal();\n    if (reason) { setNote(reason); return; }");
   // The name is always sent, so the intent is never an anonymous one the desk cannot file.

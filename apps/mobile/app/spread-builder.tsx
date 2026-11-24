@@ -743,15 +743,6 @@ export default function SpreadBuilderScreen() {
     return `${stem} ${underlying} ${dates.join("/")}`.slice(0, 80);
   };
 
-  /** Execute: ask what to call this basket. Nothing reaches prod from this press. */
-  const ask = () => {
-    const reason = refusal();
-    if (reason) { setNote(reason); return; }
-    setBasket(suggestedName());
-    setNote(null);
-    setSendSheet(true);
-  };
-
   const send = async () => {
     const reason = refusal();
     if (reason) { setSendSheet(false); setNote(reason); return; }
@@ -806,6 +797,21 @@ export default function SpreadBuilderScreen() {
     } finally {
       setSending(false);
     }
+  };
+
+  /**
+   * Execute. An adjustment of a basket the desk already names goes straight out under that name: asking
+   * again would only invent a second name for one basket, and prod files same-named orders on one card.
+   * A new basket is named first, and a name the trader cleared forces the prompt back, because an unnamed
+   * intent is one no desk card can hold.
+   */
+  const ask = () => {
+    const reason = refusal();
+    if (reason) { setNote(reason); return; }
+    if (adjusting && basket.trim()) { send(); return; }
+    setBasket(suggestedName());
+    setNote(null);
+    setSendSheet(true);
   };
 
   const colors = useMemo(() => resolvedTheme === "dark"
