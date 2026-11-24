@@ -1,0 +1,170 @@
+[
+  {
+    "suite": "Primary Tab",
+    "screen": "Watchlist",
+    "action": "Tab Switch & First Paint",
+    "loadTimeMs": 1378,
+    "notes": "Sub-header index ticks + stock quotes",
+    "timestamp": "2026-11-24T10:52:23.850Z"
+  },
+  {
+    "suite": "Control Interaction",
+    "screen": "Watchlist",
+    "action": "Open Predefined Basket Dropdown",
+    "loadTimeMs": 735,
+    "notes": "Open modal selector",
+    "timestamp": "2026-11-24T10:52:27.412Z"
+  },
+  {
+    "suite": "Control Interaction",
+    "screen": "Watchlist",
+    "action": "Select \"Nifty Bank\" Basket",
+    "loadTimeMs": 1029,
+    "notes": "Reload 12 bank stocks",
+    "timestamp": "2026-11-24T10:52:33.182Z"
+  },
+  {
+    "suite": "Scroll Performance",
+    "screen": "Watchlist",
+    "action": "Vertical List Scroll Down",
+    "loadTimeMs": 1015,
+    "notes": "FlatList window virtualization",
+    "timestamp": "2026-11-24T10:52:34.197Z"
+  },
+  {
+    "suite": "Scroll Performance",
+    "screen": "Watchlist",
+    "action": "Vertical List Scroll Up",
+    "loadTimeMs": 903,
+    "notes": "FlatList window virtualization",
+    "timestamp": "2026-11-24T10:52:35.100Z"
+  },
+  {
+    "suite": "Primary Tab",
+    "screen": "Portfolio",
+    "action": "Tab Switch & First Paint",
+    "loadTimeMs": 1346,
+    "notes": "P&L summary, margin, holdings & positions",
+    "timestamp": "2026-11-24T10:52:36.447Z"
+  },
+  {
+    "suite": "Scroll Performance",
+    "screen": "Portfolio",
+    "action": "Scroll Portfolio Breakdown",
+    "loadTimeMs": 1376,
+    "notes": "Holdings summary card scroll",
+    "timestamp": "2026-11-24T10:52:44.433Z"
+  },
+  {
+    "suite": "Primary Tab",
+    "screen": "Orders",
+    "action": "Tab Switch & First Paint",
+    "loadTimeMs": 1348,
+    "notes": "Open, Closed & GTT broker orders",
+    "timestamp": "2026-11-24T10:52:46.768Z"
+  },
+  {
+    "suite": "Primary Tab",
+    "screen": "Option Chain",
+    "action": "Tab Switch & Ladder Initial Load",
+    "loadTimeMs": 1635,
+    "notes": "Option chain ladder with 30 strikes, PCR, ATM spot",
+    "timestamp": "2026-11-24T10:52:52.809Z"
+  },
+  {
+    "suite": "Control Interaction",
+    "screen": "Option Chain",
+    "action": "Click Underlying Selector",
+    "loadTimeMs": 926,
+    "notes": "Open underlying selector modal",
+    "timestamp": "2026-11-24T10:52:56.490Z"
+  },
+  {
+    "suite": "Control Interaction",
+    "screen": "Option Chain",
+    "action": "Change Underlying to BANKNIFTY",
+    "loadTimeMs": 1323,
+    "notes": "Refetch 30-strike ladder & expiries for BANKNIFTY",
+    "timestamp": "2026-11-24T10:53:00.984Z"
+  },
+  {
+    "suite": "Scroll Performance",
+    "screen": "Option Chain",
+    "action": "Scroll 30-Strike Ladder Down",
+    "loadTimeMs": 1376,
+    "notes": "Virtual strike ladder rows",
+    "timestamp": "2026-11-24T10:53:02.360Z"
+  },
+  {
+    "suite": "Primary Tab",
+    "screen": "More",
+    "action": "Tab Switch & Menu Load",
+    "loadTimeMs": 1141,
+    "notes": "Account, Appearance & Advanced options",
+    "timestamp": "2026-11-24T10:53:04.535Z"
+  },
+  {
+    "suite": "Control Interaction",
+    "screen": "Terminal Charts",
+    "action": "Switch Timeframe to \"15m\"",
+    "loadTimeMs": 1259,
+    "notes": "Aggregate 15m candle bars",
+    "timestamp": "2026-11-24T10:54:36.160Z"
+  },
+  {
+    "suite": "Navigation",
+    "screen": "Terminal Charts",
+    "action": "Back to More Menu",
+    "loadTimeMs": 948,
+    "notes": "Pop navigation stack",
+    "timestamp": "2026-11-24T10:54:40.164Z"
+  },
+  {
+    "suite": "Nested Screen",
+    "screen": "Algo Lab",
+    "action": "Open Nested Screen",
+    "loadTimeMs": 1458,
+    "notes": "Initial route load /algo-lab",
+    "timestamp": "2026-11-24T10:54:55.249Z"
+  },
+  {
+    "suite": "Navigation",
+    "screen": "Algo Lab",
+    "action": "Back to More Menu",
+    "loadTimeMs": 829,
+    "notes": "Stack pop back",
+    "timestamp": "2026-11-24T10:55:02.304Z"
+  },
+  {
+    "suite": "Nested Screen",
+    "screen": "Spread builder",
+    "action": "Open Nested Screen",
+    "loadTimeMs": 1415,
+    "notes": "Initial route load",
+    "timestamp": "2026-11-24T10:56:12.223Z"
+  },
+  {
+    "suite": "Navigation",
+    "screen": "Spread builder",
+    "action": "Back to More Menu",
+    "loadTimeMs": 760,
+    "notes": "Stack pop back",
+    "timestamp": "2026-11-24T10:56:15.565Z"
+  },
+  {
+    "suite": "Nested Screen",
+    "screen": "Scanner",
+    "action": "Open Nested Screen",
+    "loadTimeMs": 1432,
+    "notes": "Initial route load",
+    "timestamp": "2026-11-24T10:56:21.496Z"
+  },
+  {
+    "suite": "Navigation",
+    "screen": "Scanner",
+    "action": "Back to More Menu",
+    "loadTimeMs": 720,
+    "notes": "Stack pop back",
+    "timestamp": "2026-11-24T10:56:24.758Z"
+  }
+]
