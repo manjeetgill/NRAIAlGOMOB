@@ -11,7 +11,7 @@
  * heading puts the largest or the worst of that figure at the top.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
@@ -22,21 +22,26 @@ import { SortableTable } from "@/components/SortableTable";
 import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/utils";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
+import { useLastKnown } from "@/hooks/useLastKnown";
+import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 import { useAuthStore } from "@nraialgo/shared/stores";
 import {
   derivativeCodes,
   iciciAccountSection,
   iciciHoldings,
+  LAST_KNOWN,
   markHoldings,
   markPositions,
   nextSort,
   queryKeys,
   sortRows,
   streamIdFor,
+  tickEntries,
   useQuoteFeed,
   type Holding,
   type Marked,
   type OpenPosition,
+  type QuoteEntry,
   type SortColumn,
   type SortState,
 } from "@nraialgo/shared/api";
@@ -104,10 +109,27 @@ export default function PortfolioScreen() {
   const focused = useScreenFocused();
   const { data: account, refetch: refetchAccount } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused, gcTime: Infinity });
 
-  const savedPositions = useMemo(() => data ?? [], [data]);
-  const savedHoldings = useMemo(() => iciciHoldings(account ?? {}), [account]);
+  const prodPositions = useMemo(() => data ?? [], [data]);
+  const prodHoldings = useMemo(() => iciciHoldings(account ?? {}), [account]);
   const positionsState = iciciAccountSection(account, "portfoliopositions");
   const holdingsState = iciciAccountSection(account, "portfolioholdings");
+
+  // Prod's own words for a list it could not refresh. They label the rows; they never replace them.
+  // A degraded section still carries the broker's last confirmed book, and a screen that hid those
+  // rows would answer "where is my book?" with a blank while the same rows sit in the response.
+  // The notice is therefore only for a list that has nothing in it, and the banner is for everything
+  // the server did not call ready.
+  const blocked = (state: { kind: string }) => state.kind === "cold" || state.kind === "degraded" || state.kind === "unavailable";
+  // A degraded, stale or ready reply is an answer even when it carries no rows: the broker proved the
+  // book is flat, so the phone must not paint a remembered position over that proof. Only a reply that
+  // never named this list leaves the phone free to fall back on what it last saw.
+  const answered = (state: { kind: string }) => !blocked(state) || state.kind === "degraded";
+
+  // The book the phone last painted, kept so a read that fails outright cannot blank the owner's positions.
+  const positionCopy = useLastKnown(LAST_KNOWN.positions, prodPositions, answered(positionsState));
+  const holdingCopy = useLastKnown(LAST_KNOWN.holdings, prodHoldings, answered(holdingsState));
+  const savedPositions = positionCopy.rows;
+  const savedHoldings = holdingCopy.rows;
 
   // Use unified order ticket hook
   const ticket = useOrderTicket();
@@ -136,6 +158,25 @@ export default function PortfolioScreen() {
   const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
   const positions = useMemo(() => markPositions(savedPositions, feed.quotes, underlyings), [savedPositions, feed.quotes, underlyings]);
   const holdings = useMemo(() => markHoldings(savedHoldings, feed.quotes), [savedHoldings, feed.quotes]);
+
+  // The book is the one place the broker names a price per contract identity, so it seeds the phone's quote
+  // memory: the symbol the trader holds is often the row their watchlist cannot price. Nothing here is painted
+  // back onto these rows — the broker's own mark and P&L are what this screen is for.
+  const quotes = useQuoteMemory();
+  useEffect(() => {
+    const priced: QuoteEntry[] = [];
+    for (const row of positions) {
+      const id = streamIdFor(row, underlyings[row.symbol.trim().toUpperCase()] ?? null);
+      const price = Number(row.markPrice);
+      if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
+    }
+    for (const row of holdings) {
+      const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null });
+      const price = Number(row.currentPrice);
+      if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
+    }
+    quotes.remember([...tickEntries(feed.quotes), ...priced]);
+  }, [quotes, positions, holdings, feed.quotes]);
 
   // One tap on a heading sorts by that column, the next tap turns it around. The two tabs keep their own
   // order, so reading a sorted book never reorders the other one behind the trader's back.
@@ -167,6 +208,7 @@ export default function PortfolioScreen() {
     pnlNegative: { color: "#ef4444" },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
     emptyText: { fontSize: 16, color: colors.muted, textAlign: "center" },
+    savedLine: { paddingHorizontal: 14, paddingTop: 10, fontSize: 12, fontWeight: "600", color: colors.accent },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
     retry: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent },
@@ -184,13 +226,8 @@ export default function PortfolioScreen() {
   const totalHoldingPnl = pnlHoldings.reduce((sum, holding) => sum + (holding.unrealizedPnl ?? 0), 0);
 
 
-  // Prod's own words for a list it could not refresh. They label the rows; they never replace them.
-  // A degraded section still carries the broker's last confirmed book, and a screen that hid those
-  // rows would answer "where is my book?" with a blank while the same rows sit in the response.
-  // The notice is therefore only for a list that has nothing in it, and the banner is for everything
-  // the server did not call ready.
-  const blocked = (state: { kind: string }) => state.kind === "cold" || state.kind === "degraded" || state.kind === "unavailable";
-
+  // Prod's own words still label a list that has nothing in it, and the phone's own copy still has to say
+  // when it is the thing on screen. Neither ever replaces rows that arrived.
   const notice = (state: { kind: string; reason: string | null }, noun: string) => (
     <View style={[styles.empty, { flex: 1 }]}>
       <Text style={styles.emptyText}>
@@ -281,8 +318,16 @@ export default function PortfolioScreen() {
     }
   };
 
+  /** The one line that says the book on screen is this phone's last read of it, not prod's current one.
+   *  It names the minute, because a remembered position without a time on it reads like a live one. */
+  const copyLine = (copy: { source: string; line: string | null }) => (
+    copy.source === "last-fetched" && copy.line
+      ? <Text style={styles.savedLine}>{copy.line}</Text>
+      : null
+  );
+
   const renderPositions = () => {
-    if (isLoading && !account) {
+    if (isLoading && !account && savedPositions.length === 0) {
       return (
         <View style={[styles.container, styles.loading]}>
           <ActivityIndicator size="large" color={resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"} />
@@ -290,7 +335,7 @@ export default function PortfolioScreen() {
       );
     }
 
-    if (isError) {
+    if (isError && savedPositions.length === 0) {
       return (
         <View style={[styles.container, styles.empty]}>
           <Text style={styles.emptyText}>Failed to load positions. Pull to refresh.</Text>
@@ -310,6 +355,7 @@ export default function PortfolioScreen() {
 
     return (
       <>
+        {copyLine(positionCopy)}
         <SortableTable
           rows={positionRows}
           columns={POSITION_COLUMNS}
@@ -336,7 +382,7 @@ export default function PortfolioScreen() {
   };
 
   const renderHoldings = () => {
-    if (isLoading && !account) {
+    if (isLoading && !account && savedHoldings.length === 0) {
       return (
         <View style={[styles.container, styles.loading]}>
           <ActivityIndicator size="large" color={resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"} />
@@ -344,7 +390,7 @@ export default function PortfolioScreen() {
       );
     }
 
-    if (isError) {
+    if (isError && savedHoldings.length === 0) {
       return (
         <View style={[styles.container, styles.empty]}>
           <Text style={styles.emptyText}>Failed to load holdings. Pull to refresh.</Text>
@@ -364,6 +410,7 @@ export default function PortfolioScreen() {
 
     return (
       <>
+        {copyLine(holdingCopy)}
         <SortableTable
           rows={holdingRows}
           columns={HOLDING_COLUMNS}
