@@ -834,14 +834,16 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       if (!wanted || clientId.length === 0) return;
       const sub = subscribeSSE(
         `${Constants.API.BASE_URL}/v1/broker-auth/order/stream`,
+        // The stream sends {intents: [<execution_intents rows>], asOf}: database rows keyed `client_id`, not
+        // the /v1/orders/{clientId} body, so the old `clientId` match never fired and the screen waited for
+        // the 15 s poll. A frame naming this order now re-reads its snapshot at once.
         (raw) => {
           try {
-            const parsed = JSON.parse(raw) as OrderSnapshot | { intents?: OrderSnapshot[] };
-            const match = "intents" in parsed && Array.isArray(parsed.intents)
-              ? parsed.intents.find((i) => i.clientId === clientId)
-              : (parsed as OrderSnapshot).clientId === clientId ? (parsed as OrderSnapshot) : undefined;
-            if (match) {
-              queryClient.setQueryData(queryKeys.orders.snapshot(clientId), match);
+            const parsed = JSON.parse(raw) as { intents?: Array<{ client_id?: string; clientId?: string }> };
+            const named = Array.isArray(parsed?.intents)
+              && parsed.intents.some((i) => (i.client_id ?? i.clientId) === clientId);
+            if (named) {
+              void queryClient.invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) });
             }
           } catch {
             // Ignore malformed SSE frame

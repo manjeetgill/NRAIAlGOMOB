@@ -12,3 +12,12 @@ it("treats an account stream frame as a signal to re-read, never as the account 
   expect(stream).not.toContain("setQueryData");
   expect(hooks).not.toMatch(/JSON\.parse\(raw\) as IciciAccountPayload/);
 });
+
+it("re-reads an order when the order stream names it by the server's client_id", () => {
+  const hooks = readFileSync(resolve(__dirname, "../../packages/shared/src/api/hooks.ts"), "utf8");
+  const start = hooks.indexOf("/v1/broker-auth/order/stream");
+  const stream = hooks.slice(start, hooks.indexOf("return useQuery", start));
+  expect(stream).toContain("i.client_id ?? i.clientId");
+  expect(stream).toContain("invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) })");
+  expect(stream).not.toContain("setQueryData");
+});
