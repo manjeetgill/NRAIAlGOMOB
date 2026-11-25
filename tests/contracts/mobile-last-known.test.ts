@@ -179,3 +179,10 @@ it("treats the account frame as a change signal and never as the account answer"
   // screen reads, so writing it into the cache is what blanked the book.
   expect(stream).not.toContain("setQueryData");
 });
+
+// A manual Logout ends the session as surely as a 401: the next account must not open onto this book.
+it("forgets the saved books and prices when the owner logs out", () => {
+  const more = readFileSync(resolve(__dirname, "../../apps/mobile/app/(tabs)/more.tsx"), "utf8");
+  const logout = more.slice(more.indexOf("logoutStore();"), more.indexOf('router.replace("/login")'));
+  expect(logout).toContain("forgetLastKnown();");
+});
