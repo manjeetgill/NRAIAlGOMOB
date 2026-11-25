@@ -27,6 +27,7 @@ import { curves, payoffFigures } from "@nraialgo/shared/api";
 import type { ManagedRun, StrategyAnalysisLeg, StrategyDraftSummary, DraftDetail } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 
 type TabId = "payoff" | "settings" | "actions";
 type Source = "run" | "draft";
@@ -147,7 +148,8 @@ export default function AlgoLabDetailScreen() {
   }, [source, run, draft.data]);
 
   const analysisBody = spot !== null && analysisLegs.length ? { spot: String(spot), rate: 0, dividend: 0, legs: analysisLegs } : null;
-  const analysis = useStrategyAnalysis(analysisBody);
+  const focused = useScreenFocused();
+  const analysis = useStrategyAnalysis(analysisBody, { enabled: focused && !!analysisBody });
 
   const figures = useMemo(() => (analysis.data ? payoffFigures(analysis.data) : null), [analysis.data]);
   const curve = useMemo(() => (analysis.data ? curves(analysis.data) : null), [analysis.data]);

@@ -33,6 +33,7 @@ import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 import { useApi } from "@/hooks/useApi";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 
 /** One staged leg, as the trader left it. The contract prod resolves it into is not this screen's business. */
 interface Leg {
@@ -154,7 +155,8 @@ export default function SpreadBuilderScreen() {
   // prices are only ever read out of the chain for the date being staged, so a date change is its own
   // read rather than a re-labelled one.
   const [date, setDate] = useState("");
-  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry);
+  const focused = useScreenFocused();
+  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry, { enabled: focused && !!underlying });
   useEffect(() => {
     setDate("");
   }, [underlying]);
