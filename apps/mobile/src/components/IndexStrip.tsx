@@ -30,9 +30,9 @@ function IndexStrip() {
   const { resolvedTheme } = useTheme();
   const { data: strip, error } = useIndices();
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", up: "#22c55e", down: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", up: "#16a34a", down: "#ef4444" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", up: "#16a34a", down: "#ef4444" }, [resolvedTheme]);
 
   // The scroller states its own height because the horizontal scroll view otherwise sized its cross axis
   // from a viewport that is only known after layout, which squeezed the cards and pushed the change line

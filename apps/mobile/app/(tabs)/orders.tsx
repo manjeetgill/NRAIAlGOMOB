@@ -5,7 +5,7 @@
  * appears here — whether placed from this app or from the broker's own app.
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useCallback, useState, useMemo } from "react";
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
@@ -233,6 +233,9 @@ export default function OrdersScreen() {
     );
   };
 
+  const renderOrderItem = useCallback(({ item }: { item: BrokerOrder }) => renderOrderCard(item), [styles, colors]);
+  const renderGttItem = useCallback(({ item }: { item: GttOrder }) => renderGttCard(item), [styles, colors]);
+
   const renderContent = () => {
     const pane = statusPane();
     if (pane) return pane;
@@ -245,11 +248,12 @@ export default function OrdersScreen() {
         <FlatList
           data={openOrders}
           keyExtractor={(item) => item.orderId}
-          renderItem={({ item }) => renderOrderCard(item)}
+          renderItem={renderOrderItem}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
           maxToRenderPerBatch={10}
           windowSize={5}
+          removeClippedSubviews
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
@@ -263,11 +267,12 @@ export default function OrdersScreen() {
         <FlatList
           data={closedOrders}
           keyExtractor={(item) => item.orderId}
-          renderItem={({ item }) => renderOrderCard(item)}
+          renderItem={renderOrderItem}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
           maxToRenderPerBatch={10}
           windowSize={5}
+          removeClippedSubviews
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
         />
       );
@@ -281,11 +286,12 @@ export default function OrdersScreen() {
         <FlatList
           data={gtts}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => renderGttCard(item)}
+          renderItem={renderGttItem}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
           maxToRenderPerBatch={10}
           windowSize={5}
+          removeClippedSubviews
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchGtts()} colors={[colors.accent]} />}
         />
       );

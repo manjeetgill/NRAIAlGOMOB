@@ -446,7 +446,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // Prod has no /v1/positions/open. The desk the owner reads on the web is /v1/broker-auth/icici/account:
   // ICICI's own position rows, each carrying average, last price and marked P&L, and it keeps serving them
   // after the market closes. /v1/hub/positions is a live broker read only, so it returns zero off-hours.
-  const useOpenPositions = (options?: UseQueryOptions<OpenPosition[], ApiError>) => {
+  const useOpenPositions = (options?: Omit<UseQueryOptions<OpenPosition[], ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
       queryKey: queryKeys.positions.open(),
       queryFn: async () =>
@@ -463,7 +463,13 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useIciciAccount = (options?: UseQueryOptions<IciciAccountPayload, ApiError>) => {
     return useQuery({
       queryKey: queryKeys.brokerAccount.icici(),
-      queryFn: () => client.get<IciciAccountPayload>("/v1/broker-auth/icici/account"),
+      queryFn: async () => {
+        const account = await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account");
+        // Seed the derived open-positions cache so screens using useOpenPositions()
+        // receive fresh rows without firing a duplicate /v1/broker-auth/icici/account poll.
+        queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(account));
+        return account;
+      },
       staleTime: 3 * 1000,
       refetchInterval: 5 * 1000,
       ...options,

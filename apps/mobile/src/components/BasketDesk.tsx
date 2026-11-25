@@ -90,7 +90,7 @@ export default function BasketDesk({ onAdjust }: Props) {
   const baskets = desk.baskets;
   const open = baskets.find(basket => basket.id === openId) ?? null;
 
-  const styles = sheet(resolvedTheme);
+  const styles = useMemo(() => sheet(resolvedTheme), [resolvedTheme]);
 
   if (isError) {
     return (

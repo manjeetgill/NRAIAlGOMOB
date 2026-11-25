@@ -93,7 +93,9 @@ export default function PortfolioScreen() {
   const router = useRouter();
   const [tab, setTab] = useState<TabId>("positions");
 
-  const { data, isLoading, isError, refetch } = useOpenPositions();
+  // useIciciAccount() polls /v1/broker-auth/icici/account every 5s and seeds queryKeys.positions.open(),
+  // so useOpenPositions() does not need to fire a second identical 5s poll on the same screen.
+  const { data, isLoading, isError, refetch } = useOpenPositions({ refetchInterval: false });
   // The account response itself is read for its state: which section the broker could fill, which it
   // could not, and the reason it gave. The rows still come from the mapped hooks.
   const { data: account, refetch: refetchAccount } = useIciciAccount();

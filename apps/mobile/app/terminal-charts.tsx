@@ -132,9 +132,9 @@ export default function TerminalChartsScreen() {
     [live.points],
   );
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", up: "#22c55e", down: "#ef4444" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" }, [resolvedTheme]);
 
   // What the stream itself says about the price behind the newest bar, in the server's own words.
   const liveText = live.unavailable ?? tickLabel(live.tick, live.connected, live.reason);

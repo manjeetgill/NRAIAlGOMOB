@@ -28,7 +28,7 @@ const client = getApiClient();
 export function prefetchOptionChain(underlying = "NIFTY") {
   queryClient.prefetchQuery({
     queryKey: queryKeys.optionChain.chain(underlying, "", 30),
-    queryFn: () => client.get<OptionChainData>("/v1/option-chain", { params: { underlying, window: 30 } }),
+    queryFn: () => client.get<OptionChainData>("/v1/option-chain", { params: { underlying, window: 30, rate: 0, dividend: 0 } }),
     staleTime: 5000,
   }).catch(() => {});
   
@@ -49,6 +49,15 @@ export function prefetchPortfolio() {
 }
 
 export function prefetchOrders() {
+  queryClient.prefetchQuery({
+    queryKey: queryKeys.brokerAccount.icici(),
+    queryFn: async () => {
+      const account = await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account");
+      queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(account));
+      return account;
+    },
+    staleTime: 5 * 1000,
+  }).catch(() => {});
   queryClient.prefetchQuery({
     queryKey: queryKeys.orders.intents(),
     queryFn: async () => (await client.get<{ intents: OrderIntent[] }>("/v1/orders")).intents,

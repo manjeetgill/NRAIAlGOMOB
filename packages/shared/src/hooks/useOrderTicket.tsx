@@ -103,12 +103,14 @@ export function useOrderTicket() {
   const { data: destinations } = useOrderDestinations(visible);
   const clientId = useRef(newClientId());
 
-  // Sync local state with store
+  // Sync changed fields only to avoid 10 redundant Zustand store updates per keystroke
   useEffect(() => {
-    Object.entries(localState).forEach(([key, value]) => {
-      setOrderTicketField(key as keyof OrderTicketState, value);
+    (Object.keys(localState) as Array<keyof OrderTicketState>).forEach((key) => {
+      if (storedTicket[key] !== localState[key]) {
+        setOrderTicketField(key, localState[key]);
+      }
     });
-  }, [localState, setOrderTicketField]);
+  }, [localState, storedTicket, setOrderTicketField]);
 
   // Open order ticket with config
   const open = useCallback((newConfig: OrderTicketConfig) => {

@@ -6,7 +6,7 @@
  * the web's stock dialog uses, so a figure here is never a guess or a stale chain row.
  */
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { useOrderTicket } from "@nraialgo/shared/hooks";
@@ -42,11 +42,11 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   const [quantity, setQuantity] = useState(String(localState.quantity || 1));
   const [price, setPrice] = useState(localState.price > 0 ? localState.price.toFixed(2) : "");
 
-  const colors = resolvedTheme === "dark"
+  const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155", brand: "#38bdf8", danger: "#ef4444", buy: "#16a34a", sell: "#dc2626" }
-    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7", danger: "#ef4444", buy: "#16a34a", sell: "#dc2626" };
+    : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", brand: "#0284c7", danger: "#ef4444", buy: "#16a34a", sell: "#dc2626" }, [resolvedTheme]);
 
-  const styles = StyleSheet.create({
+  const styles = useMemo(() => StyleSheet.create({
     overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
     sheet: { backgroundColor: colors.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24, maxHeight: "80%" },
     handle: { width: 40, height: 4, backgroundColor: colors.muted, borderRadius: 2, alignSelf: "center", marginTop: 12, marginBottom: 8 },
@@ -80,7 +80,7 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
     submitText: { fontSize: 16, fontWeight: "700", color: "#ffffff" },
     remove: { marginHorizontal: 16, marginTop: 10, paddingVertical: 10, alignItems: "center" },
     removeText: { fontSize: 13, fontWeight: "600", color: colors.danger },
-  });
+  }), [colors]);
 
   const buying = localState.side === "BUY";
   const touch = (value: number | null | undefined) => (typeof value === "number" && value > 0 ? formatNumber(value) : "none");

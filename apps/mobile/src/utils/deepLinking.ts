@@ -119,16 +119,6 @@ export function useDeepLinking() {
     };
   }, [router, isAuthenticated]);
 
-  // Register for custom scheme
-  useEffect(() => {
-    const scheme = "nraialgo";
-    Linking.addEventListener("url", () => {}); // Ensure linking is initialized
-
-    return () => {
-      // Cleanup handled by subscription above
-    };
-  }, []);
-
   return { parseDeepLink, resolveDeepLink };
 }
 
