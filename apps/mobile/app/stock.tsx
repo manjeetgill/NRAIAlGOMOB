@@ -14,7 +14,7 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition } from "@nraialgo/shared/api";
+import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useQuoteFeed } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
@@ -49,7 +49,23 @@ export default function StockScreen() {
   // The other venue is the same endpoint asked with the other exchange, which is how Breeze's own switch works.
   const other = exchange === "NSE" ? "BSE" : exchange === "BSE" ? "NSE" : null;
 
-  const { data: quote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0);
+  const { data: rawQuote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0);
+  const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
+  const feed = useQuoteFeed(cashId ? [cashId] : [], !!cashId);
+  const liveTick = feed.quotes[0];
+  const quote = useMemo(() => {
+    if (!rawQuote || !liveTick || !liveTick.fresh || !(liveTick.price > 0)) return rawQuote;
+    const prev = liveTick.previousClose ?? rawQuote.previousClose;
+    const change = prev && prev > 0 ? liveTick.price - prev : rawQuote.change;
+    const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : rawQuote.changePct;
+    return {
+      ...rawQuote,
+      ltp: liveTick.price,
+      change,
+      changePct,
+      quality: "live",
+    };
+  }, [rawQuote, liveTick]);
   const { data: cross } = useEquityQuote(other ?? "NSE", symbol, !!other && symbol.length > 0);
   // Membership only decides one chip's label, so the list is read once and left alone; the add and remove
   // mutations write their own page back into this cache.
