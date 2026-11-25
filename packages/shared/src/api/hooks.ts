@@ -379,7 +379,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // ===== BASKETS =====
   // One read answers the whole desk: every basket arrives with its legs, marks, booked P&L, close charges
   // and the payoff contracts, so opening a basket costs the phone nothing extra.
-  const useBaskets = (source?: string, options?: UseQueryOptions<BasketListResponse, ApiError>) => {
+  const useBaskets = (source?: string, options?: Omit<UseQueryOptions<BasketListResponse, ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
       queryKey: queryKeys.baskets.all(source),
       queryFn: () => client.get<BasketListResponse>("/v1/baskets", { params: { source } }),

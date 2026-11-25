@@ -668,14 +668,24 @@ export default function SpreadBuilderScreen() {
     const padX = 5;
     const padTop = 10;
     const padBottom = 12;
-    const fullLo = Math.min(...payoff.xs);
-    const fullHi = Math.max(...payoff.xs);
+    let fullLo = Infinity;
+    let fullHi = -Infinity;
+    for (let i = 0; i < payoff.xs.length; i++) {
+      const x = payoff.xs[i];
+      if (x < fullLo) fullLo = x;
+      if (x > fullHi) fullHi = x;
+    }
     const center = (fullLo + fullHi) / 2;
     const halfRange = (fullHi - fullLo) / 2 / zoom;
     const lo = center - halfRange;
     const hi = center + halfRange;
-    const yMin = Math.min(...payoff.ys, 0);
-    const yMax = Math.max(...payoff.ys, 0);
+    let yMin = 0;
+    let yMax = 0;
+    for (let i = 0; i < payoff.ys.length; i++) {
+      const y = payoff.ys[i];
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
     const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
     const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
     const px = (x: number) => padX + (((x - lo) / (hi - lo || 1)) * (w - padX * 2));

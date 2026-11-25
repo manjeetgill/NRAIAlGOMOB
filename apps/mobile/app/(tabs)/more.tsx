@@ -52,6 +52,7 @@ export default function MoreScreen() {
           try {
             await logoutMutation.mutateAsync();
             logoutStore();
+            router.replace("/login");
           } catch (error) {
             Alert.alert("Error", "Failed to logout");
           }
@@ -151,13 +152,6 @@ export default function MoreScreen() {
             <View style={styles.labelRow}>
               <Ionicons name="layers-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Spread builder</Text>
-            </View>
-            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => router.push("/backtesting")}>
-            <View style={styles.labelRow}>
-              <Ionicons name="analytics-outline" size={24} color={colors.muted} style={styles.icon} />
-              <Text style={styles.label}>Backtesting</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
           </TouchableOpacity>

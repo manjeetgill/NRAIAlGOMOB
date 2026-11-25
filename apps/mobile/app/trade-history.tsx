@@ -80,7 +80,7 @@ export default function TradeHistoryScreen() {
   const { resolvedTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<TabId>("all");
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useBaskets();
+  const { data, isLoading, isError, error, refetch, isFetching } = useBaskets(undefined, { refetchInterval: false });
 
   const rows = useMemo(
     () => (data?.baskets ?? [])

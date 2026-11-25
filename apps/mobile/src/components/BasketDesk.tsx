@@ -475,9 +475,16 @@ function Payoff({ basket, built, analysis, loading, failed, model, held, figures
     const visibleXs = xs.filter(x => x >= lo && x <= hi);
     const visibleExpiry = expiryLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
     const visibleToday = todayLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
-    const ys = lines.flat();
-    const yMin = Math.min(...ys, 0);
-    const yMax = Math.max(...ys, 0);
+    let yMin = 0;
+    let yMax = 0;
+    for (let l = 0; l < lines.length; l++) {
+      const arr = lines[l];
+      for (let i = 0; i < arr.length; i++) {
+        const y = arr[i];
+        if (y < yMin) yMin = y;
+        if (y > yMax) yMax = y;
+      }
+    }
     const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
     const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
     const px = (x: number) => padX + ((x - lo) / (hi - lo || 1)) * (w - padX * 2);
