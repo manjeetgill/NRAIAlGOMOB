@@ -11,7 +11,7 @@
  * heading puts the largest or the worst of that figure at the top.
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
@@ -182,6 +182,16 @@ export default function PortfolioScreen() {
   // order, so reading a sorted book never reorders the other one behind the trader's back.
   const [positionSort, setPositionSort] = useState<SortState | null>(null);
   const [holdingSort, setHoldingSort] = useState<SortState | null>(null);
+  const [isSorting, setIsSorting] = useState(false);
+  const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSort = useCallback((setter: React.Dispatch<React.SetStateAction<SortState | null>>, current: SortState | null) => (column: any) => {
+    setIsSorting(true);
+    clearTimeout(sortTimeoutRef.current!);
+    sortTimeoutRef.current = setTimeout(() => {
+      setter(nextSort(column, current));
+      setIsSorting(false);
+    }, 50);
+  }, []);
   const positionRows = useMemo(() => sortRows(positions, POSITION_COLUMNS, positionSort), [positions, positionSort]);
   const holdingRows = useMemo(() => sortRows(holdings, HOLDING_COLUMNS, holdingSort), [holdings, holdingSort]);
 
@@ -360,7 +370,7 @@ export default function PortfolioScreen() {
           rows={positionRows}
           columns={POSITION_COLUMNS}
           sort={positionSort}
-          onSort={(column) => setPositionSort(nextSort(column, positionSort))}
+          onSort={handleSort(setPositionSort, positionSort)}
           cell={positionCell}
           keyOf={(item, index) => `${item.broker}:${item.account}:${item.symbol}:${item.expiry ?? ""}:${index}`}
           onRowPress={handleOpenTicket}
@@ -415,7 +425,7 @@ export default function PortfolioScreen() {
           rows={holdingRows}
           columns={HOLDING_COLUMNS}
           sort={holdingSort}
-          onSort={(column) => setHoldingSort(nextSort(column, holdingSort))}
+          onSort={handleSort(setHoldingSort, holdingSort)}
           cell={holdingCell}
           keyOf={(item, index) => `${item.accountId}:${item.exchange}:${item.symbol}:${index}`}
           onRowPress={openHolding}
@@ -451,6 +461,14 @@ export default function PortfolioScreen() {
       </View>
 
       {tab === "positions" ? renderPositions() : renderHoldings()}
+
+      {isSorting && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+          <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.1)" }}>
+            <ActivityIndicator size="large" color={colors.accent} />
+          </View>
+        </View>
+      )}
 
       {/* Mounted only while a ticket is open, exactly as on the watchlist: the row press below builds a
           ticket from that position, and a sheet nobody renders is a press that answers nothing. */}

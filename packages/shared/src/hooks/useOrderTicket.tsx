@@ -96,21 +96,24 @@ export function useOrderTicket() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const { orderTicket: storedTicket, setOrderTicketField, resetOrderTicket } = useTradingStore();
+  const { orderTicket: storedTicket, setOrderTicketBatch, resetOrderTicket } = useTradingStore();
   const { mutateAsync: placeOrder } = usePlaceOrder();
   // Which broker account the signed-in session would actually reach. Prod refuses an instruction
   // whose account does not match its live broker session, so a ticket cannot invent this.
   const { data: destinations } = useOrderDestinations(visible);
   const clientId = useRef(newClientId());
 
-  // Sync changed fields only to avoid 10 redundant Zustand store updates per keystroke
+  // Sync changed fields in one batch to avoid 10 redundant Zustand store updates per keystroke
   useEffect(() => {
-    (Object.keys(localState) as Array<keyof OrderTicketState>).forEach((key) => {
-      if (storedTicket[key] !== localState[key]) {
-        setOrderTicketField(key, localState[key]);
-      }
-    });
-  }, [localState, storedTicket, setOrderTicketField]);
+    const changes = Object.fromEntries(
+      (Object.keys(localState) as Array<keyof OrderTicketState>)
+        .filter(key => storedTicket[key] !== localState[key])
+        .map(key => [key, localState[key]])
+    ) as Partial<OrderTicketState>;
+    if (Object.keys(changes).length > 0) {
+      setOrderTicketBatch(changes);
+    }
+  }, [localState, storedTicket, setOrderTicketBatch]);
 
   // Open order ticket with config
   const open = useCallback((newConfig: OrderTicketConfig) => {

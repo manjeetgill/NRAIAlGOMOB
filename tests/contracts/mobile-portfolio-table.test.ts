@@ -81,8 +81,8 @@ const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "ut
 it("sorts each tab on its own state, so sorting positions never reorders holdings", () => {
   expect(screen).toContain("sortRows(positions, POSITION_COLUMNS, positionSort)");
   expect(screen).toContain("sortRows(holdings, HOLDING_COLUMNS, holdingSort)");
-  expect(screen).toContain("setPositionSort(nextSort(column, positionSort))");
-  expect(screen).toContain("setHoldingSort(nextSort(column, holdingSort))");
+  expect(screen).toContain("handleSort(setPositionSort, positionSort)");
+  expect(screen).toContain("handleSort(setHoldingSort, holdingSort)");
 });
 
 it("still shows every figure the cards carried", () => {
