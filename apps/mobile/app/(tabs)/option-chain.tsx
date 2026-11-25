@@ -267,9 +267,17 @@ export default function OptionChainScreen() {
     setOptionChainUnderlying(seeded);
   }, [resumed, seeded, setOptionChainUnderlying]);
 
-  // Every listed date of this underlying, each cached exactly as a single-expiry read would be. The hook
-  // is called unconditionally and asked for nothing outside the all-expiries view.
-  const sections = useOptionChains(underlying, chain?.expiries ?? [], allExpiries);
+  // Every listed date of this underlying, loaded incrementally (2 expiries at a time)
+  // to avoid firing a burst of parallel window:400 requests when toggling All Dates.
+  const [expiryLimit, setExpiryLimit] = useState(2);
+  useEffect(() => {
+    setExpiryLimit(2);
+  }, [underlying, allExpiries]);
+  const visibleExpiries = useMemo(
+    () => (allExpiries ? (chain?.expiries ?? []).slice(0, expiryLimit) : []),
+    [allExpiries, chain?.expiries, expiryLimit],
+  );
+  const sections = useOptionChains(underlying, visibleExpiries, allExpiries);
 
   // A desk displays the nearest expiry or user-chosen expiry. The nearest monthly expiry is tagged in the picker.
   const isMatchingChain = Boolean(chain && chain.underlying === underlying);
@@ -297,7 +305,7 @@ export default function OptionChainScreen() {
     if (!allExpiries) {
       return listedRows(chain.rows).map(row => ({ kind: "row" as const, key: `${chain.expiry}|${row.strike}`, expiry: chain.expiry, row }));
     }
-    return chain.expiries.flatMap<ChainItem>((day, index) => {
+    return visibleExpiries.flatMap<ChainItem>((day, index) => {
       const read = sections[index];
       const heading: ChainItem = { kind: "section", key: `section-${day}`, expiry: day, lotSize: read?.data?.lotSize ?? null, readAt: read?.dataUpdatedAt ?? 0 };
       if (!read?.data) {
@@ -307,7 +315,7 @@ export default function OptionChainScreen() {
       }
       return [heading, ...listedRows(read.data.rows).map(row => ({ kind: "row" as const, key: `${day}|${row.strike}`, expiry: day, row }))];
     });
-  }, [chain, underlying, sections, allExpiries]);
+  }, [chain, underlying, sections, allExpiries, visibleExpiries]);
 
   // The ladder's own numbers arrive one broker read at a time, so between reads the screen would otherwise
   // freeze. The strikes the trader is looking at go on the app's existing price stream, keyed by the

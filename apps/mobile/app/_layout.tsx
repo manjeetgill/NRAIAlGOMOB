@@ -15,7 +15,7 @@ import SearchBar from "@/components/SearchBar";
 import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
 import { queryClient, initializeQueryClient } from "@/utils/queryClient";
 import { useAuthStore } from "@nraialgo/shared/stores";
-import { initializeApiClient } from "@/utils/apiClient";
+import { initializeApiClient, hydrateCachedUser } from "@/utils/apiClient";
 import * as SplashScreen from "expo-splash-screen";
 import { useDeepLinking } from "@/utils/deepLinking";
 
@@ -55,9 +55,9 @@ export default function RootLayout() {
   useEffect(() => {
     async function init() {
       try {
-        // Initialize API client and query client
+        // Hydrate cached user shell from AsyncStorage (~5ms) so cold boot never blocks on network
         await Promise.all([
-          initializeApiClient(),
+          hydrateCachedUser(),
           initializeQueryClient(),
         ]);
       } catch (error) {
@@ -65,8 +65,9 @@ export default function RootLayout() {
       } finally {
         setLoading(false);
         setInitialized(true);
-        // Hide splash screen after initialization
         SplashScreen.hideAsync();
+        // Revalidate session cookie in background
+        void initializeApiClient();
       }
     }
 

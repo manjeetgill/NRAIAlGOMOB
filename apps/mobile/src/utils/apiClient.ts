@@ -7,6 +7,7 @@
 import { createApiClient, type ApiClient } from "@nraialgo/shared/api";
 import type { User } from "@nraialgo/shared/api";
 import * as SecureStore from "expo-secure-store";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Constants } from "@nraialgo/shared/constants";
 import { useAuthStore } from "@nraialgo/shared/stores";
 
@@ -79,6 +80,23 @@ getApiClient();
 // session cookie, so a successful /v1/auth/me is the only evidence of being signed in.
 let initInFlight: Promise<boolean> | null = null;
 
+const CACHED_USER_KEY = "nraialgo.cached_user";
+
+export async function hydrateCachedUser(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(CACHED_USER_KEY);
+    if (!raw) return false;
+    const user = JSON.parse(raw) as User;
+    if (user && typeof user === "object") {
+      useAuthStore.getState().setUser(user);
+      return true;
+    }
+  } catch {
+    // Ignore corrupt cache
+  }
+  return false;
+}
+
 export async function initializeApiClient(): Promise<boolean> {
   if (initInFlight) return initInFlight;
   initInFlight = (async () => {
@@ -86,9 +104,11 @@ export async function initializeApiClient(): Promise<boolean> {
     try {
       const user = await client.get<User>("/v1/auth/me");
       useAuthStore.getState().setUser(user);
+      AsyncStorage.setItem(CACHED_USER_KEY, JSON.stringify(user)).catch(() => {});
       return true;
     } catch {
       useAuthStore.getState().logout();
+      AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
       return false;
     } finally {
       initInFlight = null;
