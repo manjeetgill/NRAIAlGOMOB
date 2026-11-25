@@ -55,7 +55,7 @@ export default function StockScreen() {
   const liveTick = feed.quotes[0];
   const quote = useMemo(() => {
     if (!rawQuote || !liveTick || !liveTick.fresh || !(liveTick.price > 0)) return rawQuote;
-    const prev = liveTick.previousClose ?? rawQuote.previousClose;
+    const prev = liveTick.previousClose ?? rawQuote.close;
     const change = prev && prev > 0 ? liveTick.price - prev : rawQuote.change;
     const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : rawQuote.changePct;
     return {
