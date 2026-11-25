@@ -482,24 +482,22 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 
   // ===== ACCOUNT STREAM =====
   // One /v1/broker-auth/account/stream connection for every screen that shows the ICICI account
-  // (positions, orders). Each frame replaces both caches, so while the stream is alive the REST read
-  // below is only a two-minute safety net instead of a poll.
+  // (positions, orders). Each frame re-reads both queries at once, so while the stream is alive the
+  // timed REST read below is only a two-minute safety net instead of a poll.
   const useAccountStream = () => {
     useEffect(() => {
       accountStreamUsers += 1;
       if (!accountStream) {
         accountStream = subscribeSSE(
           `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
-          (raw) => {
-            try {
-              const payload = JSON.parse(raw) as IciciAccountPayload;
-              if (payload && typeof payload === "object") {
-                queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
-                queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
-              }
-            } catch {
-              // Ignore malformed SSE frame
-            }
+          // A frame means "the account changed", nothing more. It carries the raw display snapshot wrapped
+          // as {accounts: {icici: ...}, asOf}, not the /v1/broker-auth/icici/account body (no `sections`
+          // at the top, no price-source enrichment), so writing it into the caches blanked Positions and
+          // Orders until the next poll. Re-read the REST body instead: one read of the server's cached
+          // copy per account change, never a broker call.
+          () => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.brokerAccount.icici() });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.positions.open() });
           },
         );
       }
