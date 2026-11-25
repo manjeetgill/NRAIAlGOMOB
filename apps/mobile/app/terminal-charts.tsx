@@ -104,6 +104,10 @@ export default function TerminalChartsScreen() {
     refetchInterval: isDaily ? false : 30_000,
     gcTime: 30 * 60 * 1000,
     staleTime: isDaily ? 5 * 60 * 1000 : 15_000,
+    // Keep the last interval's candles on screen while a new interval of the SAME symbol loads, so the chart
+    // is not swapped for a spinner. Another symbol's candles are never shown under this one's name.
+    placeholderData: (previous, previousQuery) =>
+      (previousQuery?.queryKey as readonly unknown[] | undefined)?.[2] === chartInstrument(symbol) ? previous : undefined,
   });
 
   const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000, gcTime: 30 * 60 * 1000, staleTime: 30_000 });
