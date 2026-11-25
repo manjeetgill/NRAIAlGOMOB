@@ -10,6 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
 import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
+import { forgetLastKnown } from "@/hooks/useLastKnown";
 
 export default function MoreScreen() {
   const { useMe, useLogout } = useApi();
@@ -52,6 +53,8 @@ export default function MoreScreen() {
           try {
             await logoutMutation.mutateAsync();
             logoutStore();
+            // The saved books and prices belong to this account; the next sign-in must not open onto them.
+            forgetLastKnown();
             router.replace("/login");
           } catch (error) {
             Alert.alert("Error", "Failed to logout");

@@ -10,6 +10,7 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Constants } from "@nraialgo/shared/constants";
 import { useAuthStore } from "@nraialgo/shared/stores";
+import { forgetLastKnown } from "@/hooks/useLastKnown";
 
 // SecureStore adapter for tokens
 const secureStorage = {
@@ -111,6 +112,8 @@ export async function initializeApiClient(): Promise<boolean> {
       // server keeps the saved user, so the app can open on its cached screens while offline.
       const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : null;
       const refused = status === 401 || status === 403;
+      // A refused session also means the saved book belongs to somebody else's session: wipe it.
+      if (refused) forgetLastKnown();
       const retained = refused ? false : await hydrateCachedUser();
       if (!retained) {
         useAuthStore.getState().logout();

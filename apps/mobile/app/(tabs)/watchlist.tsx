@@ -8,6 +8,10 @@
  * read happened. The prices that move are the ones this screen subscribes to on prod's tick stream, by the
  * canonical id the stream parses for that exchange and symbol; only a price the server published as fresh
  * marks a row, and a marked row says so in its own colour.
+ *
+ * A row neither prod's read nor the stream priced is not necessarily a symbol this phone has never seen: the
+ * strip, the book and an earlier page of this list all carry prices by the same canonical id. Those fill the
+ * gap with their own minute beside them, which is what api/quote-memory.ts is for.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -27,15 +31,20 @@ import { useRouter } from "expo-router";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
 import {
   BUILTIN_LISTS,
+  LAST_KNOWN,
+  cashEntries,
   markWatchlist,
+  paintWatchlist,
   pauseQuoteDispatch,
   resumeQuoteDispatch,
   queryKeys,
   streamIdFor,
   indexStreamIds,
+  tickEntries,
   useQuoteFeed,
   type BuiltinListName,
   type Marked,
+  type Remembered,
   type WatchlistInfo,
   type WatchlistRow,
 } from "@nraialgo/shared/api";
@@ -46,6 +55,8 @@ import { BuySheet } from "@/components/BuySheet";
 import { WatchlistManager } from "@/components/WatchlistManager";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
+import { useLastKnown } from "@/hooks/useLastKnown";
+import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 
 type Tab = { kind: "predefined" } | { kind: "list"; number: number };
 
@@ -53,8 +64,11 @@ const SEGMENT: Record<string, string> = { NSE: "NSE EQ", BSE: "BSE EQ" };
 
 const WATCHLIST_ROW_HEIGHT = 65;
 
+/** A row is the list's own figures, plus whether the stream marked it and whether the phone supplied it. */
+type PricedRow = WatchlistRow & Marked & Remembered;
+
 interface WatchlistRowItemProps {
-  item: WatchlistRow & Marked;
+  item: PricedRow;
   tabKind: "predefined" | "list";
   already: boolean;
   addPending: boolean;
@@ -105,9 +119,16 @@ const WatchlistRowItem = React.memo(
             <Text style={styles.noPrice}>{pricesPending ? "Waiting for price" : "No price"}</Text>
           ) : (
             <>
-              <Text style={[styles.price, { color: priceTone(item.change) }]}>{formatNumber(item.ltp)}</Text>
-              <Text style={[styles.change, { color: priceTone(item.change) }]}>
-                {item.change === null ? "no change figure" : `${signed(item.change)} (${signed(item.changePct)}%)`}
+              <Text style={[styles.price, { color: item.seen ? colors.text : priceTone(item.change) }]}>
+                {formatNumber(item.ltp)}
+              </Text>
+              {/* A price the phone remembered keeps its minute instead of its day's move: the move is
+                  measured against the close it was seen with, which is not today's, so the number a trader
+                  needs here is the time. */}
+              <Text style={[styles.change, { color: item.seen ? colors.muted : priceTone(item.change) }]}>
+                {item.seen
+                  ? item.seen
+                  : item.change === null ? "no change figure" : `${signed(item.change)} (${signed(item.changePct)}%)`}
               </Text>
             </>
           )}
@@ -132,6 +153,7 @@ const WatchlistRowItem = React.memo(
       prev.item.change === next.item.change &&
       prev.item.changePct === next.item.changePct &&
       prev.item.live === next.item.live &&
+      prev.item.seen === next.item.seen &&
       prev.already === next.already &&
       prev.addPending === next.addPending &&
       prev.pricesPending === next.pricesPending &&
@@ -336,7 +358,16 @@ export default function WatchlistScreen() {
       (stripLive ? " · live" : stripAt ? ` · price ${stripAt.slice(0, 10)}` : "")
     : "Loading the index strip";
 
-  const rows = tab.kind === "predefined" ? builtins?.items ?? [] : saved?.items ?? [];
+  const prodRows = tab.kind === "predefined" ? builtins?.items ?? [] : saved?.items ?? [];
+  // The list the phone last painted, kept so a failed read still shows the trader their own symbols with
+  // the minute they were read instead of an empty list. Prod's answer always wins, including the answer
+  // that says the list is flat, which clears the copy rather than keeping a removed symbol on screen.
+  const listCopy = useLastKnown(
+    tab.kind === "predefined" ? LAST_KNOWN.watchlist(`builtin-${builtin}`) : LAST_KNOWN.watchlist(tab.number),
+    prodRows,
+    tab.kind === "predefined" ? !!builtins : !!saved,
+  );
+  const rows = listCopy.rows;
   // Watchlist rows are cash instruments, so each one's stream id comes straight from the exchange and symbol
   // prod sent beside it. An exchange the stream does not publish builds no id and is never subscribed: one
   // subscription the server cannot parse closes the socket for the whole app, not just this row.
@@ -351,10 +382,20 @@ export default function WatchlistScreen() {
   const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
   const liveRows = useMemo(() => markWatchlist(rows, feed.quotes), [rows, feed.quotes]);
   const ticking = liveRows.some(row => row.live);
+  // Prod returns a page of symbols before it returns their prices, and the stream only carries the ids it is
+  // subscribed to, so a row can be empty on a screen where the phone has seen that same instrument priced —
+  // on the strip, in the book, or on a tick that has since stopped. Those numbers go back on the row with the
+  // minute they were seen, and never over one prod or the stream just sent.
+  const quotes = useQuoteMemory();
+  useEffect(() => {
+    quotes.remember([...tickEntries(feed.quotes), ...cashEntries(liveRows)]);
+  }, [quotes, feed.quotes, liveRows]);
+  const shownRows = useMemo(() => paintWatchlist(liveRows, quotes.seen), [liveRows, quotes]);
   // Prod returns a list's symbols before it has finished pricing them, so an empty price here
   // usually means "still being read" rather than "this stock has no price". Say which.
   const pricesPending = (tab.kind === "predefined" ? builtins?.pricesPending : saved?.pricesPending) === true;
-  const busy = tab.kind === "predefined" ? !builtins && !builtinError : !saved && !savedError;
+  // A spinner is for a list with nothing to show yet; a copy the phone already painted is something to show.
+  const busy = (tab.kind === "predefined" ? !builtins && !builtinError : !saved && !savedError) && rows.length === 0;
   const pages = builtins?.total && builtins.pageSize ? Math.ceil(builtins.total / builtins.pageSize) : 1;
   // A socket that is open but has sent no usable price is not a quiet market the app can prove, so the line
   // says which of the three states this list is in instead of leaving one word to cover all of them. An empty
@@ -362,9 +403,14 @@ export default function WatchlistScreen() {
   const streamWord = instruments.length === 0
     ? null
     : ticking ? "ticking" : feed.connected ? "waiting for ticks" : "no live stream";
-  const listLine = pricesPending ? `${statusLine} · prices for this list are still arriving` : statusLine;
+  // The minute the phone last read this list, said only when its own copy is what is on screen.
+  const listLine = [
+    statusLine,
+    pricesPending ? "prices for this list are still arriving" : null,
+    listCopy.line,
+  ].filter(Boolean).join(" · ");
 
-  const renderRow = useCallback(({ item }: { item: WatchlistRow & Marked }) => {
+  const renderRow = useCallback(({ item }: { item: PricedRow }) => {
     const already = inList.has(`${item.exchange}:${item.symbol}`);
     return (
       <WatchlistRowItem
@@ -490,7 +536,7 @@ export default function WatchlistScreen() {
         </View>
       ) : (
         <FlatList
-          data={liveRows}
+          data={shownRows}
           keyExtractor={item => `${item.exchange}:${item.symbol}`}
           renderItem={renderRow}
           initialNumToRender={10}
