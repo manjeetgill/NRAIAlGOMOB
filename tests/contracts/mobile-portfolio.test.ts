@@ -195,7 +195,7 @@ it("shows a degraded or stale book with prod's reason over it instead of in plac
 
 it("retries both lists, since a notice about holdings cannot be cleared by refetching positions", () => {
   const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
-  expect(screen).toContain("const { data: account, refetch: refetchAccount } = useIciciAccount();");
+  expect(screen).toContain("const { data: account, refetch: refetchAccount } = useIciciAccount({");
   expect(screen.match(/refetch\(\); refetchAccount\(\)/g)).toHaveLength(3);
 });
 

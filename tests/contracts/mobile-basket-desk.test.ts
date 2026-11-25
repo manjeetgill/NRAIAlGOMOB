@@ -705,3 +705,25 @@ it("asks for a basket name at Execute and sends every order under it", () => {
   expect(screen).toContain("if (basket.trim()) return basket.trim();");
   expect(screen).toContain('setBasket("");');
 });
+
+it("ticks open legs from the price socket and leaves the rest on the read's mark", async () => {
+  const { withStreamMarks, basketStreamIds } = await import("../../packages/shared/src/api/basket-desk.ts");
+  const id = "instrument:v1:NSE:FO:NIFTY:CE:2026-11-27:25600:CE";
+  const basket = {
+    id: "b1", provider: "icici",
+    legs: [
+      { ...brokerLeg(), instrumentId: id, quantity: 65, markPrice: 100 },
+      { ...brokerLeg(), instrumentId: "NIFTY25NOV25600PE", quantity: 65, markPrice: 50 },
+      { ...brokerLeg(), instrumentId: "instrument:v1:NSE:FO:NIFTY:PE:2026-11-27:25500:PE", quantity: 0, markPrice: 40 },
+    ],
+  } as never;
+  expect(basketStreamIds([basket])).toEqual([id]);
+  const tick = (over: Record<string, unknown>) => ({ id, price: 112.5, at: null, fresh: true, status: "LIVE", source: "icici",
+    broker: "icici", subscriptionId: "s", ...over }) as never;
+  const [live] = withStreamMarks([basket], [tick({})]) as Array<{ legs: Array<{ markPrice: number }> }>;
+  expect(live.legs.map(leg => leg.markPrice)).toEqual([112.5, 50, 40]);
+  // A tick the server does not call fresh never replaces the read's mark.
+  const [stale] = withStreamMarks([basket], [tick({ fresh: false })]) as Array<{ legs: Array<{ markPrice: number }> }>;
+  expect(stale.legs[0].markPrice).toBe(100);
+  expect(basketStreamIds([{ ...(basket as object), provider: "paper" } as never])).toEqual([]);
+});
