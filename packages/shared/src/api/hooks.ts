@@ -9,7 +9,11 @@ import { useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
 import { subscribeSSE, type SseSubscription } from "./sse";
-import { quoteStreamConnected } from "./websocket";
+import { quoteStreamCarrying } from "./websocket";
+import { streamIdFor } from "./account-quotes";
+import { basketStreamIds } from "./basket-desk";
+import { strikeIds } from "./chain-ticks";
+import { streamId } from "./live-candles";
 import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
 
@@ -369,6 +373,25 @@ export interface ScannerEvidence {
 /** The caller's own query client is required: the cache operations in these hooks run outside React, so
  *  whatever is passed here is the only cache they can reach. A client invented here would leave every
  *  invalidation and the logout clear landing on a cache no screen reads. */
+/** The stream ids a watchlist page's rows tick on - the same ids the watchlist screen subscribes. */
+export function watchlistStreamIds(page: WatchlistPage | undefined): string[] {
+  return (page?.items ?? []).map((row) => streamIdFor({
+    exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null,
+  })).filter((id): id is string => !!id);
+}
+
+/** The stream ids a chain's ladder and spot tick on. */
+export function chainStreamIds(chain: OptionChainData | undefined): string[] {
+  if (!chain) return [];
+  const spot = streamId(chain.underlying);
+  return spot ? [...strikeIds(chain.rows ?? []), spot] : strikeIds(chain.rows ?? []);
+}
+
+/** The stream ids the headline index strip ticks on. */
+export function indexStreamIds(strip: IndexStrip | undefined): string[] {
+  return (strip?.indices ?? []).map((row) => streamId(row.name)).filter((id): id is string => !!id);
+}
+
 export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const qc = queryClient;
 
@@ -416,13 +439,15 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // ===== BASKETS =====
   // One read answers the whole desk: every basket arrives with its legs, marks, booked P&L, close charges
   // and the payoff contracts, so opening a basket costs the phone nothing extra.
+  // Open legs tick from the price socket on the desk, so the read is a safety net while it carries them.
+  const basketsPoll = ({ state }: { state: { data?: BasketListResponse } }) =>
+    (quoteStreamCarrying(basketStreamIds(state.data?.baskets ?? [])) ? 60_000 : 30_000);
   const useBaskets = (source?: string, options?: Omit<UseQueryOptions<BasketListResponse, ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
       queryKey: queryKeys.baskets.all(source),
       queryFn: () => client.get<BasketListResponse>("/v1/baskets", { params: { source } }),
       staleTime: 5 * 1000,
-      // Open legs tick from the price socket on the desk, so the read is a safety net while it is up.
-      refetchInterval: () => (quoteStreamConnected() ? 60 * 1000 : 30 * 1000),
+      refetchInterval: basketsPoll, // slower only while the socket carries these legs
       ...options,
     });
   };
@@ -568,7 +593,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.list(number),
       queryFn: () => client.get<WatchlistPage>("/v1/watchlist", { params: { list: number } }),
       staleTime: 2 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarrying(watchlistStreamIds(state.state.data)) ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -585,7 +610,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.builtin(name, page),
       queryFn: () => client.get<WatchlistPage>(`/v1/watchlist/builtin/${name}`, { params: { page } }),
       staleTime: 10 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarrying(watchlistStreamIds(state.state.data)) ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -673,7 +698,11 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       },
       staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
-      refetchInterval: ({ state }) => (state.data ? (streamed && quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false),
+      // After the close nothing on a chain moves, so the re-read drops to the slow safety net; it still runs
+      // so a screen left open overnight picks up the next session's open.
+      refetchInterval: ({ state }) => (!state.data ? false
+        : state.data.marketOpen === false ? STREAM_SAFETY_POLL_MS
+        : streamed && quoteStreamCarrying(chainStreamIds(state.data)) ? 30 * 1000 : 5 * 1000),
       ...options,
     });
   };
@@ -929,7 +958,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: async () =>
         indexStripRows(await client.get<StripPayload>("/v1/index-strip", { params: { overview: true } })),
       staleTime: 5 * 1000,
-      refetchInterval: () => (quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 60 * 1000),
+      refetchInterval: ({ state }) => (quoteStreamCarrying(indexStreamIds(state.data)) ? STREAM_SAFETY_POLL_MS : 60 * 1000),
       ...options,
     });
   };

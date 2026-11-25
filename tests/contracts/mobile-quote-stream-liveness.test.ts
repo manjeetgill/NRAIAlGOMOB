@@ -253,3 +253,34 @@ describe("the socket dials the host the REST client dials", () => {
     expect(constants.match(/https:\/\/myalgodesk\.in/g)).toHaveLength(1);
   });
 });
+
+// ===== per-screen liveness =====
+
+it("answers for the screen's own ids, not for any instrument that ticked anywhere in the app", async () => {
+  vi.useFakeTimers();
+  const { watchQuotes, quoteStreamCarrying } = await loadSocket();
+  watchQuotes([RELIANCE, NIFTY], () => {});
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  socket.frame({ mode: "snapshot", quotes: [wire(NIFTY, 25000)] });
+  vi.advanceTimersByTime(100);
+  expect(quoteStreamCarrying([NIFTY]), "the strip's own index ticked").toBe(true);
+  // The bug this guards: an app-global flag said "streaming" to a watchlist whose rows were never carried,
+  // and that screen slowed its REST read to two minutes on prices it never received.
+  expect(quoteStreamCarrying([RELIANCE]), "a row the socket does not carry").toBe(false);
+  expect(quoteStreamCarrying([]), "a screen with nothing on the socket").toBe(false);
+  vi.advanceTimersByTime(31_000);
+  expect(quoteStreamCarrying([NIFTY]), "no fresh tick for 30 s").toBe(false);
+});
+
+it("never calls a refused or closed socket carrying", async () => {
+  vi.useFakeTimers();
+  const { watchQuotes, quoteStreamCarrying } = await loadSocket();
+  watchQuotes([NIFTY], () => {});
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  socket.frame({ mode: "snapshot", quotes: [wire(NIFTY, 25000)] });
+  vi.advanceTimersByTime(100);
+  socket.close();
+  expect(quoteStreamCarrying([NIFTY])).toBe(false);
+});

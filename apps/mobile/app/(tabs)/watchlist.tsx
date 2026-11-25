@@ -176,15 +176,15 @@ export default function WatchlistScreen() {
 
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
   const focused = useScreenFocused();
-  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused });
+  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused, gcTime: Infinity });
   const { data: saved, error: savedError } = useWatchlist(listNumber, {
     queryKey: queryKeys.watchlist.list(listNumber),
-    subscribed: focused,
+    subscribed: focused, gcTime: Infinity,
   });
   const { data: builtins, error: builtinError } = useBuiltinWatchlist(builtin, page, {
     queryKey: queryKeys.watchlist.builtin(builtin, page),
     enabled: tab.kind === "predefined",
-    subscribed: focused,
+    subscribed: focused, gcTime: Infinity,
   });
   const { data: found } = useEquitySearch(debouncedSearch);
   const add = useAddToWatchlist();

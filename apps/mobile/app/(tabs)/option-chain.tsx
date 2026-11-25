@@ -232,7 +232,7 @@ export default function OptionChainScreen() {
   // An empty expiry is a question, not a missing value: the server returns its nearest listed expiry.
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
   const focused = useScreenFocused();
-  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying, subscribed: focused }, true);
+  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying, subscribed: focused, gcTime: Infinity }, true);
 
   /**
    * A press on a stock's "Option Chain" tab carries its symbol, and the deep link has always promised the

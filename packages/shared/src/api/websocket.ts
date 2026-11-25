@@ -95,6 +95,8 @@ let asOf: string | null = null;
 let connected = false;
 /** When the socket last carried a price the server called fresh; 0 before the first one. */
 let lastFreshTickAt = 0;
+/** When each instrument id last carried a fresh price, so a screen can ask about its own rows only. */
+const freshAtById = new Map<string, number>();
 let reason: FeedReason = null;
 let socket: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -254,7 +256,10 @@ function accept(frame: WireFrame) {
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     const tick = toTick(quote, id);
     published.set(quoteKey(quote), tick);
-    if (tick.fresh) lastFreshTickAt = Date.now();
+    if (tick.fresh) {
+      lastFreshTickAt = Date.now();
+      freshAtById.set(id, lastFreshTickAt);
+    }
     changedIds.add(id);
   }
   for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
@@ -544,6 +549,18 @@ const LIVE_TICK_MS = 30_000;
  */
 export function quoteStreamConnected(): boolean {
   return connected && reason === null && Date.now() - lastFreshTickAt < LIVE_TICK_MS;
+}
+
+/**
+ * Whether the live price socket is carrying THIS screen's prices: open, unrefused, and at least one of
+ * `ids` ticked fresh in the last 30 s. `quoteStreamConnected()` is app-global - true when any instrument
+ * anywhere ticked - so a screen whose ids are not carried would slow its REST read on prices it never
+ * receives. With no ids there is nothing on the socket for the screen, so the answer is false.
+ */
+export function quoteStreamCarrying(ids: readonly string[]): boolean {
+  if (!connected || reason !== null || ids.length === 0) return false;
+  const now = Date.now();
+  return ids.some((id) => now - (freshAtById.get(id) ?? 0) < LIVE_TICK_MS);
 }
 
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */
