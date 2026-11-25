@@ -25,6 +25,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import {
   legEntries,
   liveSide,
@@ -242,7 +243,9 @@ export default function OptionChainScreen() {
   }, [setOptionChainFilters]);
 
   // An empty expiry is a question, not a missing value: the server returns its nearest listed expiry.
-  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying });
+  // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
+  const focused = useScreenFocused();
+  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying, subscribed: focused }, true);
 
   /**
    * A press on a stock's "Option Chain" tab carries its symbol, and the deep link has always promised the

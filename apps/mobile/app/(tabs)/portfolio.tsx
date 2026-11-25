@@ -14,6 +14,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
@@ -32,6 +33,7 @@ import {
   markHoldings,
   markPositions,
   nextSort,
+  queryKeys,
   sortRows,
   streamIdFor,
   tickEntries,
@@ -103,7 +105,9 @@ export default function PortfolioScreen() {
   const { data, isLoading, isError, refetch } = useOpenPositions({ refetchInterval: false });
   // The account response itself is read for its state: which section the broker could fill, which it
   // could not, and the reason it gave. The rows still come from the mapped hooks.
-  const { data: account, refetch: refetchAccount } = useIciciAccount();
+  // A hidden tab stops polling (see useScreenFocused); the account SSE keeps the cache current.
+  const focused = useScreenFocused();
+  const { data: account, refetch: refetchAccount } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused });
 
   const prodPositions = useMemo(() => data ?? [], [data]);
   const prodHoldings = useMemo(() => iciciHoldings(account ?? {}), [account]);

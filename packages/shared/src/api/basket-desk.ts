@@ -10,6 +10,7 @@
 
 import { QUALITY_WORD, todayIST, type Basket, type BasketLeg, type MarginRequest, type MarginRequestLeg, type OpenPosition, type OptionChainData, type PayoffLeg, type StrategyAnalysisLeg, type StrategyAnalysisRequest } from "./hooks";
 import { formatISTDate, formatISTTime, isTodayIST } from "../utils";
+import type { QuoteTick } from "./websocket";
 
 /** Prod's money in rupees arrives as floats on legs and decimal strings on payoff legs and curves. */
 export function rupees(value: number | string | null | undefined, signed = false): string | null {
@@ -620,3 +621,40 @@ export function legValue(leg: BasketLeg): { price: number | null; label: string 
 
 /** How much of a leg was already closed, so a partly exited leg can say "85 of 170". */
 export const closedUnits = (leg: BasketLeg): number => (Number.isFinite(leg.exited) && leg.exited > 0 ? leg.exited : 0);
+
+/** The open legs' canonical ids, the ones the live price socket can stream. Position-made legs named
+ * by a broker symbol carry no canonical id and keep the REST mark. */
+export function basketStreamIds(baskets: readonly Basket[]): string[] {
+  const ids = new Set<string>();
+  for (const basket of baskets) {
+    if (basket.provider === "paper") continue;
+    for (const leg of basket.legs) {
+      if (leg.quantity > 0 && leg.instrumentId.startsWith("instrument:v1:")) ids.add(leg.instrumentId);
+    }
+  }
+  return [...ids].sort();
+}
+
+/**
+ * Open legs marked from the live price socket between /v1/baskets reads. Only a tick the server calls
+ * fresh replaces the mark, so a quiet socket never turns an old price into a live-looking one; every
+ * figure (leg P&L, basket P&L, the desk totals) is computed from `markPrice`, so they all move together.
+ */
+export function withStreamMarks(baskets: readonly Basket[], ticks: readonly QuoteTick[]): Basket[] {
+  const fresh = new Map<string, number>();
+  for (const tick of ticks) {
+    if (tick.fresh && tick.price > 0) fresh.set(tick.id, tick.price);
+  }
+  if (!fresh.size) return [...baskets];
+  return baskets.map(basket => {
+    if (basket.provider === "paper") return basket;
+    let changed = false;
+    const legs = basket.legs.map(leg => {
+      const live = leg.quantity > 0 ? fresh.get(leg.instrumentId) : undefined;
+      if (live === undefined || live === leg.markPrice) return leg;
+      changed = true;
+      return { ...leg, markPrice: live };
+    });
+    return changed ? { ...basket, legs } : basket;
+  });
+}

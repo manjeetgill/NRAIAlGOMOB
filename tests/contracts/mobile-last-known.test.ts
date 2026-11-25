@@ -171,15 +171,11 @@ it("forgets every saved list only when the server itself ends the session", () =
 
 it("treats the account frame as a change signal and never as the account answer", () => {
   const source = read("packages/shared/src/api/hooks.ts");
-  const hook = source.slice(
-    source.indexOf("const useIciciAccount"),
-    source.indexOf("const useClosedPositions"),
-  );
-  expect(hook).toContain("/v1/broker-auth/account/stream");
-  const frame = hook.slice(hook.indexOf("const sub = subscribeSSE"), hook.indexOf("return () => sub.close();"));
-  expect(frame).toContain("if (!frame.accounts?.icici) return;");
-  expect(frame).toContain("queryClient.invalidateQueries({ queryKey: queryKeys.brokerAccount.icici() })");
+  // main's one shared account stream (PR #2) answers every screen that shows the account.
+  const stream = source.slice(source.indexOf("const useAccountStream"), source.indexOf("const accountPoll"));
+  expect(stream).toContain("/v1/broker-auth/account/stream");
+  expect(stream).toContain("invalidateQueries");
   // The frame carries prod's pre-mapped snapshot, whose sections have `data` instead of the `rows` every
   // screen reads, so writing it into the cache is what blanked the book.
-  expect(frame).not.toContain("setQueryData");
+  expect(stream).not.toContain("setQueryData");
 });

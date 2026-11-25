@@ -8,7 +8,14 @@
 
 export interface SseSubscription {
   close: () => void;
+  /** True while the stream has sent anything (data or keepalive) within the last 45 s. */
+  alive: () => boolean;
 }
+
+/** The server sends a keepalive every 15 s, so three missed ones means the stream is gone. */
+const SSE_ALIVE_MS = 45_000;
+/** Characters of one response kept before the connection is renewed (see onprogress). */
+const SSE_RECYCLE_CHARS = 4_000_000;
 
 export function subscribeSSE(
   url: string,
@@ -19,6 +26,7 @@ export function subscribeSSE(
   let xhr: XMLHttpRequest | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
+  let lastChunkAt = 0;
 
   const connect = () => {
     if (closed) return;
@@ -39,6 +47,7 @@ export function subscribeSSE(
       const chunk = req.responseText.slice(seen);
       seen = req.responseText.length;
       if (!chunk) return;
+      lastChunkAt = Date.now();
 
       buffer += chunk.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -56,6 +65,16 @@ export function subscribeSSE(
           onData(dataLines.join("\n"));
         }
         boundary = buffer.indexOf("\n\n");
+      }
+      // XMLHttpRequest keeps the whole response in responseText, so a stream held open all session (the
+      // shared account stream) would grow without bound. Past a few MB, open a fresh connection at once.
+      if (seen > SSE_RECYCLE_CHARS && !buffer) {
+        req.onprogress = null;
+        req.onerror = null;
+        req.onload = null;
+        req.abort();
+        failures = 0;
+        connect();
       }
     };
 
@@ -75,6 +94,7 @@ export function subscribeSSE(
   connect();
 
   return {
+    alive: () => !closed && Date.now() - lastChunkAt < SSE_ALIVE_MS,
     close: () => {
       closed = true;
       if (retryTimer) {

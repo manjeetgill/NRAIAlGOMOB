@@ -85,7 +85,8 @@ describe("the all-expiries ladder stops re-paying for the same read", () => {
   it("leaves the expiry on screen polling on its own", () => {
     // The desk the trader is looking at stays live; only the dates above and below it go quiet, so the cost
     // of the switch is a read age per section, not a stale price with nothing saying so.
-    expect(single).toContain("refetchInterval: ({ state }) => (state.data ? 5 * 1000 : false)");
+    // 5 s without the price socket; 30 s only on the chain tab, whose visible strikes tick from the socket.
+    expect(single).toContain("refetchInterval: ({ state }) => (state.data ? (streamed && quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false)");
     expect(ladder).not.toContain("refetchInterval");
   });
 
