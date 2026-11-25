@@ -93,6 +93,8 @@ let published = new Map<string, QuoteTick>();
 let states: Record<string, string> = {};
 let asOf: string | null = null;
 let connected = false;
+/** When the socket last carried a price the server called fresh; 0 before the first one. */
+let lastFreshTickAt = 0;
 let reason: FeedReason = null;
 let socket: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -250,7 +252,9 @@ function accept(frame: WireFrame) {
     const id = typeof quote.id === "string" && quote.id ? quote.id : quote.subscriptionId ?? "";
     const price = Number(quote.price);
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
-    published.set(quoteKey(quote), toTick(quote, id));
+    const tick = toTick(quote, id);
+    published.set(quoteKey(quote), tick);
+    if (tick.fresh) lastFreshTickAt = Date.now();
     changedIds.add(id);
   }
   for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
@@ -528,12 +532,18 @@ export function useQuotesStream(options: UseQuotesStreamOptions): UseQuotesStrea
   };
 }
 
+/** A socket that is open but has carried no fresh price for this long is not feeding the screens. */
+const LIVE_TICK_MS = 30_000;
+
 /**
- * Whether the live price socket is open and carrying prices right now. Polls read it on every
- * cycle, so a screen whose prices tick from the socket only re-reads REST as a slow safety net.
+ * Whether the live price socket is open AND has delivered a fresh price in the last 30 s. Polls read it
+ * on every cycle, so a screen whose prices tick from the socket only re-reads REST as a slow safety net.
+ * An open socket alone is not enough: on 25 Nov 2026 the server's feed froze while its keepalives went on,
+ * and a screen that slowed its REST read on "connected" would have frozen with it. After the close no
+ * fresh ticks arrive, so screens go back to their normal reads of the server's closing prices.
  */
 export function quoteStreamConnected(): boolean {
-  return connected && reason === null;
+  return connected && reason === null && Date.now() - lastFreshTickAt < LIVE_TICK_MS;
 }
 
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */
