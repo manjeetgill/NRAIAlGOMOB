@@ -78,6 +78,7 @@ export default function TerminalChartsScreen() {
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
   const [chartKey, setChartKey] = useState(0);
+  const [chartHeight, setChartHeight] = useState(500);
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
@@ -271,8 +272,15 @@ export default function TerminalChartsScreen() {
     );
   } else {
     body = (
-      <View style={{ flex: 1 }} key={chartKey}>
-        <KLineChart data={chartDataPoints} height={500} symbol={symbol} />
+      <View
+        style={{ flex: 1 }}
+        key={chartKey}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          if (h > 100 && h !== chartHeight) setChartHeight(h);
+        }}
+      >
+        <KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol} />
       </View>
     );
   }

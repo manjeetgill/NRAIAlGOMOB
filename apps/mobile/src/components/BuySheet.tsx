@@ -11,6 +11,7 @@ import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from "reac
 import { Ionicons } from "@expo/vector-icons";
 import type { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatNumber, formatQuantity } from "@nraialgo/shared/utils";
+import { streamId, useQuoteFeed } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "./ThemeProvider";
 
@@ -31,11 +32,15 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   // a shares endpoint and has nothing to say about an NFO contract - prod answers it with a refusal.
   const fromChain = !!config?.book;
   const { data: quote } = useEquityQuote(localState.exchange, localState.symbol, !fromChain);
+  const cashId = !fromChain && localState.exchange === "NSE" ? streamId(localState.symbol) : null;
+  const feed = useQuoteFeed(cashId ? [cashId] : [], !!cashId);
+  const liveTick = feed.quotes[0];
   const ask = fromChain ? config?.book?.ask ?? null : quote?.ask ?? null;
   const bid = fromChain ? config?.book?.bid ?? null : quote?.bid ?? null;
   // The price the press arrived with, kept apart from the editable limit field so "last" never comes
   // to mean whatever the trader has typed into the ticket so far.
-  const lastTouch = fromChain ? config?.price ?? null : quote?.ltp ?? null;
+  const liveLtp = !fromChain && liveTick?.fresh && liveTick.price > 0 ? liveTick.price : null;
+  const lastTouch = fromChain ? config?.price ?? null : liveLtp ?? quote?.ltp ?? null;
 
   // Seeded once at mount: the sheet only exists while a ticket is open, so a new press always
   // starts from the ticket's own values rather than from a previous symbol's half-typed text.

@@ -9,7 +9,7 @@ import { useTheme, globalStyles } from "@/components/ThemeProvider";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
-import { prefetchAlgoLab, prefetchScanner } from "@/utils/prefetch";
+import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
 
 export default function MoreScreen() {
   const { useMe, useLogout } = useApi();
@@ -148,7 +148,7 @@ export default function MoreScreen() {
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => router.push("/spread-builder")}>
+          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPressIn={() => prefetchSpreadBuilder()} onPress={() => router.push("/spread-builder")}>
             <View style={styles.labelRow}>
               <Ionicons name="layers-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Spread builder</Text>

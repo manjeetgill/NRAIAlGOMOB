@@ -90,3 +90,16 @@ export function prefetchScanner() {
     staleTime: 10 * 1000,
   }).catch(() => {});
 }
+
+export function prefetchWatchlist(list = 1) {
+  queryClient.prefetchQuery({
+    queryKey: queryKeys.watchlist.list(list),
+    queryFn: () => client.get("/v1/watchlist", { params: { list } }),
+    staleTime: 2 * 1000,
+  }).catch(() => {});
+}
+
+export function prefetchSpreadBuilder() {
+  prefetchOptionChain();
+  prefetchPortfolio();
+}
