@@ -26,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
   BUILTIN_LISTS,
+  LAST_KNOWN,
   markWatchlist,
   pauseQuoteDispatch,
   resumeQuoteDispatch,
@@ -44,6 +45,7 @@ import { BuySheet } from "@/components/BuySheet";
 import { WatchlistManager } from "@/components/WatchlistManager";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
+import { useLastKnown } from "@/hooks/useLastKnown";
 
 type Tab = { kind: "predefined" } | { kind: "list"; number: number };
 
@@ -315,7 +317,16 @@ export default function WatchlistScreen() {
       (stripLive ? " · live" : stripAt ? ` · price ${stripAt.slice(0, 10)}` : "")
     : "Loading the index strip";
 
-  const rows = tab.kind === "predefined" ? builtins?.items ?? [] : saved?.items ?? [];
+  const prodRows = tab.kind === "predefined" ? builtins?.items ?? [] : saved?.items ?? [];
+  // The list the phone last painted, kept so a failed read still shows the trader their own symbols with
+  // the minute they were read instead of an empty list. Prod's answer always wins, including the answer
+  // that says the list is flat, which clears the copy rather than keeping a removed symbol on screen.
+  const listCopy = useLastKnown(
+    tab.kind === "predefined" ? LAST_KNOWN.watchlist(`builtin-${builtin}`) : LAST_KNOWN.watchlist(tab.number),
+    prodRows,
+    tab.kind === "predefined" ? !!builtins : !!saved,
+  );
+  const rows = listCopy.rows;
   // Watchlist rows are cash instruments, so each one's stream id comes straight from the exchange and symbol
   // prod sent beside it. An exchange the stream does not publish builds no id and is never subscribed: one
   // subscription the server cannot parse closes the socket for the whole app, not just this row.
@@ -328,7 +339,8 @@ export default function WatchlistScreen() {
   // Prod returns a list's symbols before it has finished pricing them, so an empty price here
   // usually means "still being read" rather than "this stock has no price". Say which.
   const pricesPending = (tab.kind === "predefined" ? builtins?.pricesPending : saved?.pricesPending) === true;
-  const busy = tab.kind === "predefined" ? !builtins && !builtinError : !saved && !savedError;
+  // A spinner is for a list with nothing to show yet; a copy the phone already painted is something to show.
+  const busy = (tab.kind === "predefined" ? !builtins && !builtinError : !saved && !savedError) && rows.length === 0;
   const pages = builtins?.total && builtins.pageSize ? Math.ceil(builtins.total / builtins.pageSize) : 1;
   // A socket that is open but has sent no usable price is not a quiet market the app can prove, so the line
   // says which of the three states this list is in instead of leaving one word to cover all of them. An empty
@@ -336,7 +348,12 @@ export default function WatchlistScreen() {
   const streamWord = instruments.length === 0
     ? null
     : ticking ? "ticking" : feed.connected ? "waiting for ticks" : "no live stream";
-  const listLine = pricesPending ? `${statusLine} · prices for this list are still arriving` : statusLine;
+  // The minute the phone last read this list, said only when its own copy is what is on screen.
+  const listLine = [
+    statusLine,
+    pricesPending ? "prices for this list are still arriving" : null,
+    listCopy.line,
+  ].filter(Boolean).join(" · ");
 
   const renderRow = useCallback(({ item }: { item: WatchlistRow & Marked }) => {
     const already = inList.has(`${item.exchange}:${item.symbol}`);

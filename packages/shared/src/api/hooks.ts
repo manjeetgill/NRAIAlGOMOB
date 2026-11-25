@@ -489,18 +489,22 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // poll of the server's cached copy, not another broker call.
   const useIciciAccount = (options?: UseQueryOptions<IciciAccountPayload, ApiError>) => {
     useEffect(() => {
+      // The frame is an envelope — {accounts:{icici:<read model>}, asOf} — and the object inside it is
+      // prod's PRE-mapped snapshot, whose sections carry `data` rather than the field-allowlisted `rows`
+      // every screen consumes. Writing it into the cache as if it were the account answer dropped both
+      // section keys, so `iciciAccountSection` fell to its "the answer did not include positions" branch
+      // and printed it over the owner's real book. Prod's REST answer always carries the sections, so the
+      // frame is only a signal that its copy changed; the figures come from the mapped read.
       const sub = subscribeSSE(
         `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
         (raw) => {
           try {
-            const payload = JSON.parse(raw) as IciciAccountPayload;
-            if (payload && typeof payload === "object") {
-              queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
-              queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
-            }
+            const frame = JSON.parse(raw) as { accounts?: Record<string, unknown> };
+            if (!frame.accounts?.icici) return;
           } catch {
-            // Ignore malformed SSE frame
+            return; // Malformed frame: nothing changed, so nothing to refetch.
           }
+          queryClient.invalidateQueries({ queryKey: queryKeys.brokerAccount.icici() });
         },
       );
       return () => sub.close();

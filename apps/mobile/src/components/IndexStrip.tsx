@@ -8,10 +8,11 @@
 
 import React, { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { chartFailureReason, streamId, useQuoteFeed } from "@nraialgo/shared/api";
+import { LAST_KNOWN, chartFailureReason, streamId, useQuoteFeed, type IndexQuote } from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
+import { useLastKnown } from "@/hooks/useLastKnown";
 
 /** Prod names its quote states in code; the strip says what they mean. */
 function statusWord(status: string): string {
@@ -30,28 +31,33 @@ function IndexStrip() {
   const { resolvedTheme } = useTheme();
   const { data: rawStrip, error } = useIndices();
 
+  // A strip is the app's only market-wide read, and prod can fail it while the trader is on any screen.
+  // The cards the phone last saw stay on the bar in that case, labelled, instead of the row going blank.
+  const copy = useLastKnown(LAST_KNOWN.indexStrip, rawStrip?.indices ?? [], !!rawStrip);
   const indexIds = useMemo(
-    () => (rawStrip?.indices ?? []).map((idx) => streamId(idx.name)).filter((id): id is string => !!id),
-    [rawStrip],
+    () => copy.rows.map((idx) => streamId(idx.name)).filter((id): id is string => !!id),
+    [copy.rows],
   );
   const feed = useQuoteFeed(indexIds, indexIds.length > 0);
   const strip = useMemo(() => {
-    if (!rawStrip) return rawStrip;
-    if (!feed.quotes.length) return rawStrip;
+    if (copy.rows.length === 0) return null;
+    // A remembered card is never redrawn as if prod still called its price current, so it takes the one
+    // state word that is true for it whatever the saved status said. A tick that arrives still lifts it.
+    const base: IndexQuote[] = copy.source === "last-fetched"
+      ? copy.rows.map((idx) => ({ ...idx, status: "stale" }))
+      : copy.rows;
+    if (!feed.quotes.length) return base;
     const byId = new Map(feed.quotes.map((q) => [q.id, q]));
-    return {
-      ...rawStrip,
-      indices: rawStrip.indices.map((idx) => {
-        const id = streamId(idx.name);
-        const tick = id ? byId.get(id) : undefined;
-        if (!tick || !tick.fresh || !(tick.price > 0)) return idx;
-        const prev = tick.previousClose ?? (idx.price !== null && idx.change !== null ? idx.price - idx.change : null);
-        const change = prev && prev > 0 ? tick.price - prev : idx.change;
-        const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : idx.changePct;
-        return { ...idx, price: tick.price, change, changePct, status: "live" };
-      }),
-    };
-  }, [rawStrip, feed.quotes]);
+    return base.map((idx) => {
+      const id = streamId(idx.name);
+      const tick = id ? byId.get(id) : undefined;
+      if (!tick || !tick.fresh || !(tick.price > 0)) return idx;
+      const prev = tick.previousClose ?? (idx.price !== null && idx.change !== null ? idx.price - idx.change : null);
+      const change = prev && prev > 0 ? tick.price - prev : idx.change;
+      const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : idx.changePct;
+      return { ...idx, price: tick.price, change, changePct, status: "live" };
+    });
+  }, [copy.rows, copy.source, feed.quotes]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", up: "#22c55e", down: "#ef4444" }
@@ -72,6 +78,7 @@ function IndexStrip() {
     price: { fontSize: 13, fontWeight: "700", lineHeight: 16 },
     change: { fontSize: 9, color: colors.muted, lineHeight: 11 },
     note: { height: 48, lineHeight: 48, fontSize: 12, color: colors.muted, paddingHorizontal: 12 },
+    age: { fontSize: 10, lineHeight: 14, color: colors.text, paddingHorizontal: 12, paddingBottom: 4 },
   }), [colors]);
 
   const tone = (change: number | null) =>
@@ -94,7 +101,7 @@ function IndexStrip() {
   return (
     <View style={styles.row}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.scroll} contentContainerStyle={styles.content}>
-        {strip.indices.map(index => (
+        {strip.map(index => (
           <View key={index.name} style={styles.card}>
             <Text style={styles.name}>{index.label}</Text>
             <Text style={[styles.price, { color: tone(index.change) }]}>
@@ -114,6 +121,8 @@ function IndexStrip() {
           </View>
         ))}
       </ScrollView>
+      {/* Only the phone's own copy needs the minute it came from; prod's cards carry prod's state words. */}
+      {copy.line ? <Text style={styles.age}>{copy.line}</Text> : null}
     </View>
   );
 }

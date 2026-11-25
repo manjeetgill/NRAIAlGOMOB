@@ -215,6 +215,21 @@ export {
 } from "./basket-desk";
 
 export {
+  LAST_KNOWN,
+  LAST_KNOWN_MAX_AGE_MS,
+  LAST_KNOWN_PREFIX,
+  chooseRows,
+  lastFetchedLine,
+  readLastKnown,
+  writeLastKnown,
+  clearLastKnown,
+  type LastKnown,
+  type LastKnownSurface,
+  type RowSource,
+  type Shown,
+} from "./last-known";
+
+export {
   nextSort,
   sortRows,
   type SortColumn,

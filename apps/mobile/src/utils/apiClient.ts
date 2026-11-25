@@ -10,6 +10,7 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Constants } from "@nraialgo/shared/constants";
 import { useAuthStore } from "@nraialgo/shared/stores";
+import { forgetLastKnown } from "@/hooks/useLastKnown";
 
 // SecureStore adapter for tokens
 const secureStorage = {
@@ -109,6 +110,8 @@ export async function initializeApiClient(): Promise<boolean> {
     } catch {
       useAuthStore.getState().logout();
       AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
+      // The saved book belongs to the workspace that just lost its session, not to whoever signs in next.
+      forgetLastKnown();
       return false;
     } finally {
       initInFlight = null;
