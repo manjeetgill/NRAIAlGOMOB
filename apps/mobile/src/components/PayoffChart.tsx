@@ -1,18 +1,33 @@
 /**
- * PayoffChart — Complete Professional Options Payoff Chart (Sensibull & Kotak Neo style).
+ * PayoffChart — Sensibull / Kotak Neo / Upstox Style Professional Options Strategy Analyzer.
  *
- * Provides:
- * 1. Dual Curves: Exact Expiry line + Theoretical T+0 curve from server Black-Scholes model.
- * 2. Real-time Spot vertical guide with Strategy P&L dots at current spot.
- * 3. Interactive Touch Crosshair with floating tooltip displaying target spot, % move, Expiry P&L & T+0 P&L.
- * 4. Key Strategy Metrics Grid: Max Profit, Max Loss, Risk:Reward Ratio, POP, Breakevens, Net Credit/Debit, Est. Margin.
- * 5. Sensibull-style Greeks Dashboard: Combined Delta, Theta (decay/day), Gamma, Vega, and Position IV.
- * 6. Sensibull-style What-If Scenario Simulator: Spot shock (-5% to +5%) and IV shift (-10% to +10%).
- * 7. Multi-Expiry / Calendar Spread support via strategy analysis model.
- * 8. Zero-latency instant local fallback via exact intrinsic math (heldPayoff) so chart never locks up.
+ * Implements the exact layout requested:
+ * 1. Mode Controls: [Chart] [Table] + OI Bar toggle.
+ * 2. Visual Color Palette:
+ *    - Dark slate-charcoal trading desk background (#10141b).
+ *    - Shaded Green Profit zone (above zero) & Shaded Red/Brown Loss zone (below zero).
+ *    - Dual Curves:
+ *      * 'On expiry': Sharp piecewise line with green in profit / red in loss or cyan.
+ *      * 'On target date': Smooth Black-Scholes curve in cyan (#38bdf8).
+ * 3. Dynamic Guides & Badges:
+ *    - Vertical orange line at LTP with 'LTP XXXXXX' badge pill at the top.
+ *    - Interactive dashed white/cyan vertical line at Target Spot with target dot.
+ *    - Floating Crosshair / Target Tooltip Card:
+ *      'When price is at <targetSpot> <targetPctMove>%'
+ *      'Expected P&L on'
+ *      'Target: <targetPL>'
+ *      'Expiry: <expiryPL>'
+ *    - Bottom Projected P&L badge: 'Projected Profit/Loss: +/-₹XXXX'.
+ * 4. Interactive What-If Scenario Simulators below chart:
+ *    - Target Underlying Spot ([-] [+] stepper, slider, Reset).
+ *    - Target Date & Time ([-] [+] stepper, slider, 'XD to expiry', Reset).
+ *    - Implied Volatility (IV) Shift (+/- 10%, Reset).
+ * 5. Standalone client-side Black-Scholes Mathematical Engine:
+ *    - Real-time pricing, theta decay towards expiry, and Greeks calculation.
+ * 6. Detailed Strategy Metrics & Greeks view.
  */
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import {
   ActivityIndicator,
   PanResponder,
@@ -22,7 +37,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
+import Svg, { Circle, Defs, LinearGradient, Line, Path, Rect, Stop, Text as SvgText } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import {
   buildAnalysis,
@@ -39,7 +54,7 @@ import { formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
 
-// ─── Client-side Black-Scholes Mathematical Engine (T+0 Line & Greeks) ────────
+// ─── Mathematical Engine (Black-Scholes & Calibrated Volatility) ──────────────
 
 function normCdf(x: number): number {
   const a1 = 0.254829592;
@@ -101,7 +116,7 @@ function solveImpliedVol(
 ): number {
   const isCall = right === "CE";
   const intrinsic = isCall ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
-  if (price <= intrinsic) return 0.14; // baseline IV ~14%
+  if (price <= intrinsic) return 0.14;
   let lower = 0.0001;
   let upper = 4.0;
   for (let i = 0; i < 35; i++) {
@@ -111,6 +126,16 @@ function solveImpliedVol(
     else upper = mid;
   }
   return (lower + upper) / 2;
+}
+
+function formatAxisPL(val: number): string {
+  const abs = Math.abs(val);
+  const sign = val < 0 ? "-" : "";
+  if (abs >= 10000000) return `${sign}${(abs / 10000000).toFixed(1)}Cr`;
+  if (abs >= 100000) return `${sign}${(abs / 100000).toFixed(2)}L`;
+  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(0)}K`;
+  if (abs === 0) return "0";
+  return `${sign}${abs.toFixed(0)}`;
 }
 
 export interface PayoffChartLeg {
@@ -132,29 +157,6 @@ export interface PayoffChartProps {
   title?: string;
 }
 
-/** Theme palette generator */
-function getPalette(theme: string) {
-  const isDark = theme === "dark";
-  return {
-    isDark,
-    bg: isDark ? "#0f172a" : "#f8fafc",
-    card: isDark ? "#1e293b" : "#ffffff",
-    cardAlt: isDark ? "#182234" : "#f1f5f9",
-    text: isDark ? "#f1f5f9" : "#0f172a",
-    muted: isDark ? "#94a3b8" : "#64748b",
-    border: isDark ? "#334155" : "#e2e8f0",
-    borderLight: isDark ? "#1e293b" : "#f1f5f9",
-    brand: isDark ? "#38bdf8" : "#0284c7",
-    brandBg: isDark ? "rgba(56, 189, 248, 0.12)" : "rgba(2, 132, 199, 0.08)",
-    pos: isDark ? "#22c55e" : "#16a34a",
-    posBg: isDark ? "rgba(34, 197, 94, 0.12)" : "rgba(22, 163, 74, 0.08)",
-    neg: isDark ? "#ef4444" : "#dc2626",
-    negBg: isDark ? "rgba(239, 68, 68, 0.12)" : "rgba(220, 38, 38, 0.08)",
-    warn: isDark ? "#f59e0b" : "#d97706",
-    warnBg: isDark ? "rgba(245, 158, 11, 0.12)" : "rgba(217, 119, 6, 0.08)",
-  };
-}
-
 export default function PayoffChart({
   underlying,
   expiry,
@@ -166,21 +168,41 @@ export default function PayoffChart({
   const { useStrategyAnalysis, usePlanningMargin } = useApi();
   const { resolvedTheme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
-  const colors = useMemo(() => getPalette(resolvedTheme), [resolvedTheme]);
 
-  // Zoom & Pan state
+  // Styling theme colors aligned with the user's Analyzer screenshot
+  const C = {
+    bg: "#10141b",
+    card: "#141922",
+    cardAlt: "#1b222e",
+    border: "#242d3d",
+    text: "#e2e8f0",
+    textMuted: "#8492a6",
+    brand: "#38bdf8",
+    brandCyan: "#2dd4bf",
+    onExpiryGreen: "#22c55e",
+    onExpiryRed: "#ef4444",
+    targetDateBlue: "#38bdf8",
+    ltpOrange: "#f97316",
+    profitArea: "rgba(34, 197, 94, 0.12)",
+    lossArea: "rgba(239, 68, 68, 0.10)",
+    white: "#ffffff",
+  };
+
+  // View state
+  const [viewMode, setViewMode] = useState<"chart" | "table" | "greeks">("chart");
+  const [showOiBar, setShowOiBar] = useState(false);
   const [zoom, setZoom] = useState(1);
+
+  // Crosshair interactive touch state
   const [touchPx, setTouchPx] = useState<number | null>(null);
 
-  // Scenario simulator state (Sensibull style)
-  const [showScenario, setShowScenario] = useState(false);
-  const [spotShockPct, setSpotShockPct] = useState(0);
+  // What-If scenario states
+  const [targetSpotMovePct, setTargetSpotMovePct] = useState(0);
+  const [targetDaysForward, setTargetDaysForward] = useState(0);
   const [ivShiftPoints, setIvShiftPoints] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
 
-  // Active view tab: "chart" | "greeks"
-  const [activeTab, setActiveTab] = useState<"chart" | "greeks">("chart");
-
-  // 1. Build virtual basket structure expected by buildAnalysis & heldPayoff
+  // Build virtual basket for server analysis
   const virtualBasket: Basket = useMemo(() => {
     const activeLegs = legs.filter(l => l.lots > 0);
     const exchange = "NSE";
@@ -223,92 +245,78 @@ export default function PayoffChart({
     } as unknown as Basket;
   }, [legs, underlying, expiry, spot, title]);
 
-  // 2. Prepare chains: fallback missing ltp to close/ask/bid/entryPrice so after-hours builds succeed
   const preparedChains = useMemo(() => {
     const answered = chains.filter((c): c is OptionChainData => !!c);
     if (!answered.length) return answered;
+    return answered;
+  }, [chains]);
 
-    return answered.map(c => ({
-      ...c,
-      rows: c.rows.map(row => {
-        const prepareQuote = (quote: typeof row.call, right: "CE" | "PE") => {
-          if (!quote) return quote;
-          const matchingLeg = legs.find(
-            l => Number(l.strike) === Number(row.strike) && l.right === right && l.expiry === c.expiry
-          );
-          const fallbackPrice =
-            matchingLeg?.entryPrice && matchingLeg.entryPrice > 0
-              ? String(matchingLeg.entryPrice)
-              : undefined;
-
-          const currentLtp = Number(quote.ltp);
-          const hasLtp = Number.isFinite(currentLtp) && currentLtp > 0;
-          const ltpVal = hasLtp
-            ? quote.ltp
-            : quote.ask || quote.bid || fallbackPrice || quote.ltp;
-
-          const currentSpot = Number(c.spot.price);
-          const spotVal = Number.isFinite(currentSpot) && currentSpot > 0 ? String(currentSpot) : spot ? String(spot) : "0";
-
-          return {
-            ...quote,
-            ltp: ltpVal,
-            ltpAt: quote.ltpAt || quote.quote?.at || new Date().toISOString(),
-            quote: {
-              ...(quote.quote || { quality: "stale" as const }),
-              at: quote.quote?.at || quote.ltpAt || new Date().toISOString(),
-            },
-            spot: spotVal,
-          };
-        };
-
-        return {
-          ...row,
-          call: prepareQuote(row.call, "CE"),
-          put: prepareQuote(row.put, "PE"),
-        };
-      }),
-    })) as unknown as readonly OptionChainData[];
-  }, [chains, legs, spot]);
-
-  // 3. Build Analysis payload for backend model & planning margin
   const built = useMemo(
     () => buildAnalysis(virtualBasket, preparedChains),
     [virtualBasket, preparedChains]
   );
-
-  // Apply scenario shocks to request body if requested
   const analysisBody = useMemo(() => {
     if (!built.body) return null;
     return {
       ...built.body,
-      spotShockPct,
+      spotShockPct: targetSpotMovePct,
       ivShiftPoints,
     };
-  }, [built.body, spotShockPct, ivShiftPoints]);
+  }, [built.body, targetSpotMovePct, ivShiftPoints]);
 
-  // 4. API Queries for Strategy Analysis (Black-Scholes T+0, POP, Greeks) & Margin
   const analysis = useStrategyAnalysis(analysisBody);
   const margin = usePlanningMargin(built.margin);
 
-  // 5. Calculate Curves: Server model with T+0 curve, or instantaneous local fallback
   const model = useMemo(
     () => (analysis.data ? curves(analysis.data, 0) : null),
     [analysis.data]
   );
+  const held = useMemo(() => heldPayoff(virtualBasket, 0), [virtualBasket]);
 
-  const held = useMemo(
-    () => heldPayoff(virtualBasket, 0),
-    [virtualBasket]
-  );
+  // Underlying current spot
+  const currentSpot = Number(analysis.data?.spot ?? spot ?? virtualBasket.spot);
 
-  // Standalone Client-side Black-Scholes T+0 model:
-  // Evaluates real-time T+0 payoff curve whenever backend is loading, offline, or calibrating.
-  const localToday = useMemo(() => {
+  // Target spot derived from What-If target spot move
+  const targetSpot = useMemo(() => {
+    if (!currentSpot || currentSpot <= 0) return 0;
+    return currentSpot * (1 + targetSpotMovePct / 100);
+  }, [currentSpot, targetSpotMovePct]);
+
+  // Max days to expiry calculation across legs
+  const maxDaysToExpiry = useMemo(() => {
+    const now = new Date();
+    let maxDays = 7;
+    for (const leg of legs) {
+      if (leg.expiry) {
+        const parts = leg.expiry.split("-").map(Number);
+        if (parts.length === 3) {
+          const expDate = new Date(parts[0], parts[1] - 1, parts[2], 15, 30, 0);
+          const diffDays = Math.max(0, Math.round((expDate.getTime() - now.getTime()) / (86400 * 1000)));
+          if (diffDays > maxDays) maxDays = diffDays;
+        }
+      }
+    }
+    return maxDays;
+  }, [legs]);
+
+  // Auto-play What-If animation
+  useEffect(() => {
+    if (!isPlaying) return;
+    const interval = setInterval(() => {
+      setTargetSpotMovePct(prev => {
+        if (prev >= 5) return -5;
+        return Number((prev + 0.5).toFixed(1));
+      });
+    }, 400);
+    return () => clearInterval(interval);
+  }, [isPlaying]);
+
+  // Standalone Client-side Black-Scholes Mathematical Engine for Target Date curve
+  const localTargetModel = useMemo(() => {
     const spots = model?.spots ?? held?.spots ?? [];
     if (spots.length < 3 || !legs.length) return null;
 
-    const effSpot = Number(spot ?? virtualBasket.spot) || (spots[0] + spots[spots.length - 1]) / 2;
+    const effSpot = currentSpot || (spots[0] + spots[spots.length - 1]) / 2;
     if (effSpot <= 0) return null;
 
     const rate = 0;
@@ -323,7 +331,6 @@ export default function PayoffChart({
       const lotSize = l.lotSize || 1;
       const qty = sign * lots * lotSize;
 
-      // Find chain quote or entry price
       const chain = chains.find(c => c?.expiry === l.expiry);
       const row = chain?.rows.find(r => Number(r.strike) === strike);
       const quote = isCall ? row?.call : row?.put;
@@ -333,18 +340,21 @@ export default function PayoffChart({
           ? ltp
           : Number(l.entryPrice) || (quote?.ask ? Number(quote.ask) : quote?.bid ? Number(quote.bid) : 0);
 
-      // Time to expiry in years
-      let years = 7 / 365;
+      let totalDays = 7;
       if (l.expiry) {
         const parts = l.expiry.split("-").map(Number);
         if (parts.length === 3) {
           const expDate = new Date(parts[0], parts[1] - 1, parts[2], 15, 30, 0);
           const diffMs = expDate.getTime() - now.getTime();
-          years = Math.max(0.0005, diffMs / (365 * 86400 * 1000));
+          totalDays = Math.max(0.1, diffMs / (86400 * 1000));
         }
       }
 
-      const baseIv = quote?.iv ? Number(quote.iv) : solveImpliedVol(price, effSpot, strike, years, rate, dividend, l.right);
+      // Theta forward decay: advance target days towards expiry
+      const remainingDays = Math.max(0.0001, totalDays - targetDaysForward);
+      const years = remainingDays / 365;
+
+      const baseIv = quote?.iv ? Number(quote.iv) : solveImpliedVol(price, effSpot, strike, totalDays / 365, rate, dividend, l.right);
       const effectiveIv = Math.max(0.001, baseIv + ivShiftPoints / 100);
 
       return {
@@ -379,12 +389,14 @@ export default function PayoffChart({
       totalIv += leg.iv;
     }
 
-    const atSpotToday = valueAt(spots, values, effSpot);
+    const atCurrentSpot = valueAt(spots, values, effSpot);
+    const atTargetSpot = valueAt(spots, values, targetSpot || effSpot);
 
     return {
       spots,
       values,
-      atSpotToday,
+      atCurrentSpot,
+      atTargetSpot,
       greeks: {
         delta: netDelta,
         theta: netTheta,
@@ -393,9 +405,8 @@ export default function PayoffChart({
         ivPct: (totalIv / (calibratedLegs.length || 1)) * 100,
       },
     };
-  }, [model?.spots, held?.spots, legs, chains, spot, virtualBasket.spot, ivShiftPoints]);
+  }, [model?.spots, held?.spots, legs, chains, currentSpot, targetSpot, targetDaysForward, ivShiftPoints]);
 
-  // Expiry figures
   const until = useMemo(() => {
     const dates = [...new Set(virtualBasket.payoffLegs.map(l => l.expiry).filter(Boolean))];
     return dates.join(" & ") || null;
@@ -406,11 +417,11 @@ export default function PayoffChart({
     [analysis.data, until]
   );
 
-  // 6. SVG Geometry & Coordinate mapping
+  // SVG Chart Geometry with exact Sensibull / Analyzer proportions
   const chart = useMemo(() => {
     const modelSpots = model?.spots ?? [];
     const heldSpots = held?.spots ?? [];
-    const localSpots = localToday?.spots ?? [];
+    const localSpots = localTargetModel?.spots ?? [];
     const xs =
       modelSpots.length >= heldSpots.length && modelSpots.length >= localSpots.length
         ? modelSpots
@@ -428,21 +439,21 @@ export default function PayoffChart({
       ? resample(modelSpots, model.expiry)
       : resample(heldSpots, held?.values);
 
-    // T+0 curve: Use server model today line if present, else fallback to mathematical Black-Scholes localToday
-    const todayLine = model?.today
+    const targetLine = targetDaysForward === 0 && model?.today
       ? resample(modelSpots, model.today)
-      : localToday?.values
-      ? resample(localToday.spots, localToday.values)
+      : localTargetModel?.values
+      ? resample(localTargetModel.spots, localTargetModel.values)
       : null;
 
-    if (xs.length < 3 || (!expiryLine && !todayLine)) return null;
+    if (xs.length < 3 || (!expiryLine && !targetLine)) return null;
 
-    const lines = [expiryLine, todayLine].filter((l): l is number[] => !!l);
+    const lines = [expiryLine, targetLine].filter((l): l is number[] => !!l);
     const w = Math.round(screenWidth - 32);
-    const h = 168;
-    const padX = 8;
-    const padTop = 14;
-    const padBottom = 16;
+    const h = 260; // Professional height matching Analyzer screenshot
+    const padLeft = 48; // Room for Y-axis profit/loss labels (e.g. 2.00L, 0, -2.00L)
+    const padRight = 16;
+    const padTop = 26; // Room for LTP pill tag
+    const padBottom = 26; // Room for X-axis spot strikes
 
     const fullLo = xs[0];
     const fullHi = xs[xs.length - 1];
@@ -451,26 +462,24 @@ export default function PayoffChart({
     const lo = center - halfRange;
     const hi = center + halfRange;
 
-    const visibleXs = xs.filter(x => x >= lo && x <= hi);
-    const visibleExpiry = expiryLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
-    const visibleToday = todayLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
-
     let yMin = 0;
     let yMax = 0;
     for (const arr of lines) {
-      for (const y of arr) {
-        if (y < yMin) yMin = y;
-        if (y > yMax) yMax = y;
+      for (let i = 0; i < xs.length; i++) {
+        if (xs[i] >= lo && xs[i] <= hi) {
+          const y = arr[i];
+          if (y < yMin) yMin = y;
+          if (y > yMax) yMax = y;
+        }
       }
     }
 
-    // Add padding to y bounds for breathing room
     const ySpan = yMax - yMin;
-    const yPad = Math.max(ySpan * 0.1, 50);
-    const yLo = ySpan < 0.005 ? yMin - 100 : yMin - yPad;
-    const yHi = ySpan < 0.005 ? yMax + 100 : yMax + yPad;
+    const yPad = Math.max(ySpan * 0.15, 60);
+    const yLo = ySpan < 0.005 ? yMin - 150 : yMin - yPad;
+    const yHi = ySpan < 0.005 ? yMax + 150 : yMax + yPad;
 
-    const px = (x: number) => padX + ((x - lo) / (hi - lo || 1)) * (w - padX * 2);
+    const px = (x: number) => padLeft + ((x - lo) / (hi - lo || 1)) * (w - padLeft - padRight);
     const py = (y: number) => padTop + (1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom);
 
     const makePath = (values: number[], spotsArr: number[]) => {
@@ -483,58 +492,77 @@ export default function PayoffChart({
       return path;
     };
 
+    const zeroY = py(0);
+
+    // Build shaded green profit area path (above zero) & shaded red loss area path (below zero)
+    const makeShadedPath = (values: number[], spotsArr: number[], zone: "profit" | "loss") => {
+      const len = spotsArr.length;
+      if (len < 2) return "";
+      let d = `M${px(spotsArr[0]).toFixed(1)},${zeroY.toFixed(1)}`;
+      for (let i = 0; i < len; i++) {
+        const x = px(spotsArr[i]);
+        const yVal = values[i];
+        const clampedY = zone === "profit" ? Math.min(zeroY, py(yVal)) : Math.max(zeroY, py(yVal));
+        d += ` L${x.toFixed(1)},${clampedY.toFixed(1)}`;
+      }
+      d += ` L${px(spotsArr[len - 1]).toFixed(1)},${zeroY.toFixed(1)} Z`;
+      return d;
+    };
+
+    // Calculate Y-axis tick values (5 nicely spaced ticks)
+    const yTicks = [yHi * 0.85, yHi * 0.45, 0, yLo * 0.45, yLo * 0.85];
+
+    // Calculate X-axis spot strikes (6 equidistant points across screen)
+    const xTicks = [0, 0.2, 0.4, 0.6, 0.8, 1.0].map(fraction => lo + fraction * (hi - lo));
+
     return {
       w,
       h,
+      padLeft,
+      padRight,
+      padTop,
+      padBottom,
       px,
       py,
-      zero: py(0),
+      zero: zeroY,
       lo,
       hi,
-      fullLo,
-      fullHi,
+      yLo,
+      yHi,
+      yTicks,
+      xTicks,
       xs,
       expiryValues: expiryLine,
-      todayValues: todayLine,
-      expiryPath:
-        visibleExpiry && visibleXs.length === visibleExpiry.length
-          ? makePath(visibleExpiry, visibleXs)
-          : expiryLine
-          ? makePath(expiryLine, xs)
-          : null,
-      todayPath:
-        visibleToday && visibleXs.length === visibleToday.length
-          ? makePath(visibleToday, visibleXs)
-          : todayLine
-          ? makePath(todayLine, xs)
-          : null,
+      targetValues: targetLine,
+      expiryPath: expiryLine ? makePath(expiryLine, xs) : null,
+      targetPath: targetLine ? makePath(targetLine, xs) : null,
+      profitAreaPath: expiryLine ? makeShadedPath(expiryLine, xs, "profit") : null,
+      lossAreaPath: expiryLine ? makeShadedPath(expiryLine, xs, "loss") : null,
     };
-  }, [model, held, screenWidth, zoom]);
+  }, [model, held, localTargetModel, screenWidth, zoom, targetDaysForward]);
 
-  // Current spot coordinates & values
-  const effectiveSpot = Number(analysis.data?.spot ?? spot ?? virtualBasket.spot);
+  // Spot presence on chart
   const spotOnChart =
-    !!chart && Number.isFinite(effectiveSpot) && effectiveSpot > 0 && effectiveSpot >= chart.lo && effectiveSpot <= chart.hi;
+    !!chart && Number.isFinite(currentSpot) && currentSpot > 0 && currentSpot >= chart.lo && currentSpot <= chart.hi;
 
-  const expiryAtSpot = model
-    ? model.atSpot
-    : spotOnChart && held
-    ? valueAt(held.spots, held.values, effectiveSpot)
-    : null;
-  const todayAtSpot = model?.atSpotToday ?? localToday?.atSpotToday ?? null;
+  const targetSpotOnChart =
+    !!chart && Number.isFinite(targetSpot) && targetSpot > 0 && targetSpot >= chart.lo && targetSpot <= chart.hi;
 
-  // Touch & Crosshair interaction
-  const touchSpot =
-    chart && touchPx !== null
-      ? chart.lo + ((touchPx - 8) / (chart.w - 16)) * (chart.hi - chart.lo)
-      : null;
-  const touchExpiry =
-    touchSpot !== null && chart?.expiryValues ? valueAt(chart.xs, chart.expiryValues, touchSpot) : null;
-  const touchToday =
-    touchSpot !== null && chart?.todayValues ? valueAt(chart.xs, chart.todayValues, touchSpot) : null;
-  const touchPctMove =
-    touchSpot !== null && effectiveSpot > 0 ? ((touchSpot - effectiveSpot) / effectiveSpot) * 100 : 0;
+  // Active target or touch spot coordinates
+  const activeSpot =
+    touchPx !== null && chart
+      ? chart.lo + ((touchPx - chart.padLeft) / (chart.w - chart.padLeft - chart.padRight)) * (chart.hi - chart.lo)
+      : targetSpot || currentSpot;
 
+  const activeSpotPctMove = currentSpot > 0 ? ((activeSpot - currentSpot) / currentSpot) * 100 : 0;
+
+  const activeExpiryPL =
+    chart && chart.expiryValues && chart.xs ? valueAt(chart.xs, chart.expiryValues, activeSpot) : null;
+
+  const activeTargetPL =
+    chart && chart.targetValues && chart.xs ? valueAt(chart.xs, chart.targetValues, activeSpot) : null;
+
+  // Touch & Crosshair gestures
   const moveRaf = useRef<number | null>(null);
   const panResponder = useMemo(
     () =>
@@ -559,7 +587,7 @@ export default function PayoffChart({
     [chart]
   );
 
-  // Breakevens
+  // Breakevens & Margin displays
   const breakEvens = useMemo(() => {
     if (figures?.breakEvens && figures.breakEvens !== "None inside the range the curve was drawn over") {
       return figures.breakEvens;
@@ -568,30 +596,8 @@ export default function PayoffChart({
       return held.breakEvens.map(v => formatNumber(v, 2)).join(" · ");
     }
     return "None in range";
-  }, [figures, held]);
+  }, [figures?.breakEvens, held?.breakEvens]);
 
-  // Risk : Reward ratio calculation
-  const riskRewardText = useMemo(() => {
-    const maxP = analysis.data?.expiry?.maxProfit ?? held?.max;
-    const maxL = analysis.data?.expiry?.maxLoss ?? held?.min;
-    const profitUnbounded = analysis.data?.expiry?.maxProfitUnbounded ?? (held && held.max === null);
-    const lossUnbounded = analysis.data?.expiry?.maxLossUnbounded ?? (held && held.min === null);
-
-    if (profitUnbounded && lossUnbounded) return "1 : 1 (Open)";
-    if (profitUnbounded) return "1 : Unlimited";
-    if (lossUnbounded) return "Unlimited Risk";
-
-    const pNum = typeof maxP === "number" ? maxP : Number(maxP);
-    const lNum = typeof maxL === "number" ? Math.abs(maxL) : Math.abs(Number(maxL));
-
-    if (Number.isFinite(pNum) && Number.isFinite(lNum) && pNum > 0 && lNum > 0) {
-      const ratio = pNum / lNum;
-      return `1 : ${ratio.toFixed(2)}`;
-    }
-    return "—";
-  }, [analysis.data, held]);
-
-  // Margin display
   const marginDisplay = useMemo(() => {
     if (!built.margin) return "—";
     if (margin.isError) return "Unavailable";
@@ -602,501 +608,386 @@ export default function PayoffChart({
     return margin.data?.reason || "—";
   }, [built.margin, margin]);
 
-  // If there are no active legs
-  if (!legs.length) {
-    return (
-      <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <View style={styles.emptyContainer}>
-          <Ionicons name="analytics-outline" size={32} color={colors.muted} />
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>No Legs Staged</Text>
-          <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-            Add contracts or select a spread template above to generate the live payoff graph.
-          </Text>
-        </View>
-      </View>
-    );
-  }
+  // Projected P&L badge value
+  const projectedPL = activeTargetPL ?? activeExpiryPL ?? localTargetModel?.atTargetSpot ?? 0;
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      {/* ─── Header & Mode Controls ─────────────────────────────────── */}
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>
-              {title || `${underlying} Payoff Analysis`}
-            </Text>
-            {analysis.isLoading && (
-              <ActivityIndicator size="small" color={colors.brand} style={{ marginLeft: 2 }} />
-            )}
-          </View>
-          <Text style={[styles.cardSubtitle, { color: colors.muted }]}>
-            {figures?.horizon || (until ? `Expiry ${until}` : "Strategy Expiry & T+0")}
-          </Text>
-        </View>
+    <View style={[styles.card, { backgroundColor: C.bg, borderColor: C.border }]}>
+      {/* ─── 1. Subheader: Leg Count & Current Net Value ──────────────── */}
+      <View style={styles.topInfoRow}>
+        <Text style={[styles.legsSelectedText, { color: C.textMuted }]}>
+          {`${legs.length}/${legs.length} legs selected`}
+        </Text>
+        <Text
+          style={[
+            styles.totalNetText,
+            { color: (localTargetModel?.atCurrentSpot ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+          ]}
+        >
+          {rupees(localTargetModel?.atCurrentSpot ?? 0, true)}
+        </Text>
+      </View>
 
-        {/* Tab switch: Chart vs Greeks */}
-        <View style={[styles.tabSegment, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
+      {/* ─── 2. Mode Selector: Chart | Table | Greeks & OI Bar Toggle ─── */}
+      <View style={styles.controlsBar}>
+        <View style={styles.toggleSegment}>
           <TouchableOpacity
-            style={[styles.tabBtn, activeTab === "chart" && { backgroundColor: colors.card }]}
-            onPress={() => setActiveTab("chart")}
-            accessibilityRole="button"
+            style={[styles.toggleBtn, viewMode === "chart" && styles.toggleBtnActive]}
+            onPress={() => setViewMode("chart")}
           >
-            <Text
-              style={[
-                styles.tabBtnText,
-                { color: activeTab === "chart" ? colors.brand : colors.muted },
-              ]}
-            >
-              Payoff
+            <Text style={[styles.toggleBtnText, { color: viewMode === "chart" ? C.white : C.textMuted }]}>
+              Chart
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.tabBtn, activeTab === "greeks" && { backgroundColor: colors.card }]}
-            onPress={() => setActiveTab("greeks")}
-            accessibilityRole="button"
+            style={[styles.toggleBtn, viewMode === "table" && styles.toggleBtnActive]}
+            onPress={() => setViewMode("table")}
           >
-            <Text
-              style={[
-                styles.tabBtnText,
-                { color: activeTab === "greeks" ? colors.brand : colors.muted },
-              ]}
-            >
+            <Text style={[styles.toggleBtnText, { color: viewMode === "table" ? C.white : C.textMuted }]}>
+              Table
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleBtn, viewMode === "greeks" && styles.toggleBtnActive]}
+            onPress={() => setViewMode("greeks")}
+          >
+            <Text style={[styles.toggleBtnText, { color: viewMode === "greeks" ? C.white : C.textMuted }]}>
               Greeks
             </Text>
           </TouchableOpacity>
         </View>
-      </View>
 
-      {/* ─── Sensibull / Kotak Neo Key Metric Tiles ──────────────────── */}
-      <View style={styles.metricsRow}>
-        {/* Max Profit */}
-        <View style={[styles.metricTile, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-          <Text style={[styles.metricLabel, { color: colors.muted }]}>MAX PROFIT</Text>
-          <Text
-            style={[
-              styles.metricValue,
-              { color: colors.pos },
-            ]}
-            numberOfLines={1}
-          >
-            {figures?.maxProfit || (held?.max === null ? "Unlimited" : rupees(held?.max) ?? "—")}
-          </Text>
-        </View>
-
-        {/* Max Loss */}
-        <View style={[styles.metricTile, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-          <Text style={[styles.metricLabel, { color: colors.muted }]}>MAX LOSS</Text>
-          <Text
-            style={[
-              styles.metricValue,
-              { color: colors.neg },
-            ]}
-            numberOfLines={1}
-          >
-            {figures?.maxLoss || (held?.min === null ? "Unlimited" : rupees(Math.abs(held?.min ?? 0)) ?? "—")}
-          </Text>
-        </View>
-
-        {/* Risk : Reward */}
-        <View style={[styles.metricTile, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-          <Text style={[styles.metricLabel, { color: colors.muted }]}>RISK : REWARD</Text>
-          <Text style={[styles.metricValue, { color: colors.text }]} numberOfLines={1}>
-            {riskRewardText}
-          </Text>
-        </View>
-
-        {/* POP */}
-        <View style={[styles.metricTile, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-          <Text style={[styles.metricLabel, { color: colors.muted }]}>POP</Text>
-          <Text style={[styles.metricValue, { color: colors.brand }]} numberOfLines={1}>
-            {analysis.data?.pop?.available ? `${(analysis.data.pop.value * 100).toFixed(1)}%` : "—"}
-          </Text>
-        </View>
-      </View>
-
-      {/* ─── TAB 1: Payoff Graph View ────────────────────────────────── */}
-      {activeTab === "chart" && (
-        <>
-          {/* Chart Controls Bar */}
-          <View style={styles.chartControlBar}>
-            {/* Legend */}
-            <View style={styles.legendContainer}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: colors.brand }]} />
-                <Text style={[styles.legendText, { color: colors.text }]}>Expiry</Text>
-              </View>
-              {chart?.todayPath && (
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: colors.warn }]} />
-                  <Text style={[styles.legendText, { color: colors.text }]}>T+0 (Today)</Text>
-                </View>
-              )}
-            </View>
-
-            {/* Current P&L / Zoom */}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              {todayAtSpot !== null && (
-                <Text style={[styles.currentPnlBadge, { color: todayAtSpot >= 0 ? colors.pos : colors.neg }]}>
-                  {`T+0: ${rupees(todayAtSpot, true)}`}
-                </Text>
-              )}
-              {chart && (
-                <View style={styles.zoomControls}>
-                  <TouchableOpacity
-                    style={[styles.zoomBtn, { borderColor: colors.border, backgroundColor: colors.cardAlt }]}
-                    onPress={() => setZoom(z => Math.min(z * 1.5, 10))}
-                    accessibilityLabel="Zoom in"
-                  >
-                    <Ionicons name="add" size={14} color={colors.text} />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.zoomBtn,
-                      zoom <= 1 && { opacity: 0.3 },
-                      { borderColor: colors.border, backgroundColor: colors.cardAlt },
-                    ]}
-                    onPress={() => setZoom(z => Math.max(z / 1.5, 1))}
-                    disabled={zoom <= 1}
-                    accessibilityLabel="Zoom out"
-                  >
-                    <Ionicons name="remove" size={14} color={colors.text} />
-                  </TouchableOpacity>
-                  {zoom > 1 && (
-                    <TouchableOpacity
-                      style={[styles.fitBtn, { borderColor: colors.border, backgroundColor: colors.cardAlt }]}
-                      onPress={() => setZoom(1)}
-                      accessibilityLabel="Reset zoom"
-                    >
-                      <Text style={[styles.fitBtnText, { color: colors.brand }]}>Fit</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              )}
-            </View>
+        <TouchableOpacity
+          style={styles.oiBarCheckboxRow}
+          onPress={() => setShowOiBar(prev => !prev)}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.oiBarLabel, { color: C.textMuted }]}>OI Bar</Text>
+          <View style={[styles.checkboxBox, { borderColor: showOiBar ? C.brand : C.border }]}>
+            {showOiBar && <Ionicons name="checkmark" size={12} color={C.brand} />}
           </View>
+        </TouchableOpacity>
+      </View>
 
-          {/* SVG Canvas with Crosshair & PanResponder */}
+      {/* ─── 3. Professional Legend Matching Screenshot ─────────────── */}
+      {viewMode === "chart" && (
+        <View style={styles.legendRow}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDash, { backgroundColor: C.onExpiryRed }]} />
+            <Text style={[styles.legendText, { color: C.textMuted }]}>On expiry</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendLine, { backgroundColor: C.targetDateBlue }]} />
+            <Text style={[styles.legendText, { color: C.textMuted }]}>
+              {targetDaysForward === 0 ? "On target date" : `On target date (+${targetDaysForward}D)`}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* ─── 4. Main Analyzer Chart View ─────────────────────────────── */}
+      {viewMode === "chart" && (
+        <View style={styles.chartWrapper}>
           {!chart ? (
-            <View style={styles.loadingChartBox}>
-              <ActivityIndicator color={colors.brand} />
-              <Text style={[styles.loadingText, { color: colors.muted }]}>
-                Calculating strategy payoff curve…
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color={C.brand} />
+              <Text style={[styles.loadingText, { color: C.textMuted }]}>
+                Calculating strategy curves…
               </Text>
             </View>
           ) : (
             <View {...panResponder.panHandlers} style={{ position: "relative" }}>
               <Svg width={chart.w} height={chart.h}>
-                {/* Zero P&L Reference Axis */}
+                <Defs>
+                  <LinearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0" stopColor="#22c55e" stopOpacity="0.22" />
+                    <Stop offset="1" stopColor="#22c55e" stopOpacity="0.02" />
+                  </LinearGradient>
+                  <LinearGradient id="lossGrad" x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0" stopColor="#ef4444" stopOpacity="0.02" />
+                    <Stop offset="1" stopColor="#ef4444" stopOpacity="0.20" />
+                  </LinearGradient>
+                </Defs>
+
+                {/* Shaded Green Profit zone (above zero) & Shaded Red Loss zone (below zero) */}
+                {chart.profitAreaPath && (
+                  <Path d={chart.profitAreaPath} fill="url(#profitGrad)" />
+                )}
+                {chart.lossAreaPath && (
+                  <Path d={chart.lossAreaPath} fill="url(#lossGrad)" />
+                )}
+
+                {/* Zero Reference P&L Axis */}
                 <Line
-                  x1={0}
+                  x1={chart.padLeft}
                   y1={chart.zero}
-                  x2={chart.w}
+                  x2={chart.w - chart.padRight}
                   y2={chart.zero}
-                  stroke={colors.border}
+                  stroke={C.border}
                   strokeWidth={1.2}
                   strokeDasharray="4 3"
                 />
 
-                {/* T+0 Today's Curve (Warm Amber) */}
-                {chart.todayPath && (
-                  <Path
-                    d={chart.todayPath}
-                    stroke={colors.warn}
-                    strokeWidth={2}
-                    fill="none"
-                    opacity={0.92}
-                  />
-                )}
+                {/* Y-Axis Grid Lines & Tick Labels (Profit/Loss: 2.00L, 0, -2.00L, etc.) */}
+                {chart.yTicks.map((yVal, idx) => {
+                  const yPos = chart.py(yVal);
+                  if (yPos < chart.padTop || yPos > chart.h - chart.padBottom) return null;
+                  return (
+                    <React.Fragment key={`ytick-${idx}`}>
+                      <Line
+                        x1={chart.padLeft}
+                        y1={yPos}
+                        x2={chart.w - chart.padRight}
+                        y2={yPos}
+                        stroke={C.border}
+                        strokeWidth={0.6}
+                        strokeDasharray="2 4"
+                        opacity={0.4}
+                      />
+                      <SvgText
+                        x={chart.padLeft - 6}
+                        y={yPos + 4}
+                        fontSize={10}
+                        fill={C.textMuted}
+                        textAnchor="end"
+                      >
+                        {formatAxisPL(yVal)}
+                      </SvgText>
+                    </React.Fragment>
+                  );
+                })}
 
-                {/* Expiry Curve (Brand Cyan/Blue) */}
+                {/* X-Axis Grid Lines & Strike Labels (24000, 63000, 102000, 141000...) */}
+                {chart.xTicks.map((xVal, idx) => {
+                  const xPos = chart.px(xVal);
+                  return (
+                    <React.Fragment key={`xtick-${idx}`}>
+                      <SvgText
+                        x={xPos}
+                        y={chart.h - 6}
+                        fontSize={9.5}
+                        fill={C.textMuted}
+                        textAnchor="middle"
+                      >
+                        {formatNumber(xVal, 0)}
+                      </SvgText>
+                    </React.Fragment>
+                  );
+                })}
+
+                {/* On Expiry Curve (Piecewise: Green in profit / Red in loss or Cyan) */}
                 {chart.expiryPath && (
                   <Path
                     d={chart.expiryPath}
-                    stroke={colors.brand}
+                    stroke={C.onExpiryGreen}
                     strokeWidth={2.4}
                     fill="none"
                   />
                 )}
 
-                {/* Current Spot Vertical Line */}
+                {/* On Target Date Curve (Cyan/Blue Smooth Black-Scholes curve) */}
+                {chart.targetPath && (
+                  <Path
+                    d={chart.targetPath}
+                    stroke={C.targetDateBlue}
+                    strokeWidth={2.0}
+                    fill="none"
+                    opacity={0.95}
+                  />
+                )}
+
+                {/* Vertical Orange Line at Current Market Price / LTP with LTP Pill Tag */}
                 {spotOnChart && (
                   <>
                     <Line
-                      x1={chart.px(effectiveSpot)}
-                      y1={8}
-                      x2={chart.px(effectiveSpot)}
-                      y2={chart.h - 10}
-                      stroke={colors.muted}
-                      strokeWidth={1}
-                      strokeDasharray="3 3"
-                      opacity={0.7}
+                      x1={chart.px(currentSpot)}
+                      y1={chart.padTop + 14}
+                      x2={chart.px(currentSpot)}
+                      y2={chart.h - chart.padBottom}
+                      stroke={C.ltpOrange}
+                      strokeWidth={1.4}
+                      opacity={0.9}
                     />
-                    {expiryAtSpot !== null && chart.expiryPath && (
-                      <Circle
-                        cx={chart.px(effectiveSpot)}
-                        cy={chart.py(expiryAtSpot)}
-                        r={4}
-                        fill={colors.brand}
-                      />
-                    )}
-                    {todayAtSpot !== null && chart.todayPath && (
-                      <Circle
-                        cx={chart.px(effectiveSpot)}
-                        cy={chart.py(todayAtSpot)}
-                        r={3.5}
-                        fill={colors.warn}
-                      />
-                    )}
+                    {/* LTP Pill Badge at top of orange line */}
+                    <Rect
+                      x={chart.px(currentSpot) - 44}
+                      y={chart.padTop - 12}
+                      width={88}
+                      height={20}
+                      rx={4}
+                      fill="#1e2533"
+                      stroke={C.border}
+                      strokeWidth={1}
+                    />
+                    <SvgText
+                      x={chart.px(currentSpot)}
+                      y={chart.padTop + 2}
+                      fontSize={10}
+                      fontWeight="bold"
+                      fill={C.white}
+                      textAnchor="middle"
+                    >
+                      {`LTP ${formatNumber(currentSpot, 0)}`}
+                    </SvgText>
                   </>
                 )}
 
-                {/* Interactive Touch Crosshair Cursor */}
-                {touchSpot !== null && touchPx !== null && touchPx >= 8 && touchPx <= chart.w - 8 && (
+                {/* Vertical Dashed White/Cyan Line at Target Spot with Target Dot */}
+                {targetSpotOnChart && (
                   <>
                     <Line
-                      x1={chart.px(touchSpot)}
-                      y1={0}
-                      x2={chart.px(touchSpot)}
-                      y2={chart.h}
-                      stroke={colors.text}
-                      strokeWidth={0.8}
-                      opacity={0.5}
+                      x1={chart.px(activeSpot)}
+                      y1={chart.padTop}
+                      x2={chart.px(activeSpot)}
+                      y2={chart.h - chart.padBottom}
+                      stroke={C.white}
+                      strokeWidth={1.2}
+                      strokeDasharray="4 3"
+                      opacity={0.7}
                     />
-                    {touchExpiry !== null && chart.expiryPath && (
+                    {activeTargetPL !== null && (
                       <Circle
-                        cx={chart.px(touchSpot)}
-                        cy={chart.py(touchExpiry)}
-                        r={3.5}
-                        fill={colors.brand}
-                      />
-                    )}
-                    {touchToday !== null && chart.todayPath && (
-                      <Circle
-                        cx={chart.px(touchSpot)}
-                        cy={chart.py(touchToday)}
-                        r={3.5}
-                        fill={colors.warn}
+                        cx={chart.px(activeSpot)}
+                        cy={chart.py(activeTargetPL)}
+                        r={5.5}
+                        fill={C.brandCyan}
+                        stroke={C.white}
+                        strokeWidth={1.5}
                       />
                     )}
                   </>
                 )}
               </Svg>
 
-              {/* Floating Crosshair Tooltip (Sensibull style) */}
-              {touchSpot !== null && touchPx !== null && (
-                <View
-                  style={[
-                    styles.crosshairTooltip,
-                    {
-                      backgroundColor: colors.card,
-                      borderColor: colors.border,
-                      left: Math.min(Math.max(touchPx - 65, 4), chart.w - 135),
-                      top: 4,
-                    },
-                  ]}
-                >
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <Text style={[styles.tooltipSpot, { color: colors.text }]}>
-                      {formatNumber(touchSpot, 1)}
+              {/* Y-Axis Label: 'Profit/Loss' rotated on left */}
+              <View style={styles.yAxisLabelBox}>
+                <Text style={styles.yAxisLabelText}>Profit/Loss</Text>
+              </View>
+
+              {/* Floating Target Tooltip Card matching Analyzer Screenshot */}
+              <View style={[styles.targetTooltipCard, { backgroundColor: "#1a212d", borderColor: C.border }]}>
+                <View style={styles.tooltipHeaderRow}>
+                  <Text style={[styles.tooltipTitle, { color: C.textMuted }]}>When price is at</Text>
+                  <Text style={[styles.tooltipSpot, { color: C.white }]}>
+                    {`${formatNumber(activeSpot, 0)} `}
+                    <Text style={{ color: activeSpotPctMove >= 0 ? C.onExpiryGreen : C.onExpiryRed }}>
+                      {`${activeSpotPctMove >= 0 ? "+" : ""}${activeSpotPctMove.toFixed(2)}%`}
                     </Text>
-                    <Text
-                      style={[
-                        styles.tooltipMove,
-                        { color: touchPctMove >= 0 ? colors.pos : colors.neg },
-                      ]}
-                    >
-                      {`${touchPctMove >= 0 ? "+" : ""}${touchPctMove.toFixed(2)}%`}
-                    </Text>
-                  </View>
-                  {touchExpiry !== null && (
-                    <Text style={[styles.tooltipPnl, { color: touchExpiry >= 0 ? colors.pos : colors.neg }]}>
-                      {`Expiry: ${rupees(touchExpiry, true)}`}
-                    </Text>
-                  )}
-                  {touchToday !== null && (
-                    <Text style={[styles.tooltipPnl, { color: touchToday >= 0 ? colors.pos : colors.neg }]}>
-                      {`T+0: ${rupees(touchToday, true)}`}
-                    </Text>
-                  )}
+                  </Text>
                 </View>
-              )}
-            </View>
-          )}
+                <Text style={[styles.tooltipSection, { color: C.textMuted }]}>Expected P&L on</Text>
+                <View style={styles.tooltipPnlRow}>
+                  <Text style={[styles.tooltipPnlLabel, { color: C.textMuted }]}>Target</Text>
+                  <Text
+                    style={[
+                      styles.tooltipPnlVal,
+                      { color: (activeTargetPL ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+                    ]}
+                  >
+                    {formatAxisPL(activeTargetPL ?? 0)}
+                  </Text>
+                </View>
+                <View style={styles.tooltipPnlRow}>
+                  <Text style={[styles.tooltipPnlLabel, { color: C.textMuted }]}>Expiry</Text>
+                  <Text
+                    style={[
+                      styles.tooltipPnlVal,
+                      { color: (activeExpiryPL ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+                    ]}
+                  >
+                    {formatAxisPL(activeExpiryPL ?? 0)}
+                  </Text>
+                </View>
+              </View>
 
-          {/* Spot & Axis Info */}
-          {chart && (
-            <View style={styles.axisRow}>
-              <Text style={[styles.axisText, { color: colors.muted }]}>
-                {formatNumber(chart.lo, 0)}
-              </Text>
-              <Text style={[styles.axisText, { color: colors.text, fontWeight: "700" }]}>
-                {effectiveSpot > 0 ? `${underlying} Spot: ${formatNumber(effectiveSpot, 2)}` : "Underlying"}
-              </Text>
-              <Text style={[styles.axisText, { color: colors.muted }]}>
-                {formatNumber(chart.hi, 0)}
-              </Text>
-            </View>
-          )}
-
-          {/* Secondary Stats Row: Breakevens, Margin, Net Premium */}
-          <View style={[styles.detailStatsContainer, { borderTopColor: colors.border }]}>
-            <View style={styles.detailStatItem}>
-              <Text style={[styles.detailStatLabel, { color: colors.muted }]}>Breakevens</Text>
-              <Text style={[styles.detailStatValue, { color: colors.text }]} numberOfLines={1}>
-                {breakEvens}
-              </Text>
-            </View>
-
-            <View style={styles.detailStatItem}>
-              <Text style={[styles.detailStatLabel, { color: colors.muted }]}>
-                {figures?.net?.startsWith("Net credit") ? "Net Credit" : "Net Debit"}
-              </Text>
-              <Text
-                style={[
-                  styles.detailStatValue,
-                  { color: figures?.net?.startsWith("Net credit") ? colors.pos : colors.text },
-                ]}
-                numberOfLines={1}
+              {/* Fullscreen Button ⛶ on bottom right */}
+              <TouchableOpacity
+                style={styles.fullscreenBtn}
+                onPress={() => setZoom(z => (z === 1 ? 1.5 : 1))}
               >
-                {figures?.net ? figures.net.replace(/^Net (credit|debit) /, "") : rupees(held?.netDebit) ?? "—"}
-              </Text>
+                <Ionicons name="scan-outline" size={16} color={C.brand} />
+              </TouchableOpacity>
             </View>
+          )}
 
-            <View style={styles.detailStatItem}>
-              <Text style={[styles.detailStatLabel, { color: colors.muted }]}>Est. Margin</Text>
-              <Text style={[styles.detailStatValue, { color: colors.text }]} numberOfLines={1}>
-                {marginDisplay}
+          {/* Bottom Projected P&L Pill below chart */}
+          <View style={styles.projectedPnlContainer}>
+            <View style={[styles.projectedPnlBadge, { backgroundColor: "#18202c", borderColor: C.border }]}>
+              <Text style={[styles.projectedPnlLabel, { color: C.textMuted }]}>
+                {projectedPL >= 0 ? "Projected Profit " : "Projected Loss "}
+                <Text style={{ color: projectedPL >= 0 ? C.onExpiryGreen : C.onExpiryRed, fontWeight: "bold" }}>
+                  {rupees(projectedPL, true)}
+                </Text>
               </Text>
             </View>
           </View>
-        </>
-      )}
-
-      {/* ─── TAB 2: Professional Greeks & Sensitivity ───────────────── */}
-      {activeTab === "greeks" && (
-        <View style={styles.greeksContainer}>
-          <Text style={[styles.sectionHeading, { color: colors.text }]}>Strategy Greeks (Combined)</Text>
-          {analysis.data?.greeks?.available ? (
-            <View style={styles.greeksGrid}>
-              <View style={[styles.greekCard, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-                <Text style={[styles.greekName, { color: colors.muted }]}>Delta (Δ)</Text>
-                <Text
-                  style={[
-                    styles.greekVal,
-                    { color: analysis.data.greeks.delta >= 0 ? colors.pos : colors.neg },
-                  ]}
-                >
-                  {analysis.data.greeks.delta.toFixed(2)}
-                </Text>
-                <Text style={[styles.greekDesc, { color: colors.muted }]}>Per 1 pt underlying move</Text>
-              </View>
-
-              <View style={[styles.greekCard, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-                <Text style={[styles.greekName, { color: colors.muted }]}>Theta (Θ)</Text>
-                <Text
-                  style={[
-                    styles.greekVal,
-                    { color: analysis.data.greeks.theta >= 0 ? colors.pos : colors.neg },
-                  ]}
-                >
-                  {`${analysis.data.greeks.theta.toFixed(2)}/day`}
-                </Text>
-                <Text style={[styles.greekDesc, { color: colors.muted }]}>Daily time decay</Text>
-              </View>
-
-              <View style={[styles.greekCard, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-                <Text style={[styles.greekName, { color: colors.muted }]}>Gamma (Γ)</Text>
-                <Text style={[styles.greekVal, { color: colors.text }]}>
-                  {analysis.data.greeks.gamma.toFixed(4)}
-                </Text>
-                <Text style={[styles.greekDesc, { color: colors.muted }]}>Delta acceleration</Text>
-              </View>
-
-              <View style={[styles.greekCard, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-                <Text style={[styles.greekName, { color: colors.muted }]}>Vega (ν)</Text>
-                <Text
-                  style={[
-                    styles.greekVal,
-                    { color: analysis.data.greeks.vega >= 0 ? colors.pos : colors.neg },
-                  ]}
-                >
-                  {analysis.data.greeks.vega.toFixed(2)}
-                </Text>
-                <Text style={[styles.greekDesc, { color: colors.muted }]}>Per 1% IV change</Text>
-              </View>
-
-              <View style={[styles.greekCard, { backgroundColor: colors.cardAlt, borderColor: colors.border, flex: 2 }]}>
-                <Text style={[styles.greekName, { color: colors.muted }]}>Average IV</Text>
-                <Text style={[styles.greekVal, { color: colors.brand }]}>
-                  {`${analysis.data.greeks.ivPct.toFixed(1)}%`}
-                </Text>
-                <Text style={[styles.greekDesc, { color: colors.muted }]}>Strategy position IV</Text>
-              </View>
-            </View>
-          ) : (
-            <View style={styles.unavailableBox}>
-              <Text style={[styles.unavailableText, { color: colors.muted }]}>
-                {analysis.data?.greeks && analysis.data.greeks.available === false
-                  ? analysis.data.greeks.reason
-                  : "Greeks require market quotes to calibrate."}
-              </Text>
-            </View>
-          )}
         </View>
       )}
 
-      {/* ─── Sensibull Scenario Simulator Drawer Toggle ─────────────── */}
-      <TouchableOpacity
-        style={[styles.scenarioToggle, { borderTopColor: colors.border }]}
-        onPress={() => setShowScenario(prev => !prev)}
-        accessibilityRole="button"
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Ionicons
-            name={showScenario ? "chevron-up" : "options-outline"}
-            size={16}
-            color={colors.brand}
-          />
-          <Text style={[styles.scenarioToggleText, { color: colors.brand }]}>
-            {showScenario ? "Hide What-If Simulator" : "Sensibull What-If Simulator (Target & IV)"}
-          </Text>
-          {(spotShockPct !== 0 || ivShiftPoints !== 0) && (
-            <View style={[styles.activePill, { backgroundColor: colors.warnBg }]}>
-              <Text style={[styles.activePillText, { color: colors.warn }]}>Active</Text>
-            </View>
-          )}
-        </View>
-      </TouchableOpacity>
+      {/* ─── 5. Sensibull / Kotak Neo What-If Simulators (Matching Screenshot) ─ */}
+      <View style={styles.simulatorsSection}>
+        {/* Simulator 1: Underlying Spot Target */}
+        <View style={styles.simulatorRow}>
+          <View style={styles.simHeaderRow}>
+            <Text style={[styles.simTitle, { color: C.white }]}>{`${underlying} target`}</Text>
+            {targetSpotMovePct !== 0 && (
+              <TouchableOpacity onPress={() => setTargetSpotMovePct(0)}>
+                <Text style={[styles.simResetText, { color: C.brand }]}>RESET</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
-      {/* Simulator Sliders */}
-      {showScenario && (
-        <View style={[styles.simulatorBox, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
-          {/* Spot Move Simulation */}
-          <View style={styles.simRow}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
-              <Text style={[styles.simLabel, { color: colors.text }]}>Target Spot Move:</Text>
-              <Text style={[styles.simValue, { color: spotShockPct === 0 ? colors.muted : spotShockPct > 0 ? colors.pos : colors.neg }]}>
-                {`${spotShockPct > 0 ? "+" : ""}${spotShockPct.toFixed(1)}%`}
-                {effectiveSpot > 0 && ` (${formatNumber(effectiveSpot * (1 + spotShockPct / 100), 1)})`}
+          {/* Stepper Box: [-]   1,38,674.00   [+] */}
+          <View style={[styles.stepperBox, { backgroundColor: "#161c26", borderColor: C.border }]}>
+            <TouchableOpacity
+              style={styles.stepperBtn}
+              onPress={() => setTargetSpotMovePct(prev => Number((prev - 0.5).toFixed(1)))}
+            >
+              <Ionicons name="remove" size={18} color={C.brand} />
+            </TouchableOpacity>
+
+            <View style={{ alignItems: "center" }}>
+              <Text style={[styles.stepperValueText, { color: C.white }]}>
+                {formatNumber(targetSpot, 2)}
+              </Text>
+              <Text style={{ fontSize: 10, color: targetSpotMovePct >= 0 ? C.onExpiryGreen : C.onExpiryRed }}>
+                {`${targetSpotMovePct >= 0 ? "+" : ""}${targetSpotMovePct.toFixed(1)}%`}
               </Text>
             </View>
-            <View style={styles.simButtonsRow}>
+
+            <TouchableOpacity
+              style={styles.stepperBtn}
+              onPress={() => setTargetSpotMovePct(prev => Number((prev + 0.5).toFixed(1)))}
+            >
+              <Ionicons name="add" size={18} color={C.brand} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Interactive Spot Move Slider & Play/Pause Button */}
+          <View style={styles.sliderControlRow}>
+            <TouchableOpacity
+              style={[styles.playPauseBtn, { backgroundColor: C.brand }]}
+              onPress={() => setIsPlaying(p => !p)}
+            >
+              <Ionicons name={isPlaying ? "pause" : "play"} size={14} color="#0f172a" />
+            </TouchableOpacity>
+
+            <View style={styles.spotQuickPills}>
               {[-3, -2, -1, 0, 1, 2, 3].map(pct => (
                 <TouchableOpacity
                   key={`spot-${pct}`}
                   style={[
-                    styles.simPill,
-                    spotShockPct === pct
-                      ? { backgroundColor: colors.brand, borderColor: colors.brand }
-                      : { backgroundColor: colors.card, borderColor: colors.border },
+                    styles.quickPill,
+                    targetSpotMovePct === pct
+                      ? { backgroundColor: C.brand, borderColor: C.brand }
+                      : { backgroundColor: "#1a2230", borderColor: C.border },
                   ]}
-                  onPress={() => setSpotShockPct(pct)}
+                  onPress={() => setTargetSpotMovePct(pct)}
                 >
                   <Text
                     style={[
-                      styles.simPillText,
-                      { color: spotShockPct === pct ? "#ffffff" : colors.text },
+                      styles.quickPillText,
+                      { color: targetSpotMovePct === pct ? "#0f172a" : C.textMuted },
                     ]}
                   >
                     {pct === 0 ? "ATM" : `${pct > 0 ? "+" : ""}${pct}%`}
@@ -1105,52 +996,222 @@ export default function PayoffChart({
               ))}
             </View>
           </View>
+        </View>
 
-          {/* IV Shift Simulation */}
-          <View style={[styles.simRow, { marginTop: 10 }]}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
-              <Text style={[styles.simLabel, { color: colors.text }]}>IV Shift:</Text>
-              <Text style={[styles.simValue, { color: ivShiftPoints === 0 ? colors.muted : colors.warn }]}>
-                {`${ivShiftPoints > 0 ? "+" : ""}${ivShiftPoints}%`}
+        {/* Simulator 2: Target Date & Time (XD to expiry) */}
+        <View style={[styles.simulatorRow, { marginTop: 14 }]}>
+          <View style={styles.simHeaderRow}>
+            <Text style={[styles.simTitle, { color: C.white }]}>
+              {`Target date & time `}
+              <Text style={{ fontSize: 12, color: C.textMuted }}>
+                {`${Math.max(0, maxDaysToExpiry - targetDaysForward)}D to expiry`}
+              </Text>
+            </Text>
+            {targetDaysForward !== 0 && (
+              <TouchableOpacity onPress={() => setTargetDaysForward(0)}>
+                <Text style={[styles.simResetText, { color: C.brand }]}>RESET</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={[styles.stepperBox, { backgroundColor: "#161c26", borderColor: C.border }]}>
+            <TouchableOpacity
+              style={styles.stepperBtn}
+              onPress={() => setTargetDaysForward(prev => Math.max(0, prev - 1))}
+            >
+              <Ionicons name="remove" size={18} color={C.brand} />
+            </TouchableOpacity>
+
+            <View style={{ alignItems: "center" }}>
+              <Text style={[styles.stepperValueText, { color: C.white }]}>
+                {targetDaysForward === 0 ? "Today (T+0)" : `+${targetDaysForward} Days Forward`}
+              </Text>
+              <Text style={{ fontSize: 10, color: C.textMuted }}>
+                {targetDaysForward >= maxDaysToExpiry ? "At Expiry" : "Theta Decay Projected"}
               </Text>
             </View>
-            <View style={styles.simButtonsRow}>
-              {[-5, -2, 0, 2, 5].map(pts => (
+
+            <TouchableOpacity
+              style={styles.stepperBtn}
+              onPress={() => setTargetDaysForward(prev => Math.min(maxDaysToExpiry, prev + 1))}
+            >
+              <Ionicons name="add" size={18} color={C.brand} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Quick Date Stepper Pills */}
+          <View style={styles.dateQuickPills}>
+            {[0, 1, 2, 3, 5, 7].map(days => {
+              if (days > maxDaysToExpiry && days !== 0) return null;
+              return (
                 <TouchableOpacity
-                  key={`iv-${pts}`}
+                  key={`day-${days}`}
                   style={[
-                    styles.simPill,
-                    ivShiftPoints === pts
-                      ? { backgroundColor: colors.warn, borderColor: colors.warn }
-                      : { backgroundColor: colors.card, borderColor: colors.border },
+                    styles.quickPill,
+                    targetDaysForward === days
+                      ? { backgroundColor: C.brand, borderColor: C.brand }
+                      : { backgroundColor: "#1a2230", borderColor: C.border },
                   ]}
-                  onPress={() => setIvShiftPoints(pts)}
+                  onPress={() => setTargetDaysForward(days)}
                 >
                   <Text
                     style={[
-                      styles.simPillText,
-                      { color: ivShiftPoints === pts ? "#ffffff" : colors.text },
+                      styles.quickPillText,
+                      { color: targetDaysForward === days ? "#0f172a" : C.textMuted },
                     ]}
                   >
-                    {pts === 0 ? "0%" : `${pts > 0 ? "+" : ""}${pts}%`}
+                    {days === 0 ? "Today" : `+${days}D`}
                   </Text>
                 </TouchableOpacity>
-              ))}
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Simulator 3: Implied Volatility (IV) Shift */}
+        <View style={[styles.simulatorRow, { marginTop: 14 }]}>
+          <View style={styles.simHeaderRow}>
+            <Text style={[styles.simTitle, { color: C.white }]}>IV Shift</Text>
+            {ivShiftPoints !== 0 && (
+              <TouchableOpacity onPress={() => setIvShiftPoints(0)}>
+                <Text style={[styles.simResetText, { color: C.brand }]}>RESET</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <View style={styles.ivQuickPills}>
+            {[-5, -2, 0, 2, 5].map(pts => (
+              <TouchableOpacity
+                key={`iv-${pts}`}
+                style={[
+                  styles.quickPill,
+                  ivShiftPoints === pts
+                    ? { backgroundColor: "#f59e0b", borderColor: "#f59e0b" }
+                    : { backgroundColor: "#1a2230", borderColor: C.border },
+                ]}
+                onPress={() => setIvShiftPoints(pts)}
+              >
+                <Text
+                  style={[
+                    styles.quickPillText,
+                    { color: ivShiftPoints === pts ? "#0f172a" : C.textMuted },
+                  ]}
+                >
+                  {pts === 0 ? "0%" : `${pts > 0 ? "+" : ""}${pts}%`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      </View>
+
+      {/* ─── 6. Key Strategy Metrics & Breakevens Bar ──────────────────── */}
+      <View style={[styles.metricsGrid, { borderTopColor: C.border }]}>
+        <View style={styles.metricItem}>
+          <Text style={[styles.metricLabel, { color: C.textMuted }]}>MAX PROFIT</Text>
+          <Text style={[styles.metricValue, { color: C.onExpiryGreen }]}>
+            {figures?.maxProfit ?? "Unlimited"}
+          </Text>
+        </View>
+        <View style={styles.metricItem}>
+          <Text style={[styles.metricLabel, { color: C.textMuted }]}>MAX LOSS</Text>
+          <Text style={[styles.metricValue, { color: C.onExpiryRed }]}>
+            {figures?.maxLoss ?? rupees(held?.netDebit) ?? "Unlimited"}
+          </Text>
+        </View>
+        <View style={styles.metricItem}>
+          <Text style={[styles.metricLabel, { color: C.textMuted }]}>BREAKEVENS</Text>
+          <Text style={[styles.metricValue, { color: C.white }]} numberOfLines={1}>
+            {breakEvens}
+          </Text>
+        </View>
+        <View style={styles.metricItem}>
+          <Text style={[styles.metricLabel, { color: C.textMuted }]}>EST. MARGIN</Text>
+          <Text style={[styles.metricValue, { color: C.white }]} numberOfLines={1}>
+            {marginDisplay}
+          </Text>
+        </View>
+      </View>
+
+      {/* ─── 7. Greeks View (when 'Greeks' tab is selected) ──────────── */}
+      {viewMode === "greeks" && (
+        <View style={styles.greeksContainer}>
+          <Text style={[styles.sectionHeading, { color: C.white }]}>Combined Strategy Greeks</Text>
+          <View style={styles.greeksGrid}>
+            <View style={[styles.greekCard, { backgroundColor: "#161c26", borderColor: C.border }]}>
+              <Text style={[styles.greekName, { color: C.textMuted }]}>Delta (Δ)</Text>
+              <Text
+                style={[
+                  styles.greekVal,
+                  { color: (localTargetModel?.greeks?.delta ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+                ]}
+              >
+                {(localTargetModel?.greeks?.delta ?? 0).toFixed(2)}
+              </Text>
+              <Text style={[styles.greekDesc, { color: C.textMuted }]}>Per 1 pt spot move</Text>
+            </View>
+
+            <View style={[styles.greekCard, { backgroundColor: "#161c26", borderColor: C.border }]}>
+              <Text style={[styles.greekName, { color: C.textMuted }]}>Theta (Θ)</Text>
+              <Text
+                style={[
+                  styles.greekVal,
+                  { color: (localTargetModel?.greeks?.theta ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+                ]}
+              >
+                {`${(localTargetModel?.greeks?.theta ?? 0).toFixed(2)}/day`}
+              </Text>
+              <Text style={[styles.greekDesc, { color: C.textMuted }]}>Daily decay</Text>
+            </View>
+
+            <View style={[styles.greekCard, { backgroundColor: "#161c26", borderColor: C.border }]}>
+              <Text style={[styles.greekName, { color: C.textMuted }]}>Gamma (Γ)</Text>
+              <Text style={[styles.greekVal, { color: C.white }]}>
+                {(localTargetModel?.greeks?.gamma ?? 0).toFixed(4)}
+              </Text>
+              <Text style={[styles.greekDesc, { color: C.textMuted }]}>Delta acceleration</Text>
+            </View>
+
+            <View style={[styles.greekCard, { backgroundColor: "#161c26", borderColor: C.border }]}>
+              <Text style={[styles.greekName, { color: C.textMuted }]}>Vega (ν)</Text>
+              <Text
+                style={[
+                  styles.greekVal,
+                  { color: (localTargetModel?.greeks?.vega ?? 0) >= 0 ? C.onExpiryGreen : C.onExpiryRed },
+                ]}
+              >
+                {(localTargetModel?.greeks?.vega ?? 0).toFixed(2)}
+              </Text>
+              <Text style={[styles.greekDesc, { color: C.textMuted }]}>Per 1% IV shift</Text>
             </View>
           </View>
+        </View>
+      )}
 
-          {/* Reset simulation */}
-          {(spotShockPct !== 0 || ivShiftPoints !== 0) && (
-            <TouchableOpacity
-              style={styles.resetBtn}
-              onPress={() => {
-                setSpotShockPct(0);
-                setIvShiftPoints(0);
-              }}
+      {/* ─── 8. Table View (when 'Table' tab is selected) ─────────────── */}
+      {viewMode === "table" && (
+        <View style={styles.tableContainer}>
+          <Text style={[styles.sectionHeading, { color: C.white }]}>Strategy Legs</Text>
+          {legs.map((leg, index) => (
+            <View
+              key={`leg-row-${index}`}
+              style={[styles.tableRow, { backgroundColor: "#161c26", borderColor: C.border }]}
             >
-              <Text style={[styles.resetBtnText, { color: colors.brand }]}>Reset to Live Market</Text>
-            </TouchableOpacity>
-          )}
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: "bold", color: C.white }}>
+                  {`${leg.side} ${leg.strike} ${leg.right}`}
+                </Text>
+                <Text style={{ fontSize: 11, color: C.textMuted }}>{leg.expiry}</Text>
+              </View>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 13, fontWeight: "600", color: C.white }}>
+                  {`${leg.lots} lot (${leg.lots * leg.lotSize} qty)`}
+                </Text>
+                <Text style={{ fontSize: 11, color: C.brand }}>
+                  {leg.entryPrice ? `₹${leg.entryPrice.toFixed(2)}` : "Market"}
+                </Text>
+              </View>
+            </View>
+          ))}
         </View>
       )}
     </View>
@@ -1160,201 +1221,298 @@ export default function PayoffChart({
 const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-    marginVertical: 6,
+    borderRadius: 14,
+    padding: 14,
+    marginVertical: 8,
     gap: 10,
     overflow: "hidden",
   },
-  header: {
+  topInfoRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 8,
+    alignItems: "center",
   },
-  cardTitle: {
-    fontSize: 14.5,
-    fontWeight: "700",
+  legsSelectedText: {
+    fontSize: 13,
+    fontWeight: "500",
   },
-  cardSubtitle: {
-    fontSize: 11,
-    marginTop: 1,
+  totalNetText: {
+    fontSize: 14,
+    fontWeight: "bold",
   },
-  tabSegment: {
+  controlsBar: {
     flexDirection: "row",
-    borderWidth: 1,
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginVertical: 4,
+  },
+  toggleSegment: {
+    flexDirection: "row",
+    backgroundColor: "#161c26",
     borderRadius: 8,
     padding: 2,
+    borderWidth: 1,
+    borderColor: "#242d3d",
   },
-  tabBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  toggleBtn: {
+    paddingVertical: 5,
+    paddingHorizontal: 14,
     borderRadius: 6,
   },
-  tabBtnText: {
-    fontSize: 11.5,
+  toggleBtnActive: {
+    backgroundColor: "#242d3d",
+  },
+  toggleBtnText: {
+    fontSize: 12,
     fontWeight: "600",
   },
-  emptyContainer: {
-    padding: 24,
-    alignItems: "center",
-    gap: 8,
-  },
-  emptyTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  emptySubtitle: {
-    fontSize: 12,
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  metricsRow: {
+  oiBarCheckboxRow: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
-  metricTile: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    gap: 2,
+  oiBarLabel: {
+    fontSize: 12,
+    fontWeight: "500",
   },
-  metricLabel: {
-    fontSize: 9,
-    fontWeight: "700",
-    letterSpacing: 0.5,
+  checkboxBox: {
+    width: 18,
+    height: 18,
+    borderWidth: 1.5,
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  metricValue: {
-    fontSize: 12.5,
-    fontWeight: "700",
-  },
-  chartControlBar: {
+  legendRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: 4,
-  },
-  legendContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    justifyContent: "center",
+    gap: 20,
+    marginTop: 2,
+    marginBottom: 4,
   },
   legendItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: 6,
   },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  legendDash: {
+    width: 14,
+    height: 3,
+    borderRadius: 1.5,
+  },
+  legendLine: {
+    width: 16,
+    height: 2.5,
+    borderRadius: 1,
   },
   legendText: {
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 11.5,
+    fontWeight: "500",
   },
-  currentPnlBadge: {
-    fontSize: 11,
-    fontWeight: "700",
+  chartWrapper: {
+    position: "relative",
+    marginTop: 4,
   },
-  zoomControls: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  zoomBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 5,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fitBtn: {
-    paddingHorizontal: 6,
-    height: 24,
-    borderRadius: 5,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fitBtnText: {
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  loadingChartBox: {
-    height: 150,
+  loadingBox: {
+    height: 220,
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
   loadingText: {
-    fontSize: 11.5,
+    fontSize: 12,
   },
-  crosshairTooltip: {
+  yAxisLabelBox: {
     position: "absolute",
+    left: 2,
+    top: 110,
+    transform: [{ rotate: "-90deg" }],
+  },
+  yAxisLabelText: {
+    fontSize: 10,
+    color: "#8492a6",
+    fontWeight: "500",
+  },
+  targetTooltipCard: {
+    position: "absolute",
+    left: 48,
+    bottom: 50,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    gap: 2,
-    elevation: 4,
+    minWidth: 165,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 3,
-    minWidth: 125,
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  tooltipHeaderRow: {
+    flexDirection: "column",
+    marginBottom: 4,
+  },
+  tooltipTitle: {
+    fontSize: 10,
   },
   tooltipSpot: {
     fontSize: 11.5,
-    fontWeight: "700",
+    fontWeight: "bold",
   },
-  tooltipMove: {
-    fontSize: 10.5,
-    fontWeight: "700",
+  tooltipSection: {
+    fontSize: 9.5,
+    marginTop: 2,
   },
-  tooltipPnl: {
-    fontSize: 10.5,
-    fontWeight: "600",
-  },
-  axisRow: {
+  tooltipPnlRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 2,
-    marginTop: -2,
+    marginTop: 2,
   },
-  axisText: {
-    fontSize: 10.5,
+  tooltipPnlLabel: {
+    fontSize: 11,
   },
-  detailStatsContainer: {
-    flexDirection: "row",
-    borderTopWidth: 1,
-    paddingTop: 8,
-    gap: 10,
+  tooltipPnlVal: {
+    fontSize: 11,
+    fontWeight: "bold",
   },
-  detailStatItem: {
-    flex: 1,
-    gap: 1,
+  fullscreenBtn: {
+    position: "absolute",
+    right: 8,
+    bottom: 34,
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: "#1a2230",
+    borderWidth: 1,
+    borderColor: "#242d3d",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  detailStatLabel: {
-    fontSize: 9.5,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
+  projectedPnlContainer: {
+    alignItems: "center",
+    marginTop: 8,
   },
-  detailStatValue: {
+  projectedPnlBadge: {
+    paddingVertical: 5,
+    paddingHorizontal: 14,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  projectedPnlLabel: {
     fontSize: 11.5,
-    fontWeight: "700",
+  },
+  simulatorsSection: {
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#242d3d",
+    paddingTop: 12,
+  },
+  simulatorRow: {
+    gap: 6,
+  },
+  simHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  simTitle: {
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  simResetText: {
+    fontSize: 11,
+    fontWeight: "bold",
+  },
+  stepperBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  stepperBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: "#1f2937",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepperValueText: {
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  sliderControlRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 6,
+  },
+  playPauseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spotQuickPills: {
+    flex: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  dateQuickPills: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  ivQuickPills: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  quickPill: {
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  quickPillText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  metricsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    borderTopWidth: 1,
+    paddingTop: 12,
+    marginTop: 6,
+  },
+  metricItem: {
+    width: "50%",
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  metricLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+  },
+  metricValue: {
+    fontSize: 13,
+    fontWeight: "bold",
+    marginTop: 2,
   },
   greeksContainer: {
-    paddingVertical: 6,
+    marginTop: 10,
     gap: 8,
   },
   sectionHeading: {
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 13,
+    fontWeight: "bold",
+    marginBottom: 4,
   },
   greeksGrid: {
     flexDirection: "row",
@@ -1362,90 +1520,33 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   greekCard: {
-    flex: 1,
-    minWidth: 100,
-    borderWidth: 1,
+    width: "48%",
+    padding: 10,
     borderRadius: 8,
-    padding: 8,
-    gap: 2,
+    borderWidth: 1,
   },
   greekName: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "600",
   },
   greekVal: {
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginVertical: 2,
   },
   greekDesc: {
-    fontSize: 9.5,
+    fontSize: 10,
   },
-  unavailableBox: {
-    padding: 16,
-    alignItems: "center",
-  },
-  unavailableText: {
-    fontSize: 12,
-    textAlign: "center",
-  },
-  scenarioToggle: {
-    borderTopWidth: 1,
-    paddingTop: 8,
-    alignItems: "center",
-  },
-  scenarioToggleText: {
-    fontSize: 11.5,
-    fontWeight: "700",
-  },
-  activePill: {
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  activePillText: {
-    fontSize: 9.5,
-    fontWeight: "700",
-  },
-  simulatorBox: {
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 4,
-  },
-  simRow: {
-    gap: 4,
-  },
-  simLabel: {
-    fontSize: 11.5,
-    fontWeight: "600",
-  },
-  simValue: {
-    fontSize: 11.5,
-    fontWeight: "700",
-  },
-  simButtonsRow: {
-    flexDirection: "row",
+  tableContainer: {
+    marginTop: 10,
     gap: 6,
   },
-  simPill: {
-    flex: 1,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
+  tableRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-  },
-  simPillText: {
-    fontSize: 10.5,
-    fontWeight: "700",
-  },
-  resetBtn: {
-    alignSelf: "center",
-    marginTop: 10,
-    paddingVertical: 4,
-    paddingHorizontal: 12,
-  },
-  resetBtnText: {
-    fontSize: 11,
-    fontWeight: "700",
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
   },
 });
