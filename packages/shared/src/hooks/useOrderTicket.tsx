@@ -96,9 +96,7 @@ export function useOrderTicket() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const storedTicket = useTradingStore(s => s.orderTicket);
-  const setOrderTicketField = useTradingStore(s => s.setOrderTicketField);
-  const resetOrderTicket = useTradingStore(s => s.resetOrderTicket);
+  const { orderTicket: storedTicket, setOrderTicketField, resetOrderTicket } = useTradingStore();
   const { mutateAsync: placeOrder } = usePlaceOrder();
   // Which broker account the signed-in session would actually reach. Prod refuses an instruction
   // whose account does not match its live broker session, so a ticket cannot invent this.
@@ -106,20 +104,12 @@ export function useOrderTicket() {
   const clientId = useRef(newClientId());
 
   // Sync changed fields only to avoid 10 redundant Zustand store updates per keystroke
-  const syncDepthRef = useRef(0);
   useEffect(() => {
-    if (syncDepthRef.current >= 3) {
-      if (__DEV__) console.warn("[useOrderTicket] sync depth limit reached, bailing");
-      return;
-    }
-    syncDepthRef.current++;
     (Object.keys(localState) as Array<keyof OrderTicketState>).forEach((key) => {
       if (storedTicket[key] !== localState[key]) {
         setOrderTicketField(key, localState[key]);
       }
     });
-    const handle = setTimeout(() => { syncDepthRef.current = 0; }, 0);
-    return () => clearTimeout(handle);
   }, [localState, storedTicket, setOrderTicketField]);
 
   // Open order ticket with config
