@@ -369,6 +369,18 @@ export interface ScannerEvidence {
 /** The caller's own query client is required: the cache operations in these hooks run outside React, so
  *  whatever is passed here is the only cache they can reach. A client invented here would leave every
  *  invalidation and the logout clear landing on a cache no screen reads. */
+/**
+ * An account-stream frame means "the ICICI account changed". The frame's body is not the REST shape the
+ * screens read, so it never replaces a cache: re-read /v1/broker-auth/icici/account once instead. The
+ * account query seeds the open-positions cache itself, so it is refreshed alone when a screen holds it;
+ * otherwise the open-positions query is.
+ */
+export function refetchAccountOnFrame(queryClient: QueryClient): Promise<void> {
+  const account = queryClient.getQueryCache().find({ queryKey: queryKeys.brokerAccount.icici(), exact: true });
+  const queryKey = account && account.getObserversCount() > 0 ? queryKeys.brokerAccount.icici() : queryKeys.positions.open();
+  return queryClient.invalidateQueries({ queryKey, exact: true });
+}
+
 export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const qc = queryClient;
 
@@ -482,25 +494,17 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 
   // ===== ACCOUNT STREAM =====
   // One /v1/broker-auth/account/stream connection for every screen that shows the ICICI account
-  // (positions, orders). Each frame replaces both caches, so while the stream is alive the REST read
-  // below is only a two-minute safety net instead of a poll.
+  // (positions, orders). A frame is only a "the account changed" signal: the stream sends
+  // {accounts, asOf} with raw display rows, not the enriched body /v1/broker-auth/icici/account
+  // returns, so writing it into the caches would blank Portfolio and Orders. Each frame re-reads REST
+  // instead; while the stream is alive the timed REST read is only a two-minute safety net.
   const useAccountStream = () => {
     useEffect(() => {
       accountStreamUsers += 1;
       if (!accountStream) {
         accountStream = subscribeSSE(
           `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
-          (raw) => {
-            try {
-              const payload = JSON.parse(raw) as IciciAccountPayload;
-              if (payload && typeof payload === "object") {
-                queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
-                queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
-              }
-            } catch {
-              // Ignore malformed SSE frame
-            }
-          },
+          () => refetchAccountOnFrame(queryClient),
         );
       }
       return () => {
