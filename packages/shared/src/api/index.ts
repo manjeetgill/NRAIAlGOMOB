@@ -163,6 +163,7 @@ export {
   applyTick,
   foldBucket,
   streamId,
+  indexStreamIds,
   symbolFromStreamId,
   tickBarInput,
   tickLabel,

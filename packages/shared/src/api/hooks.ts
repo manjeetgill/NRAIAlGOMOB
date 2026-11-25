@@ -20,12 +20,42 @@ import { formatISTDate } from "../utils";
  */
 const STREAM_SAFETY_POLL_MS = 2 * 60 * 1000;
 const CLOSED_CHAIN_POLL_MS = 60 * 1000;
+const ORDER_REREAD_MS = 2 * 1000;
 /**
  * The instrument ids a screen ticks from the price socket, read when a poll is scheduled. Only a screen
  * that passes one may slow its REST read, and only while every one of those ids is ticking
  * (quoteStreamCarries). null means the screen shows something the socket cannot carry.
  */
 export type StreamedIds = () => readonly string[] | null;
+
+/**
+ * One account-stream frame, one GET. Positions and the account body come from the same route and the
+ * account read seeds the positions cache, so only one of them re-reads: the account when a screen is
+ * showing it, else the positions list. The other is only marked stale.
+ */
+export function rereadAccountOnFrame(queryClient: QueryClient): void {
+  const accountKey = queryKeys.brokerAccount.icici();
+  const positionsKey = queryKeys.positions.open();
+  const account = queryClient.getQueryCache().find({ queryKey: accountKey, exact: true });
+  const [read, mark] = account && account.getObserversCount() > 0 ? [accountKey, positionsKey] : [positionsKey, accountKey];
+  void queryClient.invalidateQueries({ queryKey: read, exact: true });
+  void queryClient.invalidateQueries({ queryKey: mark, exact: true, refetchType: "none" });
+}
+
+/** At most one call per `ms`: the first runs at once, later ones inside the window share one trailing run. */
+export function throttleReread(run: () => void, ms: number) {
+  let last = -Infinity;
+  let trailing: ReturnType<typeof setTimeout> | null = null;
+  const fire = () => { last = Date.now(); run(); };
+  return {
+    request() {
+      const wait = ms - (Date.now() - last);
+      if (wait <= 0) return fire();
+      if (!trailing) trailing = setTimeout(() => { trailing = null; fire(); }, wait);
+    },
+    cancel() { if (trailing) clearTimeout(trailing); trailing = null; },
+  };
+}
 let accountStream: SseSubscription | null = null;
 let accountStreamUsers = 0;
 
@@ -502,10 +532,10 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
           // at the top, no price-source enrichment), so writing it into the caches blanked Positions and
           // Orders until the next poll. Re-read the REST body instead: one read of the server's cached
           // copy per account change, never a broker call.
-          () => {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.brokerAccount.icici() });
-            void queryClient.invalidateQueries({ queryKey: queryKeys.positions.open() });
-          },
+          //
+          // Both caches come from the same route, and the account read seeds the positions cache itself, so
+          // one GET per frame is enough: the account read when a screen is showing it, else the positions read.
+          () => rereadAccountOnFrame(queryClient),
         );
       }
       return () => {
@@ -846,6 +876,13 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useOrderSnapshot = (clientId: string, wanted: boolean) => {
     useEffect(() => {
       if (!wanted || clientId.length === 0) return;
+      // The stream yields on every change (each leg of a basket fill is one), so re-reads are held to one
+      // every ORDER_REREAD_MS: the first frame reads at once, frames inside the window share one trailing
+      // read, and the final state is never missed.
+      const reread = throttleReread(
+        () => void queryClient.invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) }),
+        ORDER_REREAD_MS,
+      );
       const sub = subscribeSSE(
         `${Constants.API.BASE_URL}/v1/broker-auth/order/stream`,
         // The stream sends {intents: [<execution_intents rows>], asOf}: database rows keyed `client_id`, not
@@ -856,15 +893,16 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
             const parsed = JSON.parse(raw) as { intents?: Array<{ client_id?: string; clientId?: string }> };
             const named = Array.isArray(parsed?.intents)
               && parsed.intents.some((i) => (i.client_id ?? i.clientId) === clientId);
-            if (named) {
-              void queryClient.invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) });
-            }
+            if (named) reread.request();
           } catch {
             // Ignore malformed SSE frame
           }
         },
       );
-      return () => sub.close();
+      return () => {
+        reread.cancel();
+        sub.close();
+      };
     }, [clientId, wanted]);
 
     return useQuery({

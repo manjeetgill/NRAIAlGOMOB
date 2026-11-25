@@ -32,6 +32,7 @@ import {
   resumeQuoteDispatch,
   queryKeys,
   streamIdFor,
+  indexStreamIds,
   useQuoteFeed,
   type BuiltinListName,
   type Marked,
@@ -181,7 +182,13 @@ export default function WatchlistScreen() {
   // The rows this screen ticks from the socket, set below once they are known. The list's REST read
   // slows down only while every one of them is ticking (see quoteStreamCarries).
   const streamedRows = useRef<readonly string[] | null>(null);
-  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused, gcTime: Infinity });
+  // The strip above every route ticks these same indices; both observers share one cached read and each
+  // schedules its own timer, so this one must gate on the same ids or it holds the read at 60 s.
+  const streamedIndices = useRef<readonly string[] | null>(null);
+  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused, gcTime: Infinity }, () => streamedIndices.current);
+  useEffect(() => {
+    streamedIndices.current = indexStreamIds(strip?.indices);
+  }, [strip]);
   const { data: saved, error: savedError } = useWatchlist(listNumber, {
     queryKey: queryKeys.watchlist.list(listNumber),
     subscribed: focused,

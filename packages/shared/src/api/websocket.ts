@@ -95,7 +95,7 @@ let asOf: string | null = null;
 let connected = false;
 /** When the socket last carried a price the server called fresh; 0 before the first one. */
 let lastFreshTickAt = 0;
-/** When each instrument id last carried a fresh price, so a screen can ask about its own rows. */
+/** When each instrument id last carried a fresh price on this connection, so a screen can ask about its own rows. */
 let lastFreshById = new Map<string, number>();
 let reason: FeedReason = null;
 let socket: WebSocket | null = null;
@@ -264,7 +264,10 @@ function accept(frame: WireFrame) {
   }
   for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
     const existing = published.get(key);
-    if (existing) changedIds.add(existing.id);
+    if (existing) {
+      changedIds.add(existing.id);
+      lastFreshById.delete(existing.id);
+    }
     published.delete(key);
     changedIds.add(key);
   }
@@ -554,20 +557,16 @@ export function quoteStreamConnected(): boolean {
   return connected && reason === null && Date.now() - lastFreshTickAt < LIVE_TICK_MS;
 }
 
-/** How recently each id on a screen must have ticked for that screen to count as fed by the socket. */
-const SCREEN_TICK_MS = 2 * 60_000;
-
 /**
- * Whether the socket is feeding THIS screen: it is live (see quoteStreamConnected) and every id the
- * screen shows has carried a fresh price in the last 2 minutes. An id the socket does not carry, or a
- * screen with nothing it can stream, answers false, so that screen keeps its normal REST read instead
- * of slowing down on prices it never receives. A quiet instrument older than 2 minutes also answers
- * false; that costs a REST read, never a frozen price.
+ * Whether the socket is feeding THIS screen: it is live (see quoteStreamConnected: a fresh price somewhere
+ * in the last 30 s) and every id the screen shows has had a fresh price on this connection. An id the
+ * server does not stream, or a screen with nothing it can stream, answers false, so that screen keeps its
+ * normal REST read instead of slowing down on prices it never receives. A stock that is streamed but has
+ * not traded for a while still counts: the socket is carrying it, its price just has not moved.
  */
 export function quoteStreamCarries(ids: readonly string[] | null | undefined): boolean {
   if (!ids || ids.length === 0 || !quoteStreamConnected()) return false;
-  const now = Date.now();
-  return ids.every((id) => now - (lastFreshById.get(id) ?? 0) < SCREEN_TICK_MS);
+  return ids.every((id) => lastFreshById.has(id));
 }
 
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */

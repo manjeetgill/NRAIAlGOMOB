@@ -8,7 +8,7 @@
 
 import React, { useEffect, useMemo, useRef } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { chartFailureReason, streamId, useQuoteFeed } from "@nraialgo/shared/api";
+import { chartFailureReason, indexStreamIds, streamId, useQuoteFeed } from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
@@ -38,8 +38,8 @@ function IndexStrip() {
   const feed = useQuoteFeed(indexIds, indexIds.length > 0);
   // An index the socket cannot name keeps the strip on its normal REST read.
   useEffect(() => {
-    streamedIndices.current = indexIds.length === (rawStrip?.indices ?? []).length ? indexIds : null;
-  }, [indexIds, rawStrip]);
+    streamedIndices.current = indexStreamIds(rawStrip?.indices);
+  }, [rawStrip]);
   const strip = useMemo(() => {
     if (!rawStrip) return rawStrip;
     if (!feed.quotes.length) return rawStrip;
