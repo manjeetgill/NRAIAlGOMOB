@@ -199,6 +199,8 @@ export {
   basketPnl,
   sameContract,
   withBookMarks,
+  withStreamMarks,
+  basketStreamIds,
   expiryKey,
   payoffExpiries,
   ladderUnderlying,

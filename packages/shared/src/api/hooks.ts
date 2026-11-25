@@ -421,7 +421,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.baskets.all(source),
       queryFn: () => client.get<BasketListResponse>("/v1/baskets", { params: { source } }),
       staleTime: 5 * 1000,
-      refetchInterval: 30 * 1000,
+      // Open legs tick from the price socket on the desk, so the read is a safety net while it is up.
+      refetchInterval: () => (quoteStreamConnected() ? 60 * 1000 : 30 * 1000),
       ...options,
     });
   };

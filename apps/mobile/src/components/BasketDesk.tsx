@@ -30,6 +30,9 @@ import {
   rupees,
   valueAt,
   withBookMarks,
+  withStreamMarks,
+  basketStreamIds,
+  useQuoteFeed,
   type Basket,
   type StrategyAnalysis,
 } from "@nraialgo/shared/api";
@@ -87,7 +90,14 @@ export default function BasketDesk({ onAdjust }: Props) {
   const { resolvedTheme } = useTheme();
 
   const desk = useMemo(() => withBookMarks(openLiveBaskets(data?.baskets ?? []), positions.data ?? []), [data, positions.data]);
-  const baskets = desk.baskets;
+  // Open legs tick from the live price socket between /v1/baskets reads (stream first, REST as the
+  // safety net); a leg without a canonical id keeps the read's mark.
+  const streamIds = useMemo(() => basketStreamIds(desk.baskets), [desk.baskets]);
+  const feed = useQuoteFeed(streamIds, streamIds.length > 0);
+  const baskets = useMemo(
+    () => (feed.connected ? withStreamMarks(desk.baskets, feed.quotes) : desk.baskets),
+    [desk.baskets, feed.connected, feed.quotes],
+  );
   const open = baskets.find(basket => basket.id === openId) ?? null;
 
   const styles = useMemo(() => sheet(resolvedTheme), [resolvedTheme]);
