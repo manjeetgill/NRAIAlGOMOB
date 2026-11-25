@@ -95,16 +95,22 @@ export default function TerminalChartsScreen() {
 
   const handleIntervalChange = useCallback((newInterval: IntervalId) => {
     setInterval(newInterval);
-    setChartKey((k) => k + 1);
+    // Do not increment chartKey on interval change: let KLineChart update data smoothly via postMessage
   }, []);
 
   const isDaily = DAILY_INTERVALS.has(interval);
   const { data: chartData, isLoading, isError, error, refetch } = useTerminalChart(symbol, interval, {
     // The stream paints the forming candle, so the record only has to reconcile the completed bars.
     refetchInterval: isDaily ? false : 30_000,
+    gcTime: 30 * 60 * 1000,
+    staleTime: isDaily ? 5 * 60 * 1000 : 15_000,
+    // Keep the last interval's candles on screen while a new interval of the SAME symbol loads, so the chart
+    // is not swapped for a spinner. Another symbol's candles are never shown under this one's name.
+    placeholderData: (previous, previousQuery) =>
+      (previousQuery?.queryKey as readonly unknown[] | undefined)?.[2] === chartInstrument(symbol) ? previous : undefined,
   });
 
-  const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000 });
+  const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000, gcTime: 30 * 60 * 1000, staleTime: 30_000 });
   const underlyings = useChainUnderlyings();
 
   const allUnderlyings = underlyings.data?.underlyings ?? [];

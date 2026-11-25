@@ -23,7 +23,6 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import Svg, { Circle, Line, Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
@@ -32,6 +31,7 @@ import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, r
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
+import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 import { useApi } from "@/hooks/useApi";
 
 /** One staged leg, as the trader left it. The contract prod resolves it into is not this screen's business. */
@@ -139,75 +139,7 @@ function bookOf(chain: OptionChainData | undefined, strike: string, right: "CE" 
   return { bid: amount(quote?.bid), ask: amount(quote?.ask), listed: !!row };
 }
 
-/** One line of the basket, reduced to what the payoff actually needs. */
-interface PayoffLine {
-  strike: number;
-  right: "CE" | "PE";
-  sign: 1 | -1;
-  premium: number;
-  qty: number;
-}
 
-/**
- * What the basket is worth at expiry for one spot, in rupees. A bought leg pays its premium first and
- * takes intrinsic value back; a sold leg keeps its premium and owes the intrinsic value.
- */
-function payoffAt(lines: PayoffLine[], spot: number): number {
-  return lines.reduce((sum, line) => {
-    const intrinsic = line.right === "CE" ? Math.max(spot - line.strike, 0) : Math.max(line.strike - spot, 0);
-    return sum + line.sign * (intrinsic - line.premium) * line.qty;
-  }, 0);
-}
-
-/**
- * The curve needs no grid invented: between two listed strikes the payoff is a straight line, so
- * sampling every listed strike draws it exactly and gives the break-evens as a by-product. Only the
- * neighbourhood of the basket is sampled - a 100-point spread plotted across a 3,000-point ladder
- * would put every kink in the same few pixels.
- */
-function buildPayoff(lines: PayoffLine[], ladder: number[], spot: number | null) {
-  const step = ladder[1] - ladder[0];
-  const anchors = lines.map(line => line.strike);
-  if (spot !== null) anchors.push(spot);
-  // An empty basket still gets a window, so the chart never resizes itself when the first leg appears.
-  if (!anchors.length) anchors.push(ladder[Math.floor(ladder.length / 2)]);
-  const low = Math.min(...anchors);
-  const high = Math.max(...anchors);
-  const pad = Math.max(4 * step, Math.ceil(((high - low) * 0.5) / step) * step);
-  const nearby = ladder.filter(strike => strike >= low - pad && strike <= high + pad);
-  const xs = nearby.length >= 3 ? nearby : ladder;
-  const ys = xs.map(x => payoffAt(lines, x));
-
-  // Premiums are decimal strings multiplied out by a lot size, so a capped wing comes back as a plateau
-  // that differs in its last bits and a strict equality called it a rising loss. Half a paisa sits far
-  // below the smallest real slope over one listed step (a step times a lot) and far above the noise.
-  const FLAT = 0.005;
-  const flat = (a: number, b: number) => Math.abs(a - b) < FLAT;
-
-  const breakEvens: number[] = [];
-  for (let i = 1; i < xs.length; i += 1) {
-    // A run of samples sitting on zero is one break-even, not one per sample.
-    if (flat(ys[i], 0)) { if (!flat(ys[i - 1], 0)) breakEvens.push(xs[i]); }
-    else if (ys[i - 1] * ys[i] < 0 && !flat(ys[i - 1], 0)) {
-      breakEvens.push(xs[i - 1] + ((xs[i] - xs[i - 1]) * -ys[i - 1]) / (ys[i] - ys[i - 1]));
-    }
-  }
-
-  // A tail that is still climbing at the edge of the ladder is not a maximum, and saying so is the
-  // difference between a spread and a naked leg the trader thought was capped.
-  const riseLeft = ys[1] > ys[0];
-  const riseRight = ys[ys.length - 1] > ys[ys.length - 2];
-  const flatLeft = flat(ys[1], ys[0]);
-  const flatRight = flat(ys[ys.length - 1], ys[ys.length - 2]);
-  const tail = [
-    flatLeft ? `${ys[0] >= 0 ? "Best" : "Worst"} ${formatNumber(Math.abs(ys[0]), 0)} below ${formatNumber(xs[1], 0)}`
-      : `Grows ${riseLeft ? "loss" : "gain"} below ${formatNumber(xs[1], 0)}`,
-    flatRight ? `${ys[ys.length - 1] >= 0 ? "Best" : "Worst"} ${formatNumber(Math.abs(ys[ys.length - 1]), 0)} above ${formatNumber(xs[xs.length - 2], 0)}`
-      : `Grows ${riseRight ? "gain" : "loss"} above ${formatNumber(xs[xs.length - 2], 0)}`,
-  ].join("  ·  ");
-
-  return { xs, ys, breakEvens, tail, atSpot: spot === null ? null : payoffAt(lines, spot) };
-}
 
 export default function SpreadBuilderScreen() {
   const { useOptionChain, useOptionChains, useChainUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
@@ -251,8 +183,6 @@ export default function SpreadBuilderScreen() {
   // after a phantom contract.
   const [marked, setMarked] = useState<Record<string, number>>({});
   const [expiryFor, setExpiryFor] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [touchPx, setTouchPx] = useState<number | null>(null);
 
   const { data: destinations } = useOrderDestinations(true);
   const account = destinations?.accounts?.[0];
@@ -624,114 +554,26 @@ export default function SpreadBuilderScreen() {
   // A leg with no lot size has no quantity, and a zero-quantity wing draws a payoff the trader does not
   // have - the curve stops and says which leg instead.
   const sizeless = priced.find(item => item.qty <= 0)?.leg ?? null;
-  // A calendar basket kinks at every strike of every date it holds, so the curve spans the union of the
-  // ladders its legs are priced on rather than only the one currently on screen.
-  const curveLadder = useMemo(() => {
-    const grid = new Set<number>();
-    for (const day of new Set(legs.map(leg => leg.expiry))) {
-      for (const row of chainOf.get(day)?.rows ?? []) {
-        if (row.call || row.put) {
-          const value = Number(row.strike);
-          if (Number.isFinite(value)) grid.add(value);
-        }
-      }
+
+  const payoffChartLegs = useMemo<PayoffChartLeg[]>(() => {
+    return priced.map(({ leg, qty, premium }) => ({
+      strike: leg.strike,
+      right: leg.right,
+      side: leg.side,
+      lots: Math.max(1, Math.round(qty / (sizeOf(leg) || 1))),
+      lotSize: sizeOf(leg),
+      expiry: leg.expiry,
+      entryPrice: premium,
+    }));
+  }, [priced]);
+
+  const allChains = useMemo(() => {
+    const list = Array.from(chainOf.values());
+    if (chain && !list.some(c => c.expiry === chain.expiry)) {
+      list.unshift(chain);
     }
-    return [...grid].sort((a, b) => a - b);
-  }, [legs, chainOf]);
-  // Finding #1: Detect calendar baskets (multiple distinct expiries). buildPayoff treats all legs as
-  // expiring at the same time, which incorrectly cancels calendar spread legs with different expiries.
-  // Only call buildPayoff for single-expiry baskets.
-  const distinctExpiries = new Set(legs.map(leg => leg.expiry));
-  const isCalendarBasket = distinctExpiries.size > 1;
-
-  // Payoff calculation memoization
-  const payoff = useMemo(() => {
-    if (!chain || unpricedLeg || sizeless || curveLadder.length < 3 || isCalendarBasket) return null;
-    return buildPayoff(
-      priced.map(item => ({
-        strike: Number(item.leg.strike),
-        right: item.leg.right,
-        sign: item.leg.side === "BUY" ? 1 : -1,
-        premium: item.premium as number,
-        qty: item.qty,
-      })),
-      curveLadder,
-      spotNow,
-    );
-  }, [chain, unpricedLeg, sizeless, curveLadder, isCalendarBasket, priced, spotNow]);
-
-  // Chart and panResponder must be computed before any early returns to satisfy React's rules of hooks.
-  const chart = useMemo(() => {
-    if (!payoff) return null;
-    const w = Math.round(screenWidth - 42);
-    const h = 132;
-    const padX = 5;
-    const padTop = 10;
-    const padBottom = 12;
-    let fullLo = Infinity;
-    let fullHi = -Infinity;
-    for (let i = 0; i < payoff.xs.length; i++) {
-      const x = payoff.xs[i];
-      if (x < fullLo) fullLo = x;
-      if (x > fullHi) fullHi = x;
-    }
-    const center = (fullLo + fullHi) / 2;
-    const halfRange = (fullHi - fullLo) / 2 / zoom;
-    const lo = center - halfRange;
-    const hi = center + halfRange;
-    let yMin = 0;
-    let yMax = 0;
-    for (let i = 0; i < payoff.ys.length; i++) {
-      const y = payoff.ys[i];
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
-    }
-    const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
-    const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
-    const px = (x: number) => padX + (((x - lo) / (hi - lo || 1)) * (w - padX * 2));
-    const py = (y: number) => padTop + ((1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom));
-    const visibleIdx = payoff.xs.map((x, i) => i).filter(i => payoff.xs[i] >= lo && payoff.xs[i] <= hi);
-    const d = visibleIdx.map((i, j) => `${j === 0 ? "M" : "L"}${px(payoff.xs[i]).toFixed(1)},${py(payoff.ys[i]).toFixed(1)}`).join("");
-    return {
-      w,
-      h,
-      px,
-      py,
-      zero: py(0),
-      lo,
-      hi,
-      fullLo,
-      fullHi,
-      d,
-    };
-  }, [payoff, screenWidth, zoom]);
-
-  const touchSpot = chart && touchPx !== null
-    ? chart.lo + ((touchPx - 5) / (chart.w - 10)) * (chart.hi - chart.lo)
-    : null;
-  const touchValue = touchSpot !== null && payoff ? valueAt(payoff.xs, payoff.ys, touchSpot) : null;
-
-  const moveRaf = useRef<number | null>(null);
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: (evt) => setTouchPx(evt.nativeEvent.locationX),
-    onPanResponderMove: (evt) => {
-      const x = evt.nativeEvent.locationX;
-      if (moveRaf.current !== null) cancelAnimationFrame(moveRaf.current);
-      moveRaf.current = requestAnimationFrame(() => {
-        setTouchPx(x);
-      });
-    },
-    onPanResponderRelease: () => {
-      if (moveRaf.current !== null) cancelAnimationFrame(moveRaf.current);
-      setTouchPx(null);
-    },
-    onPanResponderTerminate: () => {
-      if (moveRaf.current !== null) cancelAnimationFrame(moveRaf.current);
-      setTouchPx(null);
-    },
-  }), [chart]);
+    return list;
+  }, [chainOf, chain]);
 
   /** Why this basket cannot go out yet, in the words the screen shows, or null when it can. */
   const refusal = (): string | null => {
@@ -1314,94 +1156,16 @@ export default function SpreadBuilderScreen() {
         </View>
       ) : null}
 
-      {payoff && chart ? (
-        <View style={styles.payoff}>
-          <View style={styles.payoffHead}>
-            <Text style={styles.small}>Payoff</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              {payoff.atSpot === null ? null : (
-                <Text style={[styles.price, { color: payoff.atSpot >= 0 ? colors.buy : colors.sell }]}>
-                  {`${payoff.atSpot >= 0 ? "+" : "-"}₹${formatNumber(Math.abs(payoff.atSpot), 0)}`}
-                </Text>
-              )}
-              <View style={{ flexDirection: "row", gap: 4 }}>
-                <TouchableOpacity
-                  style={styles.zoomBtn}
-                  onPress={() => setZoom(z => Math.min(z * 1.5, 10))}
-                  accessibilityRole="button"
-                  accessibilityLabel="Zoom in on the payoff chart"
-                >
-                  <Ionicons name="add" size={16} color={colors.brand} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.zoomBtn, zoom <= 1 && { opacity: 0.3 }]}
-                  onPress={() => setZoom(z => Math.max(z / 1.5, 1))}
-                  disabled={zoom <= 1}
-                  accessibilityRole="button"
-                  accessibilityLabel="Zoom out on the payoff chart"
-                >
-                  <Ionicons name="remove" size={16} color={colors.brand} />
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-          <View {...panResponder.panHandlers} style={{ position: "relative" }}>
-            <Svg width={chart.w} height={chart.h}>
-              <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={colors.border} strokeWidth={1} strokeDasharray="4 3" />
-              <Path d={chart.d} stroke={colors.brand} strokeWidth={2} fill="none" />
-              {payoff.breakEvens.filter(strike => strike >= chart.lo && strike <= chart.hi).map(strike => (
-                <Circle key={`break-${strike}`} cx={chart.px(strike)} cy={chart.zero} r={3} fill={colors.warn} />
-              ))}
-              {spot !== null && spot >= chart.lo && spot <= chart.hi && payoff.atSpot !== null ? (
-                <>
-                  <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={colors.muted} strokeWidth={1} opacity={0.6} />
-                  <Circle cx={chart.px(spot)} cy={chart.py(payoff.atSpot)} r={3.5} fill={colors.text} />
-                </>
-              ) : null}
-              {touchSpot !== null && touchPx !== null && touchPx >= 5 && touchPx <= chart.w - 5 ? (
-                <>
-                  <Line x1={chart.px(touchSpot)} y1={0} x2={chart.px(touchSpot)} y2={chart.h} stroke={colors.text} strokeWidth={0.5} opacity={0.4} />
-                  {touchValue !== null ? (
-                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchValue)} r={3} fill={colors.brand} />
-                  ) : null}
-                </>
-              ) : null}
-            </Svg>
-            {touchSpot !== null && touchPx !== null ? (
-              <View style={[
-                styles.tooltip,
-                {
-                  left: Math.min(Math.max(touchPx - 50, 0), chart.w - 100),
-                  top: 4,
-                },
-              ]}>
-                <Text style={styles.tooltipSpot}>{formatNumber(touchSpot, 0)}</Text>
-                {touchValue !== null ? (
-                  <Text style={[styles.tooltipValue, { color: touchValue >= 0 ? colors.buy : colors.sell }]}>
-                    {`${touchValue >= 0 ? "+" : ""}${rupees(touchValue, true) ?? "—"}`}
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-          <View style={styles.payoffAxis}>
-            <Text style={styles.payoffAxisText}>{formatNumber(chart.lo, 0)}</Text>
-            <Text style={styles.payoffAxisText}>{spot === null ? "no spot" : `spot ${formatNumber(spot, 0)}`}</Text>
-            <Text style={styles.payoffAxisText}>{formatNumber(chart.hi, 0)}</Text>
-          </View>
-          {payoff.breakEvens.length ? (
-            <Text style={styles.payoffFoot}>
-              {`Break even ${payoff.breakEvens.slice(0, 4).map(strike => formatNumber(strike, 0)).join("  ·  ")}`}
-            </Text>
-          ) : null}
-        </View>
-      ) : legs.length ? (
-        <View style={styles.payoff}>
-          <View style={styles.payoffHead}>
-            <Text style={styles.small}>Payoff</Text>
-          </View>
-        </View>
-      ) : null}
+      {legs.length > 0 && (
+        <PayoffChart
+          underlying={underlying}
+          expiry={wanted || date}
+          legs={payoffChartLegs}
+          spot={spotNow}
+          chains={allChains}
+          title={basket || `${underlying} Strategy`}
+        />
+      )}
 
       <TouchableOpacity style={[styles.execute, (sending || !plan.length) && { opacity: 0.5 }]} onPress={ask} disabled={sending}>
         <Text style={styles.executeText}>

@@ -11,7 +11,7 @@
  * the risk legible enough to decide on, and to hand the legs to the Builder when the trader decides to act.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, PanResponder, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import Svg, { Circle, Line, Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
@@ -80,7 +80,10 @@ function calibration(analysis: StrategyAnalysis | null): string | null {
 
 export default function BasketDesk({ onAdjust }: Props) {
   const { useBaskets, useOpenPositions } = useApi();
-  const { data, isLoading, isError, error, refetch, isFetching, dataUpdatedAt } = useBaskets();
+  // The legs this desk ticks from the socket, set below; the /v1/baskets read slows down only while
+  // every open live leg is one the socket carries and is ticking (see quoteStreamCarries).
+  const streamedLegs = useRef<readonly string[] | null>(null);
+  const { data, isLoading, isError, error, refetch, isFetching, dataUpdatedAt } = useBaskets(undefined, undefined, () => streamedLegs.current);
   // The same book the Positions tab shows, on the same query key so the two screens share one read.
   // /v1/baskets leaves an order or manual basket's legs unpriced and the web desk repairs that in the
   // browser, so the phone joins the book for the whole list. It polls prod's cached account snapshot, not
@@ -94,6 +97,13 @@ export default function BasketDesk({ onAdjust }: Props) {
   // safety net); a leg without a canonical id keeps the read's mark.
   const streamIds = useMemo(() => basketStreamIds(desk.baskets), [desk.baskets]);
   const feed = useQuoteFeed(streamIds, streamIds.length > 0);
+  // A position-made leg named by a broker symbol has no canonical id and only the REST read prices it.
+  useEffect(() => {
+    streamedLegs.current = desk.baskets.every((basket) => basket.provider === "paper"
+      || basket.legs.every((leg) => leg.quantity <= 0 || leg.instrumentId.startsWith("instrument:v1:")))
+      ? streamIds
+      : null;
+  }, [desk.baskets, streamIds]);
   const baskets = useMemo(
     () => (feed.connected ? withStreamMarks(desk.baskets, feed.quotes) : desk.baskets),
     [desk.baskets, feed.connected, feed.quotes],

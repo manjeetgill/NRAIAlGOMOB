@@ -95,6 +95,8 @@ let asOf: string | null = null;
 let connected = false;
 /** When the socket last carried a price the server called fresh; 0 before the first one. */
 let lastFreshTickAt = 0;
+/** When each instrument id last carried a fresh price on this connection, so a screen can ask about its own rows. */
+let lastFreshById = new Map<string, number>();
 let reason: FeedReason = null;
 let socket: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -254,12 +256,18 @@ function accept(frame: WireFrame) {
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     const tick = toTick(quote, id);
     published.set(quoteKey(quote), tick);
-    if (tick.fresh) lastFreshTickAt = Date.now();
+    if (tick.fresh) {
+      lastFreshTickAt = Date.now();
+      lastFreshById.set(id, lastFreshTickAt);
+    }
     changedIds.add(id);
   }
   for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
     const existing = published.get(key);
-    if (existing) changedIds.add(existing.id);
+    if (existing) {
+      changedIds.add(existing.id);
+      lastFreshById.delete(existing.id);
+    }
     published.delete(key);
     changedIds.add(key);
   }
@@ -300,6 +308,7 @@ function armSilence() {
       if (socket === ws) socket = null;
       connected = false;
       published = new Map();
+      lastFreshById = new Map();
       reason = "closed";
       publish();
       scheduleConnect();
@@ -364,6 +373,7 @@ function connect() {
     clearSilence();
     if (socket === ws) socket = null;
     published = new Map();
+    lastFreshById = new Map();
     // 1008 is a policy close: the origin, the sign-in, the edition or the price provider gate refused us.
     // 1013 means this workspace already holds its three tabs, which a retry at the slow cadence outlasts.
     reason = event.code === 1008 ? "policy" : event.code === 1013 ? "capacity" : "closed";
@@ -397,6 +407,7 @@ function disconnect() {
   }
   connected = false;
   published = new Map();
+  lastFreshById = new Map();
   reason = "closed";
 }
 
@@ -544,6 +555,18 @@ const LIVE_TICK_MS = 30_000;
  */
 export function quoteStreamConnected(): boolean {
   return connected && reason === null && Date.now() - lastFreshTickAt < LIVE_TICK_MS;
+}
+
+/**
+ * Whether the socket is feeding THIS screen: it is live (see quoteStreamConnected: a fresh price somewhere
+ * in the last 30 s) and every id the screen shows has had a fresh price on this connection. An id the
+ * server does not stream, or a screen with nothing it can stream, answers false, so that screen keeps its
+ * normal REST read instead of slowing down on prices it never receives. A stock that is streamed but has
+ * not traded for a while still counts: the socket is carrying it, its price just has not moved.
+ */
+export function quoteStreamCarries(ids: readonly string[] | null | undefined): boolean {
+  if (!ids || ids.length === 0 || !quoteStreamConnected()) return false;
+  return ids.every((id) => lastFreshById.has(id));
 }
 
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */

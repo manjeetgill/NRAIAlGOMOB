@@ -287,3 +287,14 @@ export function useLiveCandles(
       : `${chartInstrument(name)} is not on the live price stream: only NSE cash symbols and NSE indices are published tick by tick.`,
   };
 }
+
+/**
+ * The index strip's stream ids, or null when any index on it has no stream id, so a poll gated on them
+ * keeps its normal read. The strip component and the watchlist tab read the same cached strip and must
+ * hand the same ids to it, because each observer schedules its own timer.
+ */
+export function indexStreamIds(indices: readonly { name: string }[] | undefined): string[] | null {
+  if (!indices || indices.length === 0) return null;
+  const ids = indices.map((idx) => streamId(idx.name));
+  return ids.every((id): id is string => !!id) ? (ids as string[]) : null;
+}
