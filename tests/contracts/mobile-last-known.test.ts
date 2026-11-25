@@ -159,12 +159,14 @@ it("keeps the remembered book after the socket is closed and the app restarted",
   expect(hook).toContain("mirror.set(surface, copy as LastKnown<unknown>);");
 });
 
-it("forgets every saved list the moment the session ends", () => {
+it("forgets every saved list only when the server itself ends the session", () => {
   const hook = read("apps/mobile/src/hooks/useLastKnown.ts");
   expect(hook).toContain("export function forgetLastKnown(): void {");
   expect(hook).toContain("entry.startsWith(LAST_KNOWN_PREFIX)");
   const client = read("apps/mobile/src/utils/apiClient.ts");
-  expect(client).toContain("forgetLastKnown();");
+  expect(client).toContain("if (status === 401 || status === 403) forgetLastKnown();");
+  // An unreachable prod must not cost the trader their only copy of the book.
+  expect(client).toContain('const status = error instanceof Error && "status" in error');
 });
 
 it("treats the account frame as a change signal and never as the account answer", () => {

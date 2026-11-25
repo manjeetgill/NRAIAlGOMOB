@@ -107,11 +107,14 @@ export async function initializeApiClient(): Promise<boolean> {
       useAuthStore.getState().setUser(user);
       AsyncStorage.setItem(CACHED_USER_KEY, JSON.stringify(user)).catch(() => {});
       return true;
-    } catch {
+    } catch (error) {
       useAuthStore.getState().logout();
       AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
-      // The saved book belongs to the workspace that just lost its session, not to whoever signs in next.
-      forgetLastKnown();
+      // Only a refusal the server actually sent means this book belongs to somebody else. Prod being
+      // unreachable says nothing about the session, and clearing here would throw away the one copy the
+      // trader has left, which is the thing these screens are meant to fall back to.
+      const status = error instanceof Error && "status" in error ? (error as { status: number }).status : null;
+      if (status === 401 || status === 403) forgetLastKnown();
       return false;
     } finally {
       initInFlight = null;
