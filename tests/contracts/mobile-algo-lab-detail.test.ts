@@ -23,6 +23,16 @@ describe("Algo Lab detail opens from both lists", () => {
     expect(screen).toContain("Settings");
     expect(screen).toContain("Actions");
   });
+
+  it("reaches the list when nothing is behind the screen", () => {
+    // A cold start on a deep link leaves no history, and `back()` with nothing behind it is a press that
+    // does nothing at all. Every other detail screen in this app already answers that with a replace.
+    expect(screen).toContain('import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router"');
+    expect(screen).toContain("const canGoBack = useCanGoBack();");
+    expect(screen).toContain('canGoBack ? router.back() : router.replace("/algo-lab")');
+    expect(screen).toContain("onPress={goBack}");
+    expect(screen).not.toContain("onPress={() => router.back()}");
+  });
 });
 
 describe("Payoff tab prices from the shared server", () => {

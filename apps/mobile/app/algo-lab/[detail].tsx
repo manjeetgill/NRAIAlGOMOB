@@ -21,7 +21,7 @@ import {
 } from "react-native";
 import Svg, { Circle, Line, Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { curves, payoffFigures } from "@nraialgo/shared/api";
 import type { ManagedRun, StrategyAnalysisLeg, StrategyDraftSummary, DraftDetail } from "@nraialgo/shared/api";
@@ -65,6 +65,10 @@ export default function AlgoLabDetailScreen() {
   } = useApi();
   const params = useLocalSearchParams<{ source?: string; id?: string; name?: string }>();
   const router = useRouter();
+  // A cold start on a deep link leaves nothing behind this screen, and `back()` with no history is a press
+  // that does nothing at all. The list is where this row came from, so that is where the arrow goes.
+  const canGoBack = useCanGoBack();
+  const goBack = () => (canGoBack ? router.back() : router.replace("/algo-lab"));
   const source: Source = params.source === "run" ? "run" : "draft";
   const id = String(params.id ?? "");
   const { resolvedTheme } = useTheme();
@@ -558,7 +562,7 @@ export default function AlgoLabDetailScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.back} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Go back">
+        <TouchableOpacity style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>

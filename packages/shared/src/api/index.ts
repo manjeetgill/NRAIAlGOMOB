@@ -32,6 +32,7 @@ export {
   indexStripRows,
   nearestMonthlyExpiry,
   todayIST,
+  chainRequest,
   iciciHoldings,
   iciciOpenPositions,
   iciciOrders,
@@ -146,6 +147,7 @@ export {
   watchQuotes,
   pauseQuoteDispatch,
   resumeQuoteDispatch,
+  recoverQuoteStream,
   type QuoteTick,
   type FeedSnapshot,
   type FeedReason,
@@ -256,11 +258,11 @@ export function initializeApi(queryClient: QueryClient, baseUrl?: string, wsUrl?
   if (api) return api;
 
   const { createApiClient } = require("./client");
-  const { Constants } = require("../constants");
+  const { Constants, deriveWsUrl } = require("../constants");
   
   const client = createApiClient({
     baseUrl: baseUrl || Constants.API.BASE_URL,
-    wsUrl: wsUrl || Constants.API.WS_URL,
+    wsUrl: wsUrl || deriveWsUrl(baseUrl || Constants.API.BASE_URL),
     getToken: async () => null,
     setToken: async () => {},
     clearToken: async () => {},

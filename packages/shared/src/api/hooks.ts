@@ -15,6 +15,9 @@ import { formatISTDate } from "../utils";
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
 const FULL_WINDOW = 400;
 
+/** How long a full-ladder read stays good. See `useOptionChains` for why this runs longer than a chain. */
+const LADDER_STALE_MS = 5 * 60 * 1000;
+
 /** The periods `/v1/technical-events/evidence` accepts, copied from its own Literal. */
 const EVIDENCE_TIMEFRAMES = new Set(["1d", "1w", "1M", "1h", "30m", "15m"]);
 
@@ -145,6 +148,27 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Today in the exchange's own calendar, whichever timezone the device happens to sit in. */
 export const todayIST = (): string => formatISTDate(new Date());
+
+/** The strike band the single-expiry desk asks for: ~100 quotes, enough to fill a phone screen. */
+const CHAIN_WINDOW = 30;
+
+/**
+ * The chain read the desk opens with, spelled once.
+ *
+ * The screen and the warm-up on a tab press ask for the same contract, so they must agree on the cache key as
+ * well as the query — a prefetch that lands on a different key is a broker read the screen then repeats. A
+ * settled or malformed expiry is dropped rather than sent, because the server rejects the whole read for it;
+ * the key comes off the same test, so prod's front-expiry chain cannot be filed under a date it is not and
+ * make the trader pay for the ladder a second time.
+ */
+export function chainRequest(underlying: string, expiry: string) {
+  const asked = ISO_DATE.test(expiry) && expiry >= todayIST() ? expiry : "";
+  return {
+    asked,
+    queryKey: queryKeys.optionChain.chain(underlying, asked, CHAIN_WINDOW),
+    params: { underlying, window: CHAIN_WINDOW, rate: 0, dividend: 0, ...(asked ? { expiry: asked } : {}) },
+  };
+}
 
 /**
  * The listed contract that closes out the nearest month, which is the one a desk opens on. Weeklies
@@ -597,26 +621,17 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   const useOptionChain = (
     underlying: string,
     expiry: string,
-    // The key and the read are this hook's own business; a caller sets when the read runs, never what it
-    // is cached under, because the all-expiries ladder below shares that key.
+    // The key and the read are `chainRequest`'s business, not the caller's; a caller sets when the read
+    // runs, never what it is cached under, because the warm-up on tab focus writes that same key.
     options?: Omit<UseQueryOptions<OptionChainData, ApiError>, "queryKey" | "queryFn">,
   ) => {
-    // The ladder only ever hands back live ISO dates, so anything else — a leftover from a saved session,
-    // or a contract that has already settled — is dropped rather than sent, because the server rejects the
-    // whole read for it. The key comes off the same test: a date this read does not send must not keep the
-    // cache entry either, or prod's front-expiry chain lands under a settled date, the ladder is labelled
-    // with an expiry it is not, and picking the real one pays the broker for it a second time.
-    const asked = ISO_DATE.test(expiry) && expiry >= todayIST() ? expiry : "";
+    const { asked, queryKey, params } = chainRequest(underlying, expiry);
     return useQuery({
-      queryKey: queryKeys.optionChain.chain(underlying, asked, 30),
+      queryKey,
       queryFn: async () => {
-        const data = await client.get<OptionChainData>("/v1/option-chain", {
-          // `rate` and `dividend` are required by the route, so a request without them is rejected
-          // before the chain is ever read. Window is 30 for fast mobile rendering (~100 quotes vs 800).
-          params: { underlying, window: 30, rate: 0, dividend: 0, ...(asked ? { expiry: asked } : {}) },
-        });
+        const data = await client.get<OptionChainData>("/v1/option-chain", { params });
         if (data?.expiry && !asked) {
-          queryClient.setQueryData(queryKeys.optionChain.chain(underlying, data.expiry, 30), data);
+          queryClient.setQueryData(queryKeys.optionChain.chain(underlying, data.expiry, CHAIN_WINDOW), data);
         }
         return data;
       },
@@ -633,11 +648,17 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   /**
-   * Every listed expiry of one underlying, each cached under the same key a single-expiry read uses, so
-   * switching back to one date from the all-expiries view never asks the broker for it twice.
+   * Every listed expiry of one underlying, each holding its own full-window entry.
    *
    * These deliberately do not re-poll: eight live ladders every three seconds would occupy the same
    * broker lane that places the trader's orders, while the expiry on screen keeps polling on its own.
+   *
+   * A whole-expiry read is the heaviest chain call there is — the server walks the ladder it selects and
+   * asks the broker for every contract in it, which is measured at seconds apiece in prod. So the ladder
+   * also declines the two app-wide defaults that would fire it again unasked: an alert returning to the
+   * foreground, or a network handoff, repaints from the entry already cached rather than paying for the
+   * ladder a second time. Each section prints its own read age, so the trade-off is a date on the number,
+   * not a silent one.
    */
   const useOptionChains = (underlying: string, expiries: readonly string[], wanted: boolean) => {
     return useQueries({
@@ -647,7 +668,9 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
           params: { underlying, expiry, window: FULL_WINDOW, rate: 0, dividend: 0 },
         }),
         enabled: wanted && !!underlying && ISO_DATE.test(expiry) && expiry >= todayIST(),
-        staleTime: 60 * 1000,
+        staleTime: LADDER_STALE_MS,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
       })),
     });
   };

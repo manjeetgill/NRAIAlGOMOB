@@ -10,7 +10,6 @@
  * already holds, and their premiums paint from the ticks that arrive between reads - see api/chain-ticks.ts.
  */
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -50,6 +49,7 @@ import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
 import { useApi } from "@/hooks/useApi";
+import { readChainSelection, rememberChainSelection } from "@/utils/chainSelection";
 
 /** Prod sends prices as decimal strings so nothing rounds on the way here; the ticket takes numbers. */
 function amount(value: string | number | null | undefined): number | null {
@@ -92,9 +92,6 @@ type ChainItem =
   | { kind: "pending"; key: string; expiry: string }
   | { kind: "failed"; key: string; expiry: string; message: string };
 
-const SELECTION_KEY = "nraialgo.chain-selection";
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 /**
  * Strikes held on the price stream beyond the ones actually on screen. Small enough that one band is a
  * couple of dozen contracts, large enough that reading up and down the ladder does not re-subscribe.
@@ -103,23 +100,6 @@ const BAND_PAD = 6;
 
 /** What no ticks means on the ladder: every number is the chain read's own, with its own label. */
 const NO_TICKS = new Map<string, QuoteTick>();
-
-/**
- * The contract the desk last showed, as far as the device can still remember it. A date that has already
- * settled is dropped rather than resumed, because the broker has no ladder left to answer it with.
- */
-function parseSelection(raw: string | null): { underlying: string; expiry: string } | null {
-  if (!raw) return null;
-  try {
-    const saved = JSON.parse(raw) as { underlying?: unknown; expiry?: unknown };
-    const underlying = typeof saved.underlying === "string" ? saved.underlying : "";
-    const expiry = typeof saved.expiry === "string" ? saved.expiry : "";
-    if (!underlying || !ISO_DATE.test(expiry) || expiry < todayIST()) return null;
-    return { underlying, expiry };
-  } catch {
-    return null;
-  }
-}
 
 interface OptionRowItemProps {
   row: OptionRow;
@@ -235,13 +215,10 @@ export default function OptionChainScreen() {
   // costs milliseconds, while starting without it costs a whole broker read for a date about to be replaced.
   useEffect(() => {
     let alive = true;
-    AsyncStorage.getItem(SELECTION_KEY)
-      .then(raw => {
-        const saved = parseSelection(raw);
+    readChainSelection()
+      // A desk that cannot read its own memory opens the way it did before the memory existed.
+      .then((saved) => {
         if (alive && saved) setOptionChainFilters(saved);
-      })
-      .catch(() => {
-        // A desk that cannot read its own memory opens the way it did before the memory existed.
       })
       .finally(() => {
         if (alive) setResumed(true);
@@ -290,11 +267,10 @@ export default function OptionChainScreen() {
     if (chain.expiry) setOptionChainExpiry(chain.expiry);
   }, [chain, underlying, expiry, setOptionChainExpiry]);
 
-  // What makes the next launch a single read. It is written from the chain that arrived, not from the
-  // ask, so a date the server corrected is never remembered as the one that was wanted.
+  // What makes the next launch a single read, and what the tab-bar prefetch warms for the same reason.
   useEffect(() => {
     if (!chain || chain.underlying !== underlying) return;
-    AsyncStorage.setItem(SELECTION_KEY, JSON.stringify({ underlying: chain.underlying, expiry: chain.expiry })).catch(() => {});
+    rememberChainSelection({ underlying: chain.underlying, expiry: chain.expiry });
   }, [chain?.underlying, chain?.expiry, underlying]);
 
   // One list either way: the strikes of the chosen date, or every listed date with its own heading and its

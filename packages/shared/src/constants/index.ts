@@ -5,12 +5,30 @@
  */
 
 // ===== API =====
+const BASE_URL = "https://myalgodesk.in";
+
+/**
+ * The tick stream is served from the same origin as the REST API, so its address is derived from the base
+ * URL rather than written beside it. Two constants that can disagree is how a device aimed at one host
+ * ends up opening prod's socket and declaring prod's `origin` while its prices go elsewhere.
+ */
+export function deriveWsUrl(base: string): string {
+  return base.replace(/^http/, "ws").replace(/\/+$/, "");
+}
+
 export const API = {
-  BASE_URL: "https://myalgodesk.in",
-  WS_URL: "wss://myalgodesk.in",
+  BASE_URL,
+  WS_URL: deriveWsUrl(BASE_URL),
   TIMEOUT: 30_000,
   WS_RECONNECT_DELAY: 2000,
-  WS_MAX_RECONNECT_ATTEMPTS: 10,
+  /**
+   * A dropped stream is retried for as long as a screen is watching, but never faster than this once the
+   * backoff has run out. Giving up instead would leave a phone that lost the network for a minute showing
+   * dead prices for the rest of the session.
+   */
+  WS_RECONNECT_MAX_DELAY: 30_000,
+  /** How long an open socket may carry no frame before the client recycles it, matching the web desk. */
+  WS_SILENCE_MS: 35_000,
 } as const;
 
 export const ENDPOINTS = {

@@ -72,6 +72,16 @@ function formatOrderTime(value: string | null): string {
   return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" });
 }
 
+/**
+ * A market order has no price because none was ever sent, which is not the same fact as a limit order the
+ * broker returned without one. A dash says "looked and found nothing" to both, so the row that is behaving
+ * normally reads as a gap in the data.
+ */
+function priceCell(order: BrokerOrder): string {
+  if (order.price) return formatRupees(order.price);
+  return /^(MARKET|MO)$/.test(String(order.orderType ?? "").trim().toUpperCase()) ? "Market price" : "No price sent";
+}
+
 export default function OrdersScreen() {
   const { useIciciAccount, useGttOrders } = useApi();
   const { resolvedTheme } = useTheme();
@@ -158,7 +168,7 @@ export default function OrdersScreen() {
             {order.side} {formatNumber(order.filledQuantity)}/{formatNumber(order.quantity)}
           </Text>
           <Text style={styles.value}>
-            {order.price ? formatRupees(order.price) : "—"}
+            {priceCell(order)}
           </Text>
         </View>
         {order.message ? <Text style={styles.label}>{order.message}</Text> : null}

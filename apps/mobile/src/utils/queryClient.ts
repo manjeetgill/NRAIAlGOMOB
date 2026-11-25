@@ -7,14 +7,26 @@
 import { AppState, AppStateStatus, Platform } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { configureApi } from "@nraialgo/shared/api";
+import { configureApi, recoverQuoteStream } from "@nraialgo/shared/api";
 import { getApiClient, initializeApiClient } from "./apiClient";
 import { QUERY_CONFIG } from "@nraialgo/shared/constants";
+
+/**
+ * Two of these signals already restart React Query above; the tick stream needs the same two because a
+ * phone leaves it behind: the socket waiting for a screen that has just come back is usually open and
+ * carrying nothing, and a stream the server refused against a tab that has since closed is not a refusal
+ * this app should still be honouring. Both retire the connection, so a screen repaints from a real feed
+ * instead of one it has to guess about.
+ */
+let streamWasOnline = true;
 
 // Online status manager for React Native
 onlineManager.setEventListener((setOnline) => {
   return NetInfo.addEventListener((state) => {
-    setOnline(!!state.isConnected);
+    const connected = !!state.isConnected;
+    setOnline(connected);
+    if (connected && !streamWasOnline) recoverQuoteStream();
+    streamWasOnline = connected;
   });
 });
 
@@ -22,6 +34,7 @@ onlineManager.setEventListener((setOnline) => {
 function onAppStateChange(status: AppStateStatus) {
   if (Platform.OS !== "web") {
     focusManager.setFocused(status === "active");
+    if (status === "active") recoverQuoteStream();
   }
 }
 

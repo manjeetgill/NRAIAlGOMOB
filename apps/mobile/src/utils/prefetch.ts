@@ -12,7 +12,10 @@
 
 import { queryClient } from "@/utils/queryClient";
 import { getApiClient } from "@/utils/apiClient";
+import { readChainSelection } from "@/utils/chainSelection";
+import { useTradingStore } from "@nraialgo/shared/stores";
 import {
+  chainRequest,
   iciciOpenPositions,
   queryKeys,
   type GttOrder,
@@ -25,13 +28,25 @@ import {
 
 const client = getApiClient();
 
-export function prefetchOptionChain(underlying = "NIFTY") {
-  queryClient.prefetchQuery({
-    queryKey: queryKeys.optionChain.chain(underlying, "", 30),
-    queryFn: () => client.get<OptionChainData>("/v1/option-chain", { params: { underlying, window: 30, rate: 0, dividend: 0 } }),
-    staleTime: 5000,
+export function prefetchOptionChain() {
+  // The desk opens on the contract it remembered, not on whichever index this file was written against.
+  // Warming a date the screen will not read costs a full broker chain call that the mount then repeats,
+  // so the tab press buys nothing and the lane that places orders gets busier. `chainRequest` builds the
+  // key and the params, which is the same pair `useOptionChain` uses — parity by construction.
+  const warm = readChainSelection()
+    .then((saved) => saved ?? useTradingStore.getState().optionChain)
+    // A device that cannot answer its own memory still gets the defaults the screen falls back to.
+    .catch(() => useTradingStore.getState().optionChain);
+
+  void warm.then(({ underlying, expiry }) => {
+    const request = chainRequest(underlying, expiry);
+    return queryClient.prefetchQuery({
+      queryKey: request.queryKey,
+      queryFn: () => client.get<OptionChainData>("/v1/option-chain", { params: request.params }),
+      staleTime: 5000,
+    });
   }).catch(() => {});
-  
+
   queryClient.prefetchQuery({
     queryKey: queryKeys.optionChain.underlyings(),
     queryFn: () => client.get<UnderlyingList>("/v1/option-chain/underlyings"),

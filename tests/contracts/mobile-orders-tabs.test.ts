@@ -107,4 +107,16 @@ describe("Orders screen shows three tabs", () => {
   it("auto-refreshes orders every 10 seconds", () => {
     expect(hooks).toMatch(/refetchInterval:\s*10\s*\*\s*1000/);
   });
+
+  it("says why a row carries no price instead of printing a dash", () => {
+    // A market order has no price because none was sent, which is not the same fact as a limit order the
+    // broker returned without one. One dash reads as a hole in the data for both.
+    expect(screen).toContain("function priceCell(order: BrokerOrder): string");
+    expect(screen).toContain("if (order.price) return formatRupees(order.price);");
+    expect(screen).toContain('(MARKET|MO)$');
+    expect(screen).toContain('"Market price"');
+    expect(screen).toContain('"No price sent"');
+    expect(screen).toContain("{priceCell(order)}");
+    expect(screen).not.toContain('order.price ? formatRupees(order.price) : "—"');
+  });
 });
