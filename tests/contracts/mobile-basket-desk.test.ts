@@ -577,7 +577,10 @@ it("prices the desk from the broker book and follows the theme", () => {
   expect(desk).toContain("priced from the broker's positions");
   expect(desk).toContain("without a price, not counted");
   // A broker row that reports no spot is not printed as ₹0.00, and the sheet follows the app theme.
-  expect(desk).toContain("spot > 0");
+  // The desk refuses a spot of 0 on the way in, and the graph draws the LTP line only for a real price.
+  expect(desk).toContain("fromLadder > 0");
+  expect(desk).toContain("Number(basket.spot) || null");
+  expect(readFileSync(resolve(root, "apps/mobile/src/components/PayoffChart.tsx"), "utf8")).toContain("currentSpot > 0");
   expect(desk).toContain("sheet(resolvedTheme)");
   // A broker-shaped expiry ("26-Nov-2026") is normalised before it prints, not sliced as if it were ISO.
   expect(desk).toContain("expiryKey(value)");

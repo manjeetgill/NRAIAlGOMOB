@@ -220,6 +220,13 @@ export {
 } from "./basket-desk";
 
 export {
+  normCdf,
+  blackScholes,
+  impliedVol,
+  type BsPrice,
+} from "./payoff-model";
+
+export {
   LAST_KNOWN,
   LAST_KNOWN_MAX_AGE_MS,
   LAST_KNOWN_PREFIX,

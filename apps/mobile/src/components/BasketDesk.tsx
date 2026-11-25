@@ -12,33 +12,28 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, PanResponder, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from "react-native";
-import Svg, { Circle, Line, Path } from "react-native-svg";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   basketPnl,
   buildAnalysis,
   closedUnits,
-  curves,
   expiryKey,
-  heldPayoff,
   ladderUnderlying,
   legValue,
   openLiveBaskets,
   payoffExpiries,
-  payoffFigures,
   rupees,
-  valueAt,
   withBookMarks,
   withStreamMarks,
   basketStreamIds,
   useQuoteFeed,
   type Basket,
-  type StrategyAnalysis,
 } from "@nraialgo/shared/api";
 import { formatISTTime, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
+import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 
 interface Props {
   /** Hand a basket's legs to the Builder tab, where an adjustment is actually placed. */
@@ -72,11 +67,6 @@ const kindWord = (basket: Basket): string =>
 /** A flat figure is neither a gain nor a loss, so it must not borrow the profit colour. */
 const moneyColor = (value: number, styles: ReturnType<typeof sheet>): string =>
   value > 0 ? styles.cPos : value < 0 ? styles.cNeg : styles.cMuted;
-
-/** Prod's sentence for why T+0 has no line, taken from the same calibration the curve needs. */
-function calibration(analysis: StrategyAnalysis | null): string | null {
-  return analysis && analysis.greeks.available === false ? analysis.greeks.reason : null;
-}
 
 export default function BasketDesk({ onAdjust }: Props) {
   const { useBaskets, useOpenPositions } = useApi();
@@ -282,12 +272,12 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   onAdjust: (basket: Basket) => void;
   styles: ReturnType<typeof sheet>;
 }) {
-  const { useOptionChains, useStrategyAnalysis, usePlanningMargin, useRecordExitPrice, useRemoveLeg, useDeleteBasket } = useApi();
-  const { width: screenWidth } = useWindowDimensions();
+  const { useOptionChains, usePlanningMargin, useRecordExitPrice, useRemoveLeg, useDeleteBasket } = useApi();
   const expiries = useMemo(() => payoffExpiries(basket), [basket]);
   const chains = useOptionChains(ladderUnderlying(basket), expiries, true);
+  // The payoff chart runs the model read itself; this screen keeps only the margin estimate, whose
+  // wording is too careful to leave to a generic figure.
   const built = useMemo(() => buildAnalysis(basket, chains.map(read => read.data)), [basket, chains]);
-  const analysis = useStrategyAnalysis(built.body);
   const margin = usePlanningMargin(built.margin);
   const recordExit = useRecordExitPrice();
   const removeLeg = useRemoveLeg();
@@ -296,14 +286,38 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   const [note, setNote] = useState<string | null>(null);
 
   const value = basketPnl(basket.legs, basket.realized);
-  // The model curves the units that are still open. The trader decides on the whole trade, so the exited
-  // money is added back before anything is drawn or printed: the dot on the chart is then the Total P&L.
-  const model = analysis.data ? curves(analysis.data, value.booked) : null;
-  // The same shift applied to the phone's own exact payoff of the held contracts, which needs no ladder and
-  // is what the card shows while the model read is still running.
-  const held = useMemo(() => heldPayoff(basket, value.booked), [basket, value.booked]);
-  const until = expiries.map(expiryKey).filter(Boolean).join(" and ") || null;
-  const figures = analysis.data ? payoffFigures(analysis.data, until, value.booked) : null;
+  const spotNow = useMemo(() => {
+    const read = chains.find(item => item.data)?.data;
+    const fromLadder = Number(read?.spot?.price);
+    return Number.isFinite(fromLadder) && fromLadder > 0 ? fromLadder : Number(basket.spot) || null;
+  }, [chains, basket.spot]);
+
+  /**
+   * The legs the payoff is drawn for: exactly the units the broker still holds. A leg whose whole quantity
+   * has been exited contributes nothing, and a partly exited one contributes only what is left, so the
+   * curve is the basket the trader is in rather than the basket it was opened with.
+   */
+  const chartLegs = useMemo<PayoffChartLeg[]>(() => {
+    const remaining = new Map<string, number>();
+    for (const leg of basket.legs) {
+      remaining.set(leg.instrumentId, Math.max(0, (leg.lots ?? 0) - closedUnits(leg)));
+    }
+    return basket.payoffLegs.flatMap(leg => {
+      const lots = remaining.has(leg.instrumentId) ? remaining.get(leg.instrumentId)! : leg.lots;
+      if (lots <= 0) return [];
+      const entry = Number(leg.entryPrice);
+      return [{
+        strike: leg.strike,
+        right: leg.right,
+        side: (leg.action === "buy" ? "BUY" : "SELL") as "BUY" | "SELL",
+        lots,
+        lotSize: leg.lotSize,
+        expiry: leg.expiry,
+        entryPrice: Number.isFinite(entry) && entry > 0 ? entry : null,
+      }];
+    });
+  }, [basket]);
+
   const priceable = basket.kind === "order" || basket.kind === "manual";
   const charges = basket.charges;
   // A wider basket than /v1/planning-margin takes is stated as such; the number for the first eight legs
@@ -360,18 +374,15 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
         </View>
       </View>
 
-      <Payoff
-        basket={basket}
-        built={built}
-        analysis={analysis.data ?? null}
-        loading={chains.some(read => read.isFetching) || (analysis.isPending && !!built.body)}
-        failed={analysis.isError ? analysis.error.message : null}
-        model={model}
-        held={held}
-        figures={figures}
-        margin={marginLine}
-        screenWidth={screenWidth}
-        styles={styles}
+      <PayoffChart
+        underlying={ladderUnderlying(basket)}
+        expiry={basket.expiry}
+        legs={chartLegs}
+        spot={spotNow}
+        chains={chains.map(read => read.data)}
+        title={basket.name?.trim() || basket.underlying}
+        booked={value.booked}
+        marginNote={marginLine}
       />
 
       <View style={styles.actions}>
@@ -438,263 +449,6 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
       />
 
     </ScrollView>
-  );
-}
-
-/**
- * The payoff card. The expiry line is the phone's own exact arithmetic over the contracts the broker
- * holds, so it is drawn the moment the basket opens; the T+0 line is prod's model and lands after the
- * ladder and the model read answer. Where the model has no T+0 the card says the server's reason instead
- * of passing the expiry line off as what the basket is worth now.
- */
-function Payoff({ basket, built, analysis, loading, failed, model, held, figures, margin, screenWidth, styles }: {
-  basket: Basket;
-  built: ReturnType<typeof buildAnalysis>;
-  analysis: StrategyAnalysis | null;
-  loading: boolean;
-  /** The model's own error sentence, when the call to it failed. */
-  failed: string | null;
-  model: ReturnType<typeof curves>;
-  /** The exact payoff of the held contracts, which needs no ladder and no model. */
-  held: ReturnType<typeof heldPayoff>;
-  figures: Record<string, string> | null;
-  /** The margin line, already resolved to words where the read has nothing to show. */
-  margin: string;
-  screenWidth: number;
-  styles: ReturnType<typeof sheet>;
-}) {
-  const [zoom, setZoom] = useState(1);
-  const [touchPx, setTouchPx] = useState<number | null>(null);
-
-  const chart = useMemo(() => {
-    const modelSpots = model?.spots ?? [];
-    const heldSpots = held?.spots ?? [];
-    const xs = modelSpots.length >= heldSpots.length ? modelSpots : heldSpots;
-    const resample = (fromSpots: number[] | undefined, fromValues: number[] | null | undefined) => {
-      if (!fromValues || !fromSpots || fromSpots.length !== fromValues.length) return null;
-      if (fromSpots.length === xs.length && fromSpots.every((s, i) => s === xs[i])) return fromValues;
-      return xs.map(x => valueAt(fromSpots, fromValues, x) ?? 0);
-    };
-    const expiryLine = model?.expiry
-      ? resample(modelSpots, model.expiry)
-      : resample(heldSpots, held?.values);
-    const todayLine = model?.today ? resample(modelSpots, model.today) : null;
-    if (xs.length < 3 || (!expiryLine && !todayLine)) return null;
-    const lines = [expiryLine, todayLine].filter((line): line is number[] => !!line);
-    const w = Math.round(screenWidth - 42);
-    const h = 150;
-    const padX = 5;
-    const padTop = 10;
-    const padBottom = 12;
-    const fullLo = xs[0];
-    const fullHi = xs[xs.length - 1];
-    const center = (fullLo + fullHi) / 2;
-    const halfRange = (fullHi - fullLo) / 2 / zoom;
-    const lo = center - halfRange;
-    const hi = center + halfRange;
-    const visibleXs = xs.filter(x => x >= lo && x <= hi);
-    const visibleExpiry = expiryLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
-    const visibleToday = todayLine?.filter((_, i) => xs[i] >= lo && xs[i] <= hi) ?? null;
-    let yMin = 0;
-    let yMax = 0;
-    for (let l = 0; l < lines.length; l++) {
-      const arr = lines[l];
-      for (let i = 0; i < arr.length; i++) {
-        const y = arr[i];
-        if (y < yMin) yMin = y;
-        if (y > yMax) yMax = y;
-      }
-    }
-    const yLo = yMax - yMin < 0.005 ? yMin - 1 : yMin;
-    const yHi = yMax - yMin < 0.005 ? yMax + 1 : yMax;
-    const px = (x: number) => padX + ((x - lo) / (hi - lo || 1)) * (w - padX * 2);
-    const py = (y: number) => padTop + (1 - (y - yLo) / (yHi - yLo || 1)) * (h - padTop - padBottom);
-    const path = (values: number[], spots: number[]) =>
-      spots.map((x, i) => `${i === 0 ? "M" : "L"}${px(x).toFixed(1)},${py(values[i]).toFixed(1)}`).join("");
-    return {
-      w,
-      h,
-      px,
-      py,
-      zero: py(0),
-      lo,
-      hi,
-      fullLo,
-      fullHi,
-      xs,
-      expiry: visibleExpiry && visibleXs.length === visibleExpiry.length ? path(visibleExpiry, visibleXs) : (expiryLine ? path(expiryLine!, xs) : null),
-      today: visibleToday && visibleXs.length === visibleToday.length ? path(visibleToday, visibleXs) : (todayLine ? path(todayLine!, xs) : null),
-      expiryValues: expiryLine,
-      todayValues: todayLine,
-    };
-  }, [model, held, screenWidth, zoom]);
-
-  const spot = Number(analysis?.spot ?? built.body?.spot ?? basket.spot);
-  const onChart = !!chart && Number.isFinite(spot) && spot > 0 && spot >= chart.lo && spot <= chart.hi;
-  const noT0 = calibration(analysis);
-  const expiryNow = model
-    ? model.atSpot
-    : onChart && held ? valueAt(held.spots, held.values, spot) : null;
-  const todayNow = model?.atSpotToday ?? null;
-
-  const touchSpot = chart && touchPx !== null
-    ? chart.lo + ((touchPx - 5) / (chart.w - 10)) * (chart.hi - chart.lo)
-    : null;
-  const touchExpiry = touchSpot !== null && chart?.expiryValues ? valueAt(chart.xs, chart.expiryValues, touchSpot) : null;
-  const touchToday = touchSpot !== null && chart?.todayValues ? valueAt(chart.xs, chart.todayValues, touchSpot) : null;
-
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: (evt) => setTouchPx(evt.nativeEvent.locationX),
-    onPanResponderMove: (evt) => setTouchPx(evt.nativeEvent.locationX),
-    onPanResponderRelease: () => setTouchPx(null),
-    onPanResponderTerminate: () => setTouchPx(null),
-  }), [chart]);
-
-  return (
-    <View style={styles.payoff}>
-      <View style={styles.payoffHead}>
-        <Text style={styles.small}>{model ? "Payoff · expiry and T+0" : "Payoff · at expiry"}</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          {loading && !model ? (
-            <Text style={[styles.cardMeta, { fontSize: 10 }]}>Loading T+0...</Text>
-          ) : null}
-          {todayNow !== null ? (
-            <Text style={[styles.figure, { color: moneyColor(todayNow, styles) }]}>{rupees(todayNow, true)}</Text>
-          ) : null}
-          {chart ? (
-            <View style={{ flexDirection: "row", gap: 4 }}>
-              <TouchableOpacity
-                style={styles.zoomBtn}
-                onPress={() => setZoom(z => Math.min(z * 1.5, 10))}
-                accessibilityRole="button"
-                accessibilityLabel="Zoom in on the payoff chart"
-              >
-                <Ionicons name="add" size={16} color={styles.cBrand} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.zoomBtn, zoom <= 1 && { opacity: 0.3 }]}
-                onPress={() => setZoom(z => Math.max(z / 1.5, 1))}
-                disabled={zoom <= 1}
-                accessibilityRole="button"
-                accessibilityLabel="Zoom out on the payoff chart"
-              >
-                <Ionicons name="remove" size={16} color={styles.cBrand} />
-              </TouchableOpacity>
-            </View>
-          ) : null}
-        </View>
-      </View>
-
-      {!chart ? (
-        loading ? (
-          <Text style={styles.small}>Reading these legs</Text>
-        ) : failed ? (
-          <Text style={styles.small}>{`Model read failed: ${failed}`}</Text>
-        ) : (
-          <Text style={styles.small}>{`No curve: ${held ? "no contracts to draw" : built.unpriced.join("  ·  ") || "the desk holds no exact contracts"}`}</Text>
-        )
-      ) : (
-        <>
-          <View {...panResponder.panHandlers} style={{ position: "relative" }}>
-            <Svg width={chart.w} height={chart.h}>
-              <Line x1={0} y1={chart.zero} x2={chart.w} y2={chart.zero} stroke={styles.cBorder} strokeWidth={1} strokeDasharray="4 3" />
-              {chart.today ? <Path d={chart.today} stroke={styles.cWarn} strokeWidth={1.5} fill="none" opacity={0.9} /> : null}
-              {chart.expiry ? <Path d={chart.expiry} stroke={styles.cBrand} strokeWidth={2} fill="none" /> : null}
-              {onChart ? (
-                <Line x1={chart.px(spot)} y1={10} x2={chart.px(spot)} y2={chart.h - 12} stroke={styles.cMuted} strokeWidth={1} opacity={0.6} />
-              ) : null}
-              {onChart && expiryNow !== null && chart.expiry ? (
-                <Circle cx={chart.px(spot)} cy={chart.py(expiryNow)} r={3.5} fill={styles.cBrand} />
-              ) : null}
-              {onChart && todayNow !== null && chart.today ? (
-                <Circle cx={chart.px(spot)} cy={chart.py(todayNow)} r={3} fill={styles.cWarn} />
-              ) : null}
-              {touchSpot !== null && touchPx !== null && touchPx >= 5 && touchPx <= chart.w - 5 ? (
-                <>
-                  <Line x1={chart.px(touchSpot)} y1={0} x2={chart.px(touchSpot)} y2={chart.h} stroke={styles.cText} strokeWidth={0.5} opacity={0.4} />
-                  {touchExpiry !== null && chart.expiry ? (
-                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchExpiry)} r={3} fill={styles.cBrand} />
-                  ) : null}
-                  {touchToday !== null && chart.today ? (
-                    <Circle cx={chart.px(touchSpot)} cy={chart.py(touchToday)} r={3} fill={styles.cWarn} />
-                  ) : null}
-                </>
-              ) : null}
-            </Svg>
-            {touchSpot !== null && touchPx !== null ? (
-              <View style={[
-                styles.tooltip,
-                {
-                  left: Math.min(Math.max(touchPx - 50, 0), chart.w - 100),
-                  top: 4,
-                },
-              ]}>
-                <Text style={styles.tooltipSpot}>{formatNumber(touchSpot, 0)}</Text>
-                {touchExpiry !== null ? (
-                  <Text style={[styles.tooltipValue, { color: styles.cBrand }]}>
-                    {`expiry ${rupees(touchExpiry, true) ?? "—"}`}
-                  </Text>
-                ) : null}
-                {touchToday !== null ? (
-                  <Text style={[styles.tooltipValue, { color: styles.cWarn }]}>
-                    {`T+0 ${rupees(touchToday, true) ?? "—"}`}
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-          <View style={styles.payoffAxis}>
-            <Text style={styles.axisText}>{formatNumber(chart.lo, 0)}</Text>
-            <Text style={styles.axisText}>{onChart ? `${basket.underlying} spot ${formatNumber(spot, 2)}` : "expiry"}</Text>
-            <Text style={styles.axisText}>{formatNumber(chart.hi, 0)}</Text>
-          </View>
-          <Text style={styles.legend}>
-            <Text style={{ color: styles.cBrand }}>— expiry</Text>
-            {chart.today ? <Text>{`  ·  `}<Text style={{ color: styles.cWarn }}>— T+0</Text></Text> : null}
-          </Text>
-        </>
-      )}
-
-      {figures ? (
-        <View style={styles.figureGrid}>
-          <Figure styles={styles} label="Basket P&L · T+0" value={todayNow !== null ? rupees(todayNow, true) ?? "no estimate" : noT0 ?? "no estimate"} />
-          <Figure styles={styles} label="Expiry value now" value={expiryNow !== null ? rupees(expiryNow, true) : "not priced"} />
-          <Figure styles={styles} label="Max profit" value={figures.maxProfit} />
-          <Figure styles={styles} label="Max loss" value={figures.maxLoss} />
-          <Figure styles={styles} label="POP" value={figures.pop} />
-          <Figure styles={styles} label={figures.net.startsWith("Net credit") ? "Net credit" : "Net debit"} value={figures.net.replace(/^Net (credit|debit) /, "")} />
-          <Figure styles={styles} label="Break-evens" value={figures.breakEvens} wide />
-          {margin.startsWith("₹") || margin.startsWith("−") || margin.startsWith("-")
-            ? <Figure styles={styles} label="Est. margin" value={margin} wide />
-            : <Figure styles={styles} label="" value="---" wide />}
-        </View>
-      ) : held ? (
-        <View style={styles.figureGrid}>
-          <Figure
-            styles={styles}
-            label="If it expired today"
-            value={expiryNow !== null
-              ? rupees(expiryNow, true) ?? "no price"
-              : Number.isFinite(spot) && spot > 0 ? "spot outside the strikes drawn" : "no spot read yet"}
-          />
-          <Figure styles={styles} label={held.netDebit <= 0 ? "Net credit" : "Net debit"} value={rupees(Math.abs(held.netDebit)) ?? "unknown"} />
-          <Figure styles={styles} label="Max profit" value={held.max === null ? "Unlimited" : rupees(held.max) ?? "unknown"} />
-          <Figure styles={styles} label="Max loss" value={held.min === null ? "Unlimited" : rupees(Math.abs(held.min)) ?? "unknown"} />
-          <Figure styles={styles} label="Break-evens" value={held.breakEvens.length ? held.breakEvens.map(value => formatNumber(value, 2)).join("  ·  ") : "none inside the held strikes"} wide />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function Figure({ styles, label, value, wide }: { styles: ReturnType<typeof sheet>; label: string; value: string; wide?: boolean }) {
-  return (
-    <View style={{ flex: wide ? 2 : 1, minWidth: wide ? 220 : 105, gap: 1 }}>
-      <Text style={styles.figureLabel}>{label}</Text>
-      <Text style={styles.figureValue}>{value}</Text>
-    </View>
   );
 }
 
@@ -828,7 +582,6 @@ function sheet(theme: string) {
       aggregateFoot: { fontSize: 11, color: c.cMuted, lineHeight: 16 },
       figureLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6, color: c.cMuted, textTransform: "uppercase" },
       figure: { fontSize: 15, fontWeight: "700", color: c.cText },
-      figureValue: { fontSize: 12.5, fontWeight: "600", color: c.cText, lineHeight: 17 },
       figureBig: { fontSize: 19, fontWeight: "800" },
       card: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 8 },
       cardHead: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -839,12 +592,6 @@ function sheet(theme: string) {
       back: { flexDirection: "row", alignItems: "center", gap: 2, alignSelf: "flex-start" },
       backText: { fontSize: 13, fontWeight: "700", color: c.cBrand },
       basketTitle: { fontSize: 17, fontWeight: "700", color: c.cText },
-      payoff: { borderWidth: 1, borderColor: c.cBorder, borderRadius: 10, backgroundColor: c.cCard, padding: 10, gap: 6 },
-      payoffHead: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
-      payoffAxis: { flexDirection: "row", justifyContent: "space-between" },
-      axisText: { fontSize: 11, color: c.cMuted },
-      legend: { fontSize: 11, color: c.cText },
-      figureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: c.cBorder },
       actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
       chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: c.cBorder, backgroundColor: c.cCard },
       chipPrimary: { backgroundColor: c.cBrand, borderColor: c.cBrand },
@@ -861,10 +608,6 @@ function sheet(theme: string) {
       note: { fontSize: 12, color: c.cWarn, lineHeight: 17 },
       basis: { fontSize: 11, color: c.cMuted, lineHeight: 16 },
       small: { fontSize: 12, color: c.cMuted },
-      zoomBtn: { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: c.cBorder, alignItems: "center", justifyContent: "center", backgroundColor: c.cCard },
-      tooltip: { position: "absolute", backgroundColor: c.cCard, borderWidth: 1, borderColor: c.cBorder, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, gap: 2, elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2 },
-      tooltipSpot: { fontSize: 11, fontWeight: "700", color: c.cText },
-      tooltipValue: { fontSize: 10.5, fontWeight: "600" },
     }),
   };
 }
