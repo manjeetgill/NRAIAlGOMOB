@@ -24,6 +24,7 @@ import {
   type LastKnownSurface,
   type RowSource,
 } from "@nraialgo/shared/api";
+import { forgetQuoteMemory } from "./useQuoteMemory";
 
 /** What was painted last, held in memory too so re-opening a screen in the same session shows the list on
  *  its first render instead of one async read later. `undefined` means this session has not looked yet. */
@@ -88,10 +89,12 @@ export function useLastKnown<T>(surface: LastKnownSurface, incoming: readonly T[
  *
  * A remembered book belongs to one workspace: left on the phone, the next sign-in would open onto another
  * trader's positions before prod had answered once. Only these keys go, so the token and every other cache
- * a screen owns stay where they are.
+ * a screen owns stay where they are — and the prices the screens paint from memory go with them, since they
+ * were seen through the same account.
  */
 export function forgetLastKnown(): void {
   mirror.clear();
+  forgetQuoteMemory();
   AsyncStorage.getAllKeys().then((keys) => {
     const owned = keys.filter((entry) => entry.startsWith(LAST_KNOWN_PREFIX));
     if (owned.length > 0) AsyncStorage.multiRemove(owned).catch(() => {});

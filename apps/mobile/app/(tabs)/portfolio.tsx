@@ -11,7 +11,7 @@
  * heading puts the largest or the worst of that figure at the top.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
@@ -22,6 +22,7 @@ import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/util
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { useLastKnown } from "@/hooks/useLastKnown";
+import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 import { useAuthStore } from "@nraialgo/shared/stores";
 import {
   derivativeCodes,
@@ -33,10 +34,12 @@ import {
   nextSort,
   sortRows,
   streamIdFor,
+  tickEntries,
   useQuoteFeed,
   type Holding,
   type Marked,
   type OpenPosition,
+  type QuoteEntry,
   type SortColumn,
   type SortState,
 } from "@nraialgo/shared/api";
@@ -151,6 +154,25 @@ export default function PortfolioScreen() {
   const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
   const positions = useMemo(() => markPositions(savedPositions, feed.quotes, underlyings), [savedPositions, feed.quotes, underlyings]);
   const holdings = useMemo(() => markHoldings(savedHoldings, feed.quotes), [savedHoldings, feed.quotes]);
+
+  // The book is the one place the broker names a price per contract identity, so it seeds the phone's quote
+  // memory: the symbol the trader holds is often the row their watchlist cannot price. Nothing here is painted
+  // back onto these rows — the broker's own mark and P&L are what this screen is for.
+  const quotes = useQuoteMemory();
+  useEffect(() => {
+    const priced: QuoteEntry[] = [];
+    for (const row of positions) {
+      const id = streamIdFor(row, underlyings[row.symbol.trim().toUpperCase()] ?? null);
+      const price = Number(row.markPrice);
+      if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
+    }
+    for (const row of holdings) {
+      const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null });
+      const price = Number(row.currentPrice);
+      if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
+    }
+    quotes.remember([...tickEntries(feed.quotes), ...priced]);
+  }, [quotes, positions, holdings, feed.quotes]);
 
   // One tap on a heading sorts by that column, the next tap turns it around. The two tabs keep their own
   // order, so reading a sorted book never reorders the other one behind the trader's back.

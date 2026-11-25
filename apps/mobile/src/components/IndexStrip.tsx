@@ -6,13 +6,22 @@
  * price says so instead of reading like a live one.
  */
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { LAST_KNOWN, chartFailureReason, streamId, useQuoteFeed, type IndexQuote } from "@nraialgo/shared/api";
+import {
+  LAST_KNOWN,
+  chartFailureReason,
+  streamId,
+  tickEntries,
+  useQuoteFeed,
+  type IndexQuote,
+  type QuoteEntry,
+} from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
 import { useLastKnown } from "@/hooks/useLastKnown";
+import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 
 /** Prod names its quote states in code; the strip says what they mean. */
 function statusWord(status: string): string {
@@ -58,6 +67,19 @@ function IndexStrip() {
       return { ...idx, price: tick.price, change, changePct, status: "live" };
     });
   }, [copy.rows, copy.source, feed.quotes]);
+
+  // A strip is the one read that prices every index at once, by the same canonical ids the ladder's spot and
+  // the Overview ask the stream about, so what it shows is worth keeping: a screen that later finds prod has
+  // nothing for that name has a number here, with the minute it was seen.
+  const quotes = useQuoteMemory();
+  useEffect(() => {
+    const entries: QuoteEntry[] = tickEntries(feed.quotes);
+    for (const idx of strip ?? []) {
+      const id = streamId(idx.name);
+      if (id && idx.price !== null && idx.price > 0) entries.push({ id, price: idx.price, at: idx.at });
+    }
+    quotes.remember(entries);
+  }, [quotes, strip, feed.quotes]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", up: "#22c55e", down: "#ef4444" }

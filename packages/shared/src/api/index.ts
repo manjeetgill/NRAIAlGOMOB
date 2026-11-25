@@ -230,6 +230,28 @@ export {
 } from "./last-known";
 
 export {
+  QUOTE_MEMORY_CASH_MAX_AGE_MS,
+  QUOTE_MEMORY_KEY,
+  QUOTE_MEMORY_MAX,
+  cashEntries,
+  legEntries,
+  paintWatchlist,
+  paintable,
+  readQuoteMemory,
+  rememberedSide,
+  rememberQuotes,
+  sameIstDay,
+  seenLine,
+  stampMs,
+  tickEntries,
+  writeQuoteMemory,
+  type QuoteEntry,
+  type QuoteMemory,
+  type Remembered,
+  type RememberedQuote,
+} from "./quote-memory";
+
+export {
   nextSort,
   sortRows,
   type SortColumn,
