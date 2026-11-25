@@ -653,6 +653,9 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     // The key and the read are `chainRequest`'s business, not the caller's; a caller sets when the read
     // runs, never what it is cached under, because the warm-up on tab focus writes that same key.
     options?: Omit<UseQueryOptions<OptionChainData, ApiError>, "queryKey" | "queryFn">,
+    // Only a screen that ticks its visible strikes from the price socket (the chain tab) may slow the
+    // whole-chain re-read; the strategy builder and Algo Lab payoff read prices from this poll alone.
+    streamed = false,
   ) => {
     const { asked, queryKey, params } = chainRequest(underlying, expiry);
     return useQuery({
@@ -671,7 +674,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       },
       staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
-      refetchInterval: ({ state }) => (state.data ? (quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false),
+      refetchInterval: ({ state }) => (state.data ? (streamed && quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false),
       ...options,
     });
   };
