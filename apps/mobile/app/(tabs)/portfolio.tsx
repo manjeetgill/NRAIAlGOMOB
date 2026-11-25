@@ -102,7 +102,7 @@ export default function PortfolioScreen() {
   // could not, and the reason it gave. The rows still come from the mapped hooks.
   // A hidden tab stops polling (see useScreenFocused); the account SSE keeps the cache current.
   const focused = useScreenFocused();
-  const { data: account, refetch: refetchAccount } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused });
+  const { data: account, refetch: refetchAccount } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused, gcTime: Infinity });
 
   const savedPositions = useMemo(() => data ?? [], [data]);
   const savedHoldings = useMemo(() => iciciHoldings(account ?? {}), [account]);

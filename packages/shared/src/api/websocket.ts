@@ -95,6 +95,8 @@ let asOf: string | null = null;
 let connected = false;
 /** When the socket last carried a price the server called fresh; 0 before the first one. */
 let lastFreshTickAt = 0;
+/** When each instrument id last carried a fresh price, so a screen can ask about its own rows. */
+let lastFreshById = new Map<string, number>();
 let reason: FeedReason = null;
 let socket: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -254,7 +256,10 @@ function accept(frame: WireFrame) {
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     const tick = toTick(quote, id);
     published.set(quoteKey(quote), tick);
-    if (tick.fresh) lastFreshTickAt = Date.now();
+    if (tick.fresh) {
+      lastFreshTickAt = Date.now();
+      lastFreshById.set(id, lastFreshTickAt);
+    }
     changedIds.add(id);
   }
   for (const key of Array.isArray(frame.removed) ? frame.removed : []) {
@@ -300,6 +305,7 @@ function armSilence() {
       if (socket === ws) socket = null;
       connected = false;
       published = new Map();
+      lastFreshById = new Map();
       reason = "closed";
       publish();
       scheduleConnect();
@@ -364,6 +370,7 @@ function connect() {
     clearSilence();
     if (socket === ws) socket = null;
     published = new Map();
+    lastFreshById = new Map();
     // 1008 is a policy close: the origin, the sign-in, the edition or the price provider gate refused us.
     // 1013 means this workspace already holds its three tabs, which a retry at the slow cadence outlasts.
     reason = event.code === 1008 ? "policy" : event.code === 1013 ? "capacity" : "closed";
@@ -397,6 +404,7 @@ function disconnect() {
   }
   connected = false;
   published = new Map();
+  lastFreshById = new Map();
   reason = "closed";
 }
 
@@ -544,6 +552,22 @@ const LIVE_TICK_MS = 30_000;
  */
 export function quoteStreamConnected(): boolean {
   return connected && reason === null && Date.now() - lastFreshTickAt < LIVE_TICK_MS;
+}
+
+/** How recently each id on a screen must have ticked for that screen to count as fed by the socket. */
+const SCREEN_TICK_MS = 2 * 60_000;
+
+/**
+ * Whether the socket is feeding THIS screen: it is live (see quoteStreamConnected) and every id the
+ * screen shows has carried a fresh price in the last 2 minutes. An id the socket does not carry, or a
+ * screen with nothing it can stream, answers false, so that screen keeps its normal REST read instead
+ * of slowing down on prices it never receives. A quiet instrument older than 2 minutes also answers
+ * false; that costs a REST read, never a frozen price.
+ */
+export function quoteStreamCarries(ids: readonly string[] | null | undefined): boolean {
+  if (!ids || ids.length === 0 || !quoteStreamConnected()) return false;
+  const now = Date.now();
+  return ids.every((id) => now - (lastFreshById.get(id) ?? 0) < SCREEN_TICK_MS);
 }
 
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */

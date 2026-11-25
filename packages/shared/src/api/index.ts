@@ -149,6 +149,7 @@ export {
   resumeQuoteDispatch,
   recoverQuoteStream,
   quoteStreamConnected,
+  quoteStreamCarries,
   type QuoteTick,
   type FeedSnapshot,
   type FeedReason,

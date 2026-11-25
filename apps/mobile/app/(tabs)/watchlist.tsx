@@ -10,7 +10,7 @@
  * marks a row, and a marked row says so in its own colour.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -175,17 +175,24 @@ export default function WatchlistScreen() {
   const listNumber = tab.kind === "list" ? tab.number : lastList;
 
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
+  // gcTime Infinity: a hidden tab has no observer, and the default 5-minute collection would make the
+  // return show a loader instead of the last list it had.
   const focused = useScreenFocused();
-  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused });
+  // The rows this screen ticks from the socket, set below once they are known. The list's REST read
+  // slows down only while every one of them is ticking (see quoteStreamCarries).
+  const streamedRows = useRef<readonly string[] | null>(null);
+  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused, gcTime: Infinity });
   const { data: saved, error: savedError } = useWatchlist(listNumber, {
     queryKey: queryKeys.watchlist.list(listNumber),
     subscribed: focused,
-  });
+    gcTime: Infinity,
+  }, () => streamedRows.current);
   const { data: builtins, error: builtinError } = useBuiltinWatchlist(builtin, page, {
     queryKey: queryKeys.watchlist.builtin(builtin, page),
     enabled: tab.kind === "predefined",
     subscribed: focused,
-  });
+    gcTime: Infinity,
+  }, () => streamedRows.current);
   const { data: found } = useEquitySearch(debouncedSearch);
   const add = useAddToWatchlist();
   const drop = useRemoveFromWatchlist();
@@ -326,9 +333,14 @@ export default function WatchlistScreen() {
   // Watchlist rows are cash instruments, so each one's stream id comes straight from the exchange and symbol
   // prod sent beside it. An exchange the stream does not publish builds no id and is never subscribed: one
   // subscription the server cannot parse closes the socket for the whole app, not just this row.
-  const instruments = useMemo(() => [...new Set(rows.map((row) => streamIdFor({
+  const rowIds = useMemo(() => rows.map((row) => streamIdFor({
     exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null,
-  })).filter((id): id is string => !!id))].sort(), [rows]);
+  })), [rows]);
+  const instruments = useMemo(() => [...new Set(rowIds.filter((id): id is string => !!id))].sort(), [rowIds]);
+  // A row the socket cannot carry keeps the list on its normal REST read.
+  useEffect(() => {
+    streamedRows.current = rowIds.every((id) => !!id) ? instruments : null;
+  }, [rowIds, instruments]);
   const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
   const liveRows = useMemo(() => markWatchlist(rows, feed.quotes), [rows, feed.quotes]);
   const ticking = liveRows.some(row => row.live);

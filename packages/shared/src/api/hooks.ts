@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
 import { subscribeSSE, type SseSubscription } from "./sse";
-import { quoteStreamConnected } from "./websocket";
+import { quoteStreamCarries } from "./websocket";
 import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
 
@@ -19,6 +19,13 @@ import { formatISTDate } from "../utils";
  * when the stream is down it falls back to its normal poll.
  */
 const STREAM_SAFETY_POLL_MS = 2 * 60 * 1000;
+const CLOSED_CHAIN_POLL_MS = 60 * 1000;
+/**
+ * The instrument ids a screen ticks from the price socket, read when a poll is scheduled. Only a screen
+ * that passes one may slow its REST read, and only while every one of those ids is ticking
+ * (quoteStreamCarries). null means the screen shows something the socket cannot carry.
+ */
+export type StreamedIds = () => readonly string[] | null;
 let accountStream: SseSubscription | null = null;
 let accountStreamUsers = 0;
 
@@ -416,13 +423,13 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // ===== BASKETS =====
   // One read answers the whole desk: every basket arrives with its legs, marks, booked P&L, close charges
   // and the payoff contracts, so opening a basket costs the phone nothing extra.
-  const useBaskets = (source?: string, options?: Omit<UseQueryOptions<BasketListResponse, ApiError>, "queryKey" | "queryFn">) => {
+  const useBaskets = (source?: string, options?: Omit<UseQueryOptions<BasketListResponse, ApiError>, "queryKey" | "queryFn">, streamed?: StreamedIds) => {
     return useQuery({
       queryKey: queryKeys.baskets.all(source),
       queryFn: () => client.get<BasketListResponse>("/v1/baskets", { params: { source } }),
       staleTime: 5 * 1000,
       // Open legs tick from the price socket on the desk, so the read is a safety net while it is up.
-      refetchInterval: () => (quoteStreamConnected() ? 60 * 1000 : 30 * 1000),
+      refetchInterval: () => (quoteStreamCarries(streamed?.()) ? 60 * 1000 : 30 * 1000),
       ...options,
     });
   };
@@ -563,12 +570,12 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // server, /v1/watchlist/builtin/{name} returns read-only index constituents, and /v1/index-strip
   // returns the headline indices. The /v1/watchlist/snapshot and /v1/watchlist/radar routes this
   // screen used to call do not exist on prod, so nothing here may assume them.
-  const useWatchlist = (number: number, options?: UseQueryOptions<WatchlistPage, ApiError>) => {
+  const useWatchlist = (number: number, options?: UseQueryOptions<WatchlistPage, ApiError>, streamed?: StreamedIds) => {
     return useQuery({
       queryKey: queryKeys.watchlist.list(number),
       queryFn: () => client.get<WatchlistPage>("/v1/watchlist", { params: { list: number } }),
       staleTime: 2 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarries(streamed?.()) ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -580,12 +587,12 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // only reused for 5 s (QUOTES_TTL), so a refresh slower than that arrives after the seed's
   // work has already expired and starts another one. Polling at 2 s while pending is what
   // makes the prices show up in one screen-load instead of never.
-  const useBuiltinWatchlist = (name: BuiltinListName, page = 0, options?: UseQueryOptions<WatchlistPage, ApiError>) => {
+  const useBuiltinWatchlist = (name: BuiltinListName, page = 0, options?: UseQueryOptions<WatchlistPage, ApiError>, streamed?: StreamedIds) => {
     return useQuery({
       queryKey: queryKeys.watchlist.builtin(name, page),
       queryFn: () => client.get<WatchlistPage>(`/v1/watchlist/builtin/${name}`, { params: { page } }),
       staleTime: 10 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarries(streamed?.()) ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -654,7 +661,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     options?: Omit<UseQueryOptions<OptionChainData, ApiError>, "queryKey" | "queryFn">,
     // Only a screen that ticks its visible strikes from the price socket (the chain tab) may slow the
     // whole-chain re-read; the strategy builder and Algo Lab payoff read prices from this poll alone.
-    streamed = false,
+    streamed?: StreamedIds,
   ) => {
     const { asked, queryKey, params } = chainRequest(underlying, expiry);
     return useQuery({
@@ -673,7 +680,14 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       },
       staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
-      refetchInterval: ({ state }) => (state.data ? (streamed && quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false),
+      // While F&O is closed the ladder is closing prices that change a few times an evening (the 15:40
+      // close, then the NSE bhavcopy), so it re-reads once a minute, not every 5 seconds. A minute, not
+      // longer, so the morning open (marketOpen turns true at 09:15) shows up within a minute.
+      refetchInterval: ({ state }) => {
+        if (!state.data) return false;
+        if (state.data.marketOpen === false) return CLOSED_CHAIN_POLL_MS;
+        return quoteStreamCarries(streamed?.()) ? 30 * 1000 : 5 * 1000;
+      },
       ...options,
     });
   };
@@ -923,13 +937,13 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 
   // Prod's headline ticker is /v1/index-strip; the /v1/indices route this used to call does not exist.
   // overview=true asks for prices alone, because option lot sizes belong to the chain desk, not a strip.
-  const useIndices = (options?: UseQueryOptions<IndexStrip, ApiError>) => {
+  const useIndices = (options?: UseQueryOptions<IndexStrip, ApiError>, streamed?: StreamedIds) => {
     return useQuery({
       queryKey: queryKeys.market.indices(),
       queryFn: async () =>
         indexStripRows(await client.get<StripPayload>("/v1/index-strip", { params: { overview: true } })),
       staleTime: 5 * 1000,
-      refetchInterval: () => (quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 60 * 1000),
+      refetchInterval: () => (quoteStreamCarries(streamed?.()) ? STREAM_SAFETY_POLL_MS : 60 * 1000),
       ...options,
     });
   };

@@ -232,7 +232,18 @@ export default function OptionChainScreen() {
   // An empty expiry is a question, not a missing value: the server returns its nearest listed expiry.
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
   const focused = useScreenFocused();
-  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(underlying, expiry, { enabled: resumed && !!underlying, subscribed: focused }, true);
+  // The strikes this screen ticks from the socket, set below once the visible band is known; the whole
+  // chain re-read slows down only while every one of them is ticking (see quoteStreamCarries).
+  // gcTime 30 min: a hidden tab has no observer, and the default 5 minutes would make the return show a
+  // loader instead of the last ladder. Not Infinity, because every underlying and expiry opened is its
+  // own large entry.
+  const streamedStrikes = useRef<readonly string[] | null>(null);
+  const { data: chain, error, refetch, isFetching, isLoading } = useOptionChain(
+    underlying,
+    expiry,
+    { enabled: resumed && !!underlying, subscribed: focused, gcTime: 30 * 60 * 1000 },
+    () => streamedStrikes.current,
+  );
 
   /**
    * A press on a stock's "Option Chain" tab carries its symbol, and the deep link has always promised the
@@ -323,6 +334,9 @@ export default function OptionChainScreen() {
   // Off-hours the stream carries nothing for these contracts and the ladder is the closing prices the
   // trader expects, so the screen asks for ticks only while the exchange is trading.
   const feed = useQuoteFeed(ids, !!chain?.marketOpen && ids.length > 0);
+  useEffect(() => {
+    streamedStrikes.current = ids;
+  }, [ids]);
   const [ticks, setTicks] = useState<Map<string, QuoteTick>>(() => new Map());
   useEffect(() => setTicks(current => tickByInstrument(feed.quotes, current)), [feed]);
   // A dropped socket stops carrying prices; keeping its last tick on screen would leave an old number
