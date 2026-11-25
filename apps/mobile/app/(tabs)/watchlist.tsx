@@ -10,7 +10,7 @@
  * marks a row, and a marked row says so in its own colour.
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -27,6 +27,8 @@ import { useRouter } from "expo-router";
 import {
   BUILTIN_LISTS,
   markWatchlist,
+  pauseQuoteDispatch,
+  resumeQuoteDispatch,
   queryKeys,
   streamIdFor,
   useQuoteFeed,
@@ -336,7 +338,7 @@ export default function WatchlistScreen() {
     : ticking ? "ticking" : feed.connected ? "waiting for ticks" : "no live stream";
   const listLine = pricesPending ? `${statusLine} · prices for this list are still arriving` : statusLine;
 
-  const renderRow = ({ item }: { item: WatchlistRow & Marked }) => {
+  const renderRow = useCallback(({ item }: { item: WatchlistRow & Marked }) => {
     const already = inList.has(`${item.exchange}:${item.symbol}`);
     return (
       <WatchlistRowItem
@@ -356,7 +358,7 @@ export default function WatchlistScreen() {
         addTo={addTo}
       />
     );
-  };
+  }, [inList, tab.kind, add.isPending, pricesPending, colors, up, down, styles, priceTone, signed, openBuy, openOverview, addTo]);
 
   return (
     <View style={styles.container}>
@@ -465,14 +467,18 @@ export default function WatchlistScreen() {
           data={liveRows}
           keyExtractor={item => `${item.exchange}:${item.symbol}`}
           renderItem={renderRow}
-          initialNumToRender={15}
-          maxToRenderPerBatch={15}
-          windowSize={7}
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          removeClippedSubviews={true}
           getItemLayout={(_, index) => ({
             length: WATCHLIST_ROW_HEIGHT,
             offset: WATCHLIST_ROW_HEIGHT * index,
             index,
           })}
+          onScrollBeginDrag={pauseQuoteDispatch}
+          onScrollEndDrag={resumeQuoteDispatch}
+          onMomentumScrollEnd={resumeQuoteDispatch}
           ListFooterComponent={
             <>
               {tab.kind === "predefined" && pages > 1 ? (

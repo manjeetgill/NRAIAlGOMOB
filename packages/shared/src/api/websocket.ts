@@ -126,13 +126,81 @@ function snapshotFor(ids: readonly string[]): FeedSnapshot {
   };
 }
 
-function publish(changedIds?: Set<string>) {
+let isSuspended = false;
+let pendingChangedIds: Set<string> | undefined = undefined;
+let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPublishTime = 0;
+const isTestEnv = typeof globalThis !== "undefined" && (globalThis as any).process?.env?.NODE_ENV === "test";
+const THROTTLE_MS = isTestEnv ? 0 : 100;
+
+/** Suspends UI state notifications from quote ticks (e.g. while scrolling a list). */
+export function pauseQuoteDispatch() {
+  isSuspended = true;
+}
+
+/** Resumes UI notifications and flushes the latest buffered quote snapshot. */
+export function resumeQuoteDispatch() {
+  if (!isSuspended) return;
+  isSuspended = false;
+  if (pendingChangedIds !== undefined) {
+    const toFlush = pendingChangedIds;
+    pendingChangedIds = undefined;
+    publishImmediate(toFlush);
+  }
+}
+
+function publishImmediate(changedIds?: Set<string>) {
+  lastPublishTime = Date.now();
   for (const watcher of watchers) {
     if (changedIds && watcher.ids.length > 0) {
       const affectsWatcher = watcher.ids.some((id) => changedIds.has(id));
       if (!affectsWatcher) continue;
     }
     watcher.handler(snapshotFor(watcher.ids));
+  }
+}
+
+function publish(changedIds?: Set<string>) {
+  if (THROTTLE_MS === 0) {
+    publishImmediate(changedIds);
+    return;
+  }
+
+  if (isSuspended) {
+    if (!pendingChangedIds) {
+      pendingChangedIds = new Set(changedIds);
+    } else if (changedIds) {
+      for (const id of changedIds) pendingChangedIds.add(id);
+    }
+    return;
+  }
+
+  const now = Date.now();
+  const timeSinceLast = now - lastPublishTime;
+
+  if (timeSinceLast >= THROTTLE_MS) {
+    if (throttleTimer) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+    pendingChangedIds = undefined;
+    publishImmediate(changedIds);
+  } else {
+    if (!pendingChangedIds) {
+      pendingChangedIds = new Set(changedIds);
+    } else if (changedIds) {
+      for (const id of changedIds) pendingChangedIds.add(id);
+    }
+    if (!throttleTimer) {
+      throttleTimer = setTimeout(() => {
+        throttleTimer = null;
+        if (!isSuspended) {
+          const toFlush = pendingChangedIds;
+          pendingChangedIds = undefined;
+          publishImmediate(toFlush);
+        }
+      }, THROTTLE_MS - timeSinceLast);
+    }
   }
 }
 

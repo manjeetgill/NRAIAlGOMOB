@@ -19,9 +19,11 @@ export default function TabLayout() {
       screenListeners={{
         tabPress: (e) => {
           const routeName = e.target?.split("-")[0];
-          if (routeName === "portfolio") prefetchPortfolio();
-          else if (routeName === "orders") prefetchOrders();
-          else if (routeName === "option" || routeName === "option-chain") prefetchOptionChain();
+          requestAnimationFrame(() => {
+            if (routeName === "portfolio") prefetchPortfolio();
+            else if (routeName === "orders") prefetchOrders();
+            else if (routeName === "option" || routeName === "option-chain") prefetchOptionChain();
+          });
         },
       }}
       screenOptions={{

@@ -31,6 +31,8 @@ import { tabRoute } from "@/utils/tabRoute";
 /** Below two letters the server has nothing to narrow, so the box waits instead of firing a read. */
 const MIN_QUERY = 2;
 
+const SEARCH_ROW_HEIGHT = 50;
+
 export default function SearchScreen() {
   const router = useRouter();
   const { useEquitySearch } = useApi();
@@ -145,6 +147,15 @@ export default function SearchScreen() {
             <Text style={styles.venue}>{item.exchange}</Text>
           </TouchableOpacity>
         )}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={true}
+        getItemLayout={(_, index) => ({
+          length: SEARCH_ROW_HEIGHT,
+          offset: SEARCH_ROW_HEIGHT * index,
+          index,
+        })}
         ListFooterComponent={data?.results.length ? (
           <Text style={styles.note}>
             {`Listed stocks searched: ${formatNumber(data.catalogueTotal, 0)} · source ${data.source}`}

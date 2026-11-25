@@ -6,7 +6,7 @@
  * rather than the last poll.
  */
 
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useState, useCallback, useEffect } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -78,6 +78,14 @@ export default function TerminalChartsScreen() {
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
   const [chartKey, setChartKey] = useState(0);
+  const [isReady, setIsReady] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsReady(true);
+    }, 50);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleSymbolChange = useCallback((newSymbol: string) => {
     setSymbol(newSymbol);
@@ -252,6 +260,13 @@ export default function TerminalChartsScreen() {
             <Text style={[styles.actionLabel, { color: colors.text }]}>Refresh</Text>
           </TouchableOpacity>
         </View>
+      </View>
+    );
+  } else if (!isReady) {
+    body = (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" color={colors.accent} />
+        <Text style={{ marginTop: 12, color: colors.muted, fontSize: 13 }}>Initializing chart canvas...</Text>
       </View>
     );
   } else {

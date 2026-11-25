@@ -144,6 +144,8 @@ export {
   useQuotesStream,
   useQuoteFeed,
   watchQuotes,
+  pauseQuoteDispatch,
+  resumeQuoteDispatch,
   type QuoteTick,
   type FeedSnapshot,
   type FeedReason,

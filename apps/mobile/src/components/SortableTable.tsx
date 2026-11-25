@@ -11,7 +11,7 @@
 import React, { useCallback, useMemo, type ReactElement } from "react";
 import { Dimensions, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
-import type { SortColumn, SortState } from "@nraialgo/shared/api";
+import { pauseQuoteDispatch, resumeQuoteDispatch, type SortColumn, type SortState } from "@nraialgo/shared/api";
 
 export interface TableCell {
   text: string;
@@ -90,6 +90,8 @@ export function SortableTable<Row>({
     </View>
   ), [columns, widths, onSort, sort?.key, sort?.descending, styles]);
 
+  const ROW_HEIGHT = 46;
+
   const renderRow = useCallback(({ item }: { item: Row }) => {
     const body = (
       <View style={styles.row}>
@@ -133,9 +135,14 @@ export function SortableTable<Row>({
         contentContainerStyle={styles.list}
         refreshControl={refreshControl}
         ListFooterComponent={footer}
-        initialNumToRender={15}
-        maxToRenderPerBatch={15}
-        windowSize={7}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={true}
+        getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
+        onScrollBeginDrag={pauseQuoteDispatch}
+        onScrollEndDrag={resumeQuoteDispatch}
+        onMomentumScrollEnd={resumeQuoteDispatch}
       />
     </View>
   );

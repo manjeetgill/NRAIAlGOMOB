@@ -25,7 +25,7 @@ function statusWord(status: string): string {
 const signed = (value: number | null) =>
   value === null ? "—" : `${value > 0 ? "+" : ""}${formatNumber(value)}`;
 
-export default function IndexStrip() {
+function IndexStrip() {
   const { useIndices } = useApi();
   const { resolvedTheme } = useTheme();
   const { data: strip, error } = useIndices();
@@ -94,3 +94,5 @@ export default function IndexStrip() {
     </View>
   );
 }
+
+export default React.memo(IndexStrip);

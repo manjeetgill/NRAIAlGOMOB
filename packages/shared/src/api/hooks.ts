@@ -594,7 +594,10 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return data;
       },
       enabled: !!underlying,
-      placeholderData: keepPreviousData,
+      placeholderData: (previousData, previousQuery) => {
+        const prevUnderlying = (previousQuery?.queryKey as readonly unknown[] | undefined)?.[2];
+        return prevUnderlying === underlying ? previousData : undefined;
+      },
       staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
       refetchInterval: ({ state }) => (state.data ? 5 * 1000 : false),

@@ -11,7 +11,7 @@
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -36,6 +36,8 @@ import {
   tickWord,
   todayIST,
   useQuoteFeed,
+  pauseQuoteDispatch,
+  resumeQuoteDispatch,
   watchBand,
   type Band,
   type OptionRow,
@@ -119,6 +121,96 @@ function parseSelection(raw: string | null): { underlying: string; expiry: strin
   }
 }
 
+interface OptionRowItemProps {
+  row: OptionRow;
+  expiry: string;
+  styles: Record<string, any>;
+  liveCall?: QuoteTick;
+  livePut?: QuoteTick;
+  onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
+}
+
+const OptionRowItem = React.memo(function OptionRowItem({
+  row,
+  expiry,
+  styles,
+  liveCall,
+  livePut,
+  onTrade,
+}: OptionRowItemProps) {
+  const callQuote = row.call;
+  const putQuote = row.put;
+  const callPrice = callQuote ? liveSide(callQuote, liveCall) : null;
+  const putPrice = putQuote ? liveSide(putQuote, livePut) : null;
+  const callOiChange = callQuote?.oiChangePct;
+  const putOiChange = putQuote?.oiChangePct;
+
+  return (
+    <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
+      <View style={[styles.cell, styles.callCell]}>
+        {!callQuote ? (
+          <>
+            <Text style={styles.noPrice}>Not listed</Text>
+            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
+              <Text style={styles.actionButtonText}>Trade</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            {callPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(callPrice.price)}</Text>}
+            <Text style={styles.metaText} numberOfLines={1}>
+              {callPrice?.word ? `${callPrice.word}  ·  ` : ""}
+              {callQuote.iv === null ? "No IV" : `IV ${formatNumber(callQuote.iv, 1)}%`}
+              {callQuote.oi === null ? "" : `  ·  OI ${formatNumber(callQuote.oi, 0)}`}
+              {callOiChange !== null && callOiChange !== 0 ? (
+                <Text style={callOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
+                  {`  ·  ${callOiChange > 0 ? "+" : ""}${formatNumber(callOiChange, 1)}%`}
+                </Text>
+              ) : null}
+            </Text>
+            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
+              <Text style={styles.actionButtonText}>Trade</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+
+      <View style={[styles.cell, styles.strikeCell]}>
+        <Text style={styles.strikeText}>{formatNumber(Number(row.strike), 0)}</Text>
+        {row.isAtTheMoney ? <Text style={styles.atmTag}>ATM</Text> : null}
+      </View>
+
+      <View style={[styles.cell, styles.putCell]}>
+        {!putQuote ? (
+          <>
+            <Text style={styles.noPrice}>Not listed</Text>
+            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
+              <Text style={styles.actionButtonText}>Trade</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            {putPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(putPrice.price)}</Text>}
+            <Text style={styles.metaText} numberOfLines={1}>
+              {putPrice?.word ? `${putPrice.word}  ·  ` : ""}
+              {putQuote.iv === null ? "No IV" : `IV ${formatNumber(putQuote.iv, 1)}%`}
+              {putQuote.oi === null ? "" : `  ·  OI ${formatNumber(putQuote.oi, 0)}`}
+              {putOiChange !== null && putOiChange !== 0 ? (
+                <Text style={putOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
+                  {`  ·  ${putOiChange > 0 ? "+" : ""}${formatNumber(putOiChange, 1)}%`}
+                </Text>
+              ) : null}
+            </Text>
+            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
+              <Text style={styles.actionButtonText}>Trade</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    </View>
+  );
+});
+
 export default function OptionChainScreen() {
   const { useOptionChain, useOptionChains, useChainUnderlyings } = useApi();
   const { resolvedTheme } = useTheme();
@@ -180,27 +272,28 @@ export default function OptionChainScreen() {
   const sections = useOptionChains(underlying, chain?.expiries ?? [], allExpiries);
 
   // A desk displays the nearest expiry or user-chosen expiry. The nearest monthly expiry is tagged in the picker.
-  const monthly = chain ? nearestMonthlyExpiry(chain.expiries, todayIST()) : "";
+  const isMatchingChain = Boolean(chain && chain.underlying === underlying);
+  const monthly = isMatchingChain && chain ? nearestMonthlyExpiry(chain.expiries, todayIST()) : "";
   const derivedFor = useRef("");
   useEffect(() => {
-    if (!chain || expiry || derivedFor.current === chain.underlying) return;
+    if (!chain || chain.underlying !== underlying || expiry || derivedFor.current === chain.underlying) return;
     derivedFor.current = chain.underlying;
     // Align expiry with server-returned nearest expiry to avoid redundant second network round-trip
     if (chain.expiry) setOptionChainExpiry(chain.expiry);
-  }, [chain, expiry, setOptionChainExpiry]);
+  }, [chain, underlying, expiry, setOptionChainExpiry]);
 
   // What makes the next launch a single read. It is written from the chain that arrived, not from the
   // ask, so a date the server corrected is never remembered as the one that was wanted.
   useEffect(() => {
-    if (!chain) return;
+    if (!chain || chain.underlying !== underlying) return;
     AsyncStorage.setItem(SELECTION_KEY, JSON.stringify({ underlying: chain.underlying, expiry: chain.expiry })).catch(() => {});
-  }, [chain?.underlying, chain?.expiry]);
+  }, [chain?.underlying, chain?.expiry, underlying]);
 
   // One list either way: the strikes of the chosen date, or every listed date with its own heading and its
   // own read, so a date that is still arriving or that failed shows that instead of vanishing. It is built
   // here rather than in the render body because the price stream below subscribes by position in it.
   const items = useMemo<ChainItem[]>(() => {
-    if (!chain) return [];
+    if (!chain || chain.underlying !== underlying) return [];
     if (!allExpiries) {
       return listedRows(chain.rows).map(row => ({ kind: "row" as const, key: `${chain.expiry}|${row.strike}`, expiry: chain.expiry, row }));
     }
@@ -214,7 +307,7 @@ export default function OptionChainScreen() {
       }
       return [heading, ...listedRows(read.data.rows).map(row => ({ kind: "row" as const, key: `${day}|${row.strike}`, expiry: day, row }))];
     });
-  }, [chain, sections, allExpiries]);
+  }, [chain, underlying, sections, allExpiries]);
 
   // The ladder's own numbers arrive one broker read at a time, so between reads the screen would otherwise
   // freeze. The strikes the trader is looking at go on the app's existing price stream, keyed by the
@@ -258,7 +351,7 @@ export default function OptionChainScreen() {
   const centeredFor = useRef("");
   const pendingCenter = useRef(-1);
   useEffect(() => {
-    if (!chain || allExpiries) {
+    if (!chain || chain.underlying !== underlying || allExpiries) {
       pendingCenter.current = -1;
       return;
     }
@@ -267,12 +360,12 @@ export default function OptionChainScreen() {
     const tradeable = listedRows(chain.rows);
     const index = tradeable.findIndex(row => row.isAtTheMoney);
     pendingCenter.current = index >= 0 && index < tradeable.length ? index : -1;
-  }, [chain, allExpiries]);
+  }, [chain, underlying, allExpiries]);
 
   /** Spends the held ask, if there is one. The first list measure is what makes the scroll land. */
-  const centerOn = () => {
+  const centerOn = useCallback(() => {
     const index = pendingCenter.current;
-    if (index < 0 || !chain) return;
+    if (index < 0 || !chain || chain.underlying !== underlying) return;
     pendingCenter.current = -1;
     centeredFor.current = `${chain.underlying}|${chain.expiry}`;
     try {
@@ -281,7 +374,7 @@ export default function OptionChainScreen() {
       // A list that has still not measured this far refuses the scroll. Losing the centring is a better
       // outcome than crashing the screen, which is exactly what an out-of-range ask used to do.
     }
-  };
+  }, [chain, underlying]);
 
   const { data: catalogue, isLoading: catalogueLoading, error: catalogueError } = useChainUnderlyings({
     queryKey: queryKeys.optionChain.underlyings(),
@@ -362,15 +455,18 @@ export default function OptionChainScreen() {
     retryText: { fontSize: 13, fontWeight: "600", color: colors.brand },
   }), [colors]);
 
-  const choose = (name: string) => {
+  const choose = useCallback((name: string) => {
     setPickerOpen(false);
     setSearch("");
     // Switching the underlying clears the expiry; that symbol's own month-end contract is then read
     // off the ladder that comes back with its first chain, because lot sizes and expiries differ.
-    if (name !== underlying) setOptionChainUnderlying(name);
-  };
+    if (name !== underlying) {
+      derivedFor.current = "";
+      setOptionChainUnderlying(name);
+    }
+  }, [underlying, setOptionChainUnderlying]);
 
-  const openTicket = (onExpiry: string, row: OptionRow, right: "CE" | "PE") => {
+  const openTicket = useCallback((onExpiry: string, row: OptionRow, right: "CE" | "PE") => {
     const side = right === "CE" ? row.call : row.put;
     // The strike's own date is carried from the row, not read off the screen's current expiry: in the
     // all-expiries view one screen holds several dates, and a ticket built from the wrong one names a
@@ -381,47 +477,11 @@ export default function OptionChainScreen() {
       // The row also carries the identity its own broker master places, which for ICICI is not the label it
       // quotes under. A ticket built from the quoted label alone names a contract prod cannot send.
       side ? { symbol: side.order?.tradingsymbol || side.symbol, exchange: side.order?.exchange } : null);
-  };
-
-  // A strike is tradable whether or not a price is on record, so the way into the ticket is offered
-  // either way — leaving it out of an unpriced row would give a closed-market chain no ticket at all.
-  const tradeButton = (onExpiry: string, row: OptionRow, right: "CE" | "PE") => (
-    <TouchableOpacity style={styles.actionButton} onPress={() => openTicket(onExpiry, row, right)}>
-      <Text style={styles.actionButtonText}>Trade</Text>
-    </TouchableOpacity>
-  );
-
-  const renderSide = (onExpiry: string, row: OptionRow, right: "CE" | "PE") => {
-    const quote = right === "CE" ? row.call : row.put;
-    if (!quote) return (
-      <>
-        <Text style={styles.noPrice}>Not listed</Text>
-        {tradeButton(onExpiry, row, right)}
-      </>
-    );
-    const price = liveSide(quote, live.get(quote.instrumentId));
-    const oiChange = quote.oiChangePct;
-    return (
-      <>
-        {price === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(price.price)}</Text>}
-        <Text style={styles.metaText} numberOfLines={1}>
-          {price?.word ? `${price.word}  ·  ` : ""}
-          {quote.iv === null ? "No IV" : `IV ${formatNumber(quote.iv, 1)}%`}
-          {quote.oi === null ? "" : `  ·  OI ${formatNumber(quote.oi, 0)}`}
-          {oiChange !== null && oiChange !== 0 ? (
-            <Text style={oiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
-              {`  ·  ${oiChange > 0 ? "+" : ""}${formatNumber(oiChange, 1)}%`}
-            </Text>
-          ) : null}
-        </Text>
-        {tradeButton(onExpiry, row, right)}
-      </>
-    );
-  };
+  }, [underlying, ticket]);
 
   // Named off the store when no chain has arrived yet: the picker is the way out of a failed read, so it
   // cannot be built on the read having worked.
-  const picked = chain?.underlying ?? underlying;
+  const picked = underlying;
   const listed = catalogue?.underlyings.length ?? 0;
 
   const underlyingPicker = pickerOpen ? (
@@ -447,7 +507,11 @@ export default function OptionChainScreen() {
           style={{ maxHeight: 300 }}
           data={matches}
           keyExtractor={(row: UnderlyingInfo) => row.name}
-          initialNumToRender={20}
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews
+          getItemLayout={(_, index) => ({ length: 55, offset: 55 * index, index })}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             <Text style={styles.pickerStatus}>
@@ -481,7 +545,7 @@ export default function OptionChainScreen() {
   // or an unlisted underlying looks, and the trader cannot tell them apart. The picker is offered here
   // too, because an underlying the exchange stopped listing has no other way out — "Try again" re-asks
   // for the same one, and the saved choice comes back on the next launch to do it again.
-  if (!chain && error) {
+  if ((!chain || chain.underlying !== underlying) && error) {
     const asked = expiry ? `${underlying}, expiry ${expiry}` : underlying;
     return (
       <ScrollView style={styles.container} contentContainerStyle={[styles.empty, { flexGrow: 1 }]}>
@@ -503,7 +567,7 @@ export default function OptionChainScreen() {
     );
   }
 
-  if (!chain && isLoading) {
+  if ((!chain || chain.underlying !== underlying) && (isLoading || isFetching)) {
     return (
       <View style={[styles.container, styles.loading]}>
         <ActivityIndicator size="large" color={colors.brand} />
@@ -512,7 +576,7 @@ export default function OptionChainScreen() {
     );
   }
 
-  if (!chain) {
+  if (!chain || chain.underlying !== underlying) {
     return null;
   }
 
@@ -636,6 +700,9 @@ export default function OptionChainScreen() {
           updateCellsBatchingPeriod={50}
           windowSize={5}
           removeClippedSubviews
+          onScrollBeginDrag={pauseQuoteDispatch}
+          onScrollEndDrag={resumeQuoteDispatch}
+          onMomentumScrollEnd={resumeQuoteDispatch}
           onContentSizeChange={centerOn}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfig}
@@ -668,16 +735,15 @@ export default function OptionChainScreen() {
                 </View>
               );
             }
-            const row = item.row;
             return (
-              <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
-                <View style={[styles.cell, styles.callCell]}>{renderSide(item.expiry, row, "CE")}</View>
-                <View style={[styles.cell, styles.strikeCell]}>
-                  <Text style={styles.strikeText}>{formatNumber(Number(row.strike), 0)}</Text>
-                  {row.isAtTheMoney ? <Text style={styles.atmTag}>ATM</Text> : null}
-                </View>
-                <View style={[styles.cell, styles.putCell]}>{renderSide(item.expiry, row, "PE")}</View>
-              </View>
+              <OptionRowItem
+                row={item.row}
+                expiry={item.expiry}
+                styles={styles}
+                liveCall={live.get(item.row.call?.instrumentId ?? "")}
+                livePut={live.get(item.row.put?.instrumentId ?? "")}
+                onTrade={openTicket}
+              />
             );
           }}
           contentContainerStyle={{ paddingBottom: 100 }}
