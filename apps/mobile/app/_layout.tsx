@@ -18,6 +18,7 @@ import { useAuthStore } from "@nraialgo/shared/stores";
 import { initializeApiClient, hydrateCachedUser } from "@/utils/apiClient";
 import * as SplashScreen from "expo-splash-screen";
 import { useDeepLinking } from "@/utils/deepLinking";
+import { startMemoryMonitor } from "@/utils/memoryMonitor";
 
 // Prevent splash screen from auto-hiding
 SplashScreen.preventAutoHideAsync();
@@ -73,6 +74,10 @@ export default function RootLayout() {
 
     init();
   }, [setLoading]);
+
+  useEffect(() => {
+    startMemoryMonitor();
+  }, []);
 
   if (!initialized) {
     return null; // Splash screen shows while initializing
