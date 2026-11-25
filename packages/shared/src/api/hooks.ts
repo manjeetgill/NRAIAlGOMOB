@@ -5,8 +5,11 @@
  * Uses the shared ApiClient for consistent behavior
  */
 
+import { useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
+import { subscribeSSE } from "./sse";
+import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
 
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
@@ -461,6 +464,24 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // cold, stale, degraded or available — without asking for a second, unrelated snapshot. This is a
   // poll of the server's cached copy, not another broker call.
   const useIciciAccount = (options?: UseQueryOptions<IciciAccountPayload, ApiError>) => {
+    useEffect(() => {
+      const sub = subscribeSSE(
+        `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
+        (raw) => {
+          try {
+            const payload = JSON.parse(raw) as IciciAccountPayload;
+            if (payload && typeof payload === "object") {
+              queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
+              queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
+            }
+          } catch {
+            // Ignore malformed SSE frame
+          }
+        },
+      );
+      return () => sub.close();
+    }, []);
+
     return useQuery({
       queryKey: queryKeys.brokerAccount.icici(),
       queryFn: async () => {
@@ -471,7 +492,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return account;
       },
       staleTime: 3 * 1000,
-      refetchInterval: 5 * 1000,
+      refetchInterval: 30 * 1000,
       ...options,
     });
   };
@@ -755,14 +776,35 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
    * once the basket has landed, so a finished trade never keeps the phone polling prod.
    */
   const useOrderSnapshot = (clientId: string, wanted: boolean) => {
+    useEffect(() => {
+      if (!wanted || clientId.length === 0) return;
+      const sub = subscribeSSE(
+        `${Constants.API.BASE_URL}/v1/broker-auth/order/stream`,
+        (raw) => {
+          try {
+            const parsed = JSON.parse(raw) as OrderSnapshot | { intents?: OrderSnapshot[] };
+            const match = "intents" in parsed && Array.isArray(parsed.intents)
+              ? parsed.intents.find((i) => i.clientId === clientId)
+              : (parsed as OrderSnapshot).clientId === clientId ? (parsed as OrderSnapshot) : undefined;
+            if (match) {
+              queryClient.setQueryData(queryKeys.orders.snapshot(clientId), match);
+            }
+          } catch {
+            // Ignore malformed SSE frame
+          }
+        },
+      );
+      return () => sub.close();
+    }, [clientId, wanted]);
+
     return useQuery({
       queryKey: queryKeys.orders.snapshot(clientId),
       queryFn: () => client.get<OrderSnapshot>(`/v1/orders/${clientId}`),
       enabled: wanted && clientId.length > 0,
       staleTime: 0,
       refetchInterval: ({ state }) => {
-        if (state.data === undefined) return 1000;
-        return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? 1000 : false;
+        if (state.data === undefined) return 15 * 1000;
+        return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? 15 * 1000 : false;
       },
     });
   };
@@ -781,7 +823,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: () => client.get<EquityQuote>("/v1/equities/quote", { params: { exchange, symbol } }),
       enabled: enabled && symbol.length > 0,
       staleTime: 2 * 1000,
-      refetchInterval: enabled ? 3 * 1000 : false,
+      refetchInterval: enabled ? 15 * 1000 : false,
       ...options,
     });
   };
@@ -831,7 +873,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: async () =>
         indexStripRows(await client.get<StripPayload>("/v1/index-strip", { params: { overview: true } })),
       staleTime: 5 * 1000,
-      refetchInterval: 15 * 1000,
+      refetchInterval: 60 * 1000,
       ...options,
     });
   };

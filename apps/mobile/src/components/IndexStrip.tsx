@@ -8,7 +8,7 @@
 
 import React, { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { chartFailureReason } from "@nraialgo/shared/api";
+import { chartFailureReason, streamId, useQuoteFeed } from "@nraialgo/shared/api";
 import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
@@ -28,7 +28,30 @@ const signed = (value: number | null) =>
 function IndexStrip() {
   const { useIndices } = useApi();
   const { resolvedTheme } = useTheme();
-  const { data: strip, error } = useIndices();
+  const { data: rawStrip, error } = useIndices();
+
+  const indexIds = useMemo(
+    () => (rawStrip?.indices ?? []).map((idx) => streamId(idx.name)).filter((id): id is string => !!id),
+    [rawStrip],
+  );
+  const feed = useQuoteFeed(indexIds, indexIds.length > 0);
+  const strip = useMemo(() => {
+    if (!rawStrip) return rawStrip;
+    if (!feed.quotes.length) return rawStrip;
+    const byId = new Map(feed.quotes.map((q) => [q.id, q]));
+    return {
+      ...rawStrip,
+      indices: rawStrip.indices.map((idx) => {
+        const id = streamId(idx.name);
+        const tick = id ? byId.get(id) : undefined;
+        if (!tick || !tick.fresh || !(tick.price > 0)) return idx;
+        const prev = tick.previousClose ?? (idx.price !== null && idx.change !== null ? idx.price - idx.change : null);
+        const change = prev && prev > 0 ? tick.price - prev : idx.change;
+        const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : idx.changePct;
+        return { ...idx, price: tick.price, change, changePct, status: "live" };
+      }),
+    };
+  }, [rawStrip, feed.quotes]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", up: "#22c55e", down: "#ef4444" }
