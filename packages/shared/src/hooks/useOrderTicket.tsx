@@ -96,21 +96,30 @@ export function useOrderTicket() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const { orderTicket: storedTicket, setOrderTicketField, resetOrderTicket } = useTradingStore();
+  const storedTicket = useTradingStore((s) => s.orderTicket);
+  const setOrderTicketBatch = useTradingStore((s) => s.setOrderTicketBatch);
+  const resetOrderTicket = useTradingStore((s) => s.resetOrderTicket);
   const { mutateAsync: placeOrder } = usePlaceOrder();
   // Which broker account the signed-in session would actually reach. Prod refuses an instruction
   // whose account does not match its live broker session, so a ticket cannot invent this.
   const { data: destinations } = useOrderDestinations(visible);
   const clientId = useRef(newClientId());
 
-  // Sync changed fields only to avoid 10 redundant Zustand store updates per keystroke
+  // One direction only: this ticket's own edits go to the store, in one update, while it is open. Every
+  // mounted ticket (watchlist, portfolio, chain...) used to also re-run on any store change and copy its own
+  // values back, so two tickets overwrote each other forever. Reading the store happens only in open().
+  const storedRef = useRef(storedTicket);
+  storedRef.current = storedTicket;
   useEffect(() => {
-    (Object.keys(localState) as Array<keyof OrderTicketState>).forEach((key) => {
-      if (storedTicket[key] !== localState[key]) {
-        setOrderTicketField(key, localState[key]);
-      }
-    });
-  }, [localState, storedTicket, setOrderTicketField]);
+    if (!visible) return;
+    const stored = storedRef.current;
+    const changes = Object.fromEntries(
+      (Object.keys(localState) as Array<keyof OrderTicketState>)
+        .filter((key) => stored[key] !== localState[key])
+        .map((key) => [key, localState[key]]),
+    ) as Partial<OrderTicketState>;
+    if (Object.keys(changes).length > 0) setOrderTicketBatch(changes);
+  }, [localState, visible, setOrderTicketBatch]);
 
   // Open order ticket with config
   const open = useCallback((newConfig: OrderTicketConfig) => {
