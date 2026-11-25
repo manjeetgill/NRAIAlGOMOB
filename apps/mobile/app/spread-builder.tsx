@@ -240,8 +240,7 @@ export default function SpreadBuilderScreen() {
   const [legs, setLegs] = useState<Leg[]>([]);
   const [basket, setBasket] = useState("");
   // The sheet that asks for the name. Execute opens it; only its Send talks to prod.
-  // TEMP DEVICE HARNESS - REVERT: opens on mount so the sheet can be measured without a broker session.
-  const [sendSheet, setSendSheet] = useState(true);
+  const [sendSheet, setSendSheet] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sentId, setSentId] = useState("");
@@ -1011,49 +1010,6 @@ export default function SpreadBuilderScreen() {
     </Modal>
   );
 
-  // TEMP DEVICE HARNESS - REVERT. The sheet is mounted in the no-chain branch and opened on mount, because
-  // Expo Go on this box has no broker session and the shipped body never reaches Execute without one.
-  const nameSheet = (
-    <Modal visible={sendSheet} animationType="slide" onRequestClose={() => setSendSheet(false)}>
-      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-        <View style={styles.sheet}>
-          <View style={styles.sheetHead}>
-            <Text style={styles.title}>Name this basket</Text>
-            <TouchableOpacity
-              onPress={() => setSendSheet(false)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel without sending"
-            >
-              <Ionicons name="close" size={22} color={colors.muted} />
-            </TouchableOpacity>
-          </View>
-          <TextInput
-            style={styles.field}
-            value={basket}
-            onChangeText={setBasket}
-            placeholder={`${underlying} ${wanted}`}
-            placeholderTextColor={colors.muted}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            maxLength={80}
-            accessibilityLabel="Basket name"
-          />
-          <Text style={styles.small}>
-            {`${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}  ·  ${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
-          </Text>
-          <Text style={styles.small}>Orders under this name join one card on the Basket desk.</Text>
-          <TouchableOpacity style={styles.execute} onPress={send} disabled={sending} accessibilityRole="button" accessibilityLabel="Send this basket to the broker">
-            <Text style={styles.executeText}>{sending ? "Sending" : "Send"}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancel} onPress={() => setSendSheet(false)} accessibilityRole="button" accessibilityLabel="Cancel and stay on the builder">
-            <Text style={styles.cancelText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
-  );
-
   // The desk needs no chain read of its own: one /v1/baskets response carries the legs, the marks, the
   // booked P&L and the contracts, so the Basket tab works even while this symbol's ladder is loading.
   if (tab === "basket") {
@@ -1080,7 +1036,6 @@ export default function SpreadBuilderScreen() {
           </Text>
         </View>
         {picker}
-        {nameSheet}
       </ScrollView>
     );
   }
@@ -1118,6 +1073,49 @@ export default function SpreadBuilderScreen() {
               </TouchableOpacity>
             )}
           />
+        </View>
+      </View>
+    </Modal>
+  );
+
+  // The press names the basket before prod is asked: the name is what the desk files the sent orders under,
+  // so it travels with the instruction instead of being left blank and arriving as an anonymous intent.
+  const nameSheet = (
+    <Modal visible={sendSheet} animationType="slide" onRequestClose={() => setSendSheet(false)}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+        <View style={styles.sheet}>
+          <View style={styles.sheetHead}>
+            <Text style={styles.title}>Name this basket</Text>
+            <TouchableOpacity
+              onPress={() => setSendSheet(false)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel without sending"
+            >
+              <Ionicons name="close" size={22} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={styles.field}
+            value={basket}
+            onChangeText={setBasket}
+            placeholder={`${underlying} ${wanted}`}
+            placeholderTextColor={colors.muted}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={80}
+            accessibilityLabel="Basket name"
+          />
+          <Text style={styles.small}>
+            {`${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}  ·  ${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
+          </Text>
+          <Text style={styles.small}>Orders under this name join one card on the Basket desk.</Text>
+          <TouchableOpacity style={styles.execute} onPress={send} disabled={sending} accessibilityRole="button" accessibilityLabel="Send this basket to the broker">
+            <Text style={styles.executeText}>{sending ? "Sending" : "Send"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.cancel} onPress={() => setSendSheet(false)} accessibilityRole="button" accessibilityLabel="Cancel and stay on the builder">
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </Modal>
