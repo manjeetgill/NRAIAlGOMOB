@@ -528,6 +528,14 @@ export function useQuotesStream(options: UseQuotesStreamOptions): UseQuotesStrea
   };
 }
 
+/**
+ * Whether the live price socket is open and carrying prices right now. Polls read it on every
+ * cycle, so a screen whose prices tick from the socket only re-reads REST as a slow safety net.
+ */
+export function quoteStreamConnected(): boolean {
+  return connected && reason === null;
+}
+
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */
 export function useQuoteFeed(symbols: readonly string[], enabled = true) {
   return useRegistration(symbols, enabled).feed;

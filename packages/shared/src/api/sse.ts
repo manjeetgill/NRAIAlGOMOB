@@ -8,7 +8,12 @@
 
 export interface SseSubscription {
   close: () => void;
+  /** True while the stream has sent anything (data or keepalive) within the last 45 s. */
+  alive: () => boolean;
 }
+
+/** The server sends a keepalive every 15 s, so three missed ones means the stream is gone. */
+const SSE_ALIVE_MS = 45_000;
 
 export function subscribeSSE(
   url: string,
@@ -19,6 +24,7 @@ export function subscribeSSE(
   let xhr: XMLHttpRequest | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
+  let lastChunkAt = 0;
 
   const connect = () => {
     if (closed) return;
@@ -39,6 +45,7 @@ export function subscribeSSE(
       const chunk = req.responseText.slice(seen);
       seen = req.responseText.length;
       if (!chunk) return;
+      lastChunkAt = Date.now();
 
       buffer += chunk.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -75,6 +82,7 @@ export function subscribeSSE(
   connect();
 
   return {
+    alive: () => !closed && Date.now() - lastChunkAt < SSE_ALIVE_MS,
     close: () => {
       closed = true;
       if (retryTimer) {

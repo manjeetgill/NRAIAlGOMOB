@@ -8,9 +8,19 @@
 import { useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
-import { subscribeSSE } from "./sse";
+import { subscribeSSE, type SseSubscription } from "./sse";
+import { quoteStreamConnected } from "./websocket";
 import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
+
+/**
+ * Stream first, REST as a safety net (owner, 25 Nov 2026: "use websocket and SSE instead of REST").
+ * While the price socket or the account stream is alive, a screen re-reads REST only this often;
+ * when the stream is down it falls back to its normal poll.
+ */
+const STREAM_SAFETY_POLL_MS = 2 * 60 * 1000;
+let accountStream: SseSubscription | null = null;
+let accountStreamUsers = 0;
 
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
 const FULL_WINDOW = 400;
@@ -469,17 +479,52 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  // ===== ACCOUNT STREAM =====
+  // One /v1/broker-auth/account/stream connection for every screen that shows the ICICI account
+  // (positions, orders). Each frame replaces both caches, so while the stream is alive the REST read
+  // below is only a two-minute safety net instead of a poll.
+  const useAccountStream = () => {
+    useEffect(() => {
+      accountStreamUsers += 1;
+      if (!accountStream) {
+        accountStream = subscribeSSE(
+          `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
+          (raw) => {
+            try {
+              const payload = JSON.parse(raw) as IciciAccountPayload;
+              if (payload && typeof payload === "object") {
+                queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
+                queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
+              }
+            } catch {
+              // Ignore malformed SSE frame
+            }
+          },
+        );
+      }
+      return () => {
+        accountStreamUsers -= 1;
+        if (accountStreamUsers === 0 && accountStream) {
+          accountStream.close();
+          accountStream = null;
+        }
+      };
+    }, []);
+  };
+  const accountPoll = () => (accountStream?.alive() ? STREAM_SAFETY_POLL_MS : 30 * 1000);
+
   // ===== POSITIONS =====
   // Prod has no /v1/positions/open. The desk the owner reads on the web is /v1/broker-auth/icici/account:
   // ICICI's own position rows, each carrying average, last price and marked P&L, and it keeps serving them
   // after the market closes. /v1/hub/positions is a live broker read only, so it returns zero off-hours.
   const useOpenPositions = (options?: Omit<UseQueryOptions<OpenPosition[], ApiError>, "queryKey" | "queryFn">) => {
+    useAccountStream();
     return useQuery({
       queryKey: queryKeys.positions.open(),
       queryFn: async () =>
         iciciOpenPositions(await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account")),
       staleTime: 3 * 1000,
-      refetchInterval: 30 * 1000, // live rows arrive on the account SSE; this is only a fallback
+      refetchInterval: accountPoll, // live rows arrive on the account SSE; this is only a fallback
       ...options,
     });
   };
@@ -488,23 +533,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // cold, stale, degraded or available — without asking for a second, unrelated snapshot. This is a
   // poll of the server's cached copy, not another broker call.
   const useIciciAccount = (options?: UseQueryOptions<IciciAccountPayload, ApiError>) => {
-    useEffect(() => {
-      const sub = subscribeSSE(
-        `${Constants.API.BASE_URL}/v1/broker-auth/account/stream`,
-        (raw) => {
-          try {
-            const payload = JSON.parse(raw) as IciciAccountPayload;
-            if (payload && typeof payload === "object") {
-              queryClient.setQueryData(queryKeys.brokerAccount.icici(), payload);
-              queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(payload));
-            }
-          } catch {
-            // Ignore malformed SSE frame
-          }
-        },
-      );
-      return () => sub.close();
-    }, []);
+    useAccountStream();
 
     return useQuery({
       queryKey: queryKeys.brokerAccount.icici(),
@@ -516,7 +545,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return account;
       },
       staleTime: 3 * 1000,
-      refetchInterval: 30 * 1000,
+      refetchInterval: accountPoll,
       ...options,
     });
   };
@@ -540,7 +569,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.list(number),
       queryFn: () => client.get<WatchlistPage>("/v1/watchlist", { params: { list: number } }),
       staleTime: 2 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -557,7 +586,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.builtin(name, page),
       queryFn: () => client.get<WatchlistPage>(`/v1/watchlist/builtin/${name}`, { params: { page } }),
       staleTime: 10 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : 15_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -642,7 +671,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       },
       staleTime: 60 * 1000,
       // Re-polling a chain that has never arrived turns one failure into an endless spinner.
-      refetchInterval: ({ state }) => (state.data ? 5 * 1000 : false),
+      refetchInterval: ({ state }) => (state.data ? (quoteStreamConnected() ? 30 * 1000 : 5 * 1000) : false),
       ...options,
     });
   };
@@ -896,7 +925,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: async () =>
         indexStripRows(await client.get<StripPayload>("/v1/index-strip", { params: { overview: true } })),
       staleTime: 5 * 1000,
-      refetchInterval: 60 * 1000,
+      refetchInterval: () => (quoteStreamConnected() ? STREAM_SAFETY_POLL_MS : 60 * 1000),
       ...options,
     });
   };
