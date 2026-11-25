@@ -57,7 +57,7 @@ export default function MoreScreen() {
             onSettled: () => {
               logoutStore();
               forgetLastKnown();
-              router.replace("/(auth)/login");
+              router.replace("/login");
             },
           });
         },
