@@ -39,6 +39,80 @@ import { formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
 
+// ─── Client-side Black-Scholes Mathematical Engine (T+0 Line & Greeks) ────────
+
+function normCdf(x: number): number {
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x) / Math.SQRT2;
+  const t = 1.0 / (1.0 + p * absX);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
+  return 0.5 * (1.0 + sign * y);
+}
+
+function bsm(
+  spot: number,
+  strike: number,
+  years: number,
+  rate: number,
+  dividend: number,
+  sigma: number,
+  right: "CE" | "PE"
+): { price: number; delta: number; theta: number; gamma: number; vega: number } {
+  const isCall = right === "CE";
+  if (spot <= 0 || strike <= 0 || years <= 0.0001 || sigma <= 0.0001) {
+    const intrinsic = isCall ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+    const delta = isCall ? (spot > strike ? 1 : 0) : (spot < strike ? -1 : 0);
+    return { price: intrinsic, delta, theta: 0, gamma: 0, vega: 0 };
+  }
+  const root = Math.sqrt(years);
+  const d1 = (Math.log(spot / strike) + (rate - dividend + (sigma * sigma) / 2) * years) / (sigma * root);
+  const d2 = d1 - sigma * root;
+  const df = Math.exp(-rate * years);
+  const dq = Math.exp(-dividend * years);
+  const density = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
+  const sign = isCall ? 1 : -1;
+  const price = sign * (spot * dq * normCdf(sign * d1) - strike * df * normCdf(sign * d2));
+  const delta = sign * dq * normCdf(sign * d1);
+  const gamma = (dq * density) / (spot * sigma * root);
+  const vega = (spot * dq * density * root) / 100;
+  const theta =
+    (-spot * dq * density * sigma / (2 * root) -
+      sign * rate * strike * df * normCdf(sign * d2) +
+      sign * dividend * spot * dq * normCdf(sign * d1)) /
+    365;
+
+  return { price, delta, theta, gamma, vega };
+}
+
+function solveImpliedVol(
+  price: number,
+  spot: number,
+  strike: number,
+  years: number,
+  rate: number,
+  dividend: number,
+  right: "CE" | "PE"
+): number {
+  const isCall = right === "CE";
+  const intrinsic = isCall ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+  if (price <= intrinsic) return 0.14; // baseline IV ~14%
+  let lower = 0.0001;
+  let upper = 4.0;
+  for (let i = 0; i < 35; i++) {
+    const mid = (lower + upper) / 2;
+    const est = bsm(spot, strike, years, rate, dividend, mid, right).price;
+    if (est < price) lower = mid;
+    else upper = mid;
+  }
+  return (lower + upper) / 2;
+}
+
 export interface PayoffChartLeg {
   strike: string;
   right: "CE" | "PE";
@@ -228,6 +302,99 @@ export default function PayoffChart({
     [virtualBasket]
   );
 
+  // Standalone Client-side Black-Scholes T+0 model:
+  // Evaluates real-time T+0 payoff curve whenever backend is loading, offline, or calibrating.
+  const localToday = useMemo(() => {
+    const spots = model?.spots ?? held?.spots ?? [];
+    if (spots.length < 3 || !legs.length) return null;
+
+    const effSpot = Number(spot ?? virtualBasket.spot) || (spots[0] + spots[spots.length - 1]) / 2;
+    if (effSpot <= 0) return null;
+
+    const rate = 0;
+    const dividend = 0;
+    const now = new Date();
+
+    const calibratedLegs = legs.map(l => {
+      const strike = Number(l.strike);
+      const isCall = l.right === "CE";
+      const sign = l.side === "BUY" ? 1 : -1;
+      const lots = l.lots || 1;
+      const lotSize = l.lotSize || 1;
+      const qty = sign * lots * lotSize;
+
+      // Find chain quote or entry price
+      const chain = chains.find(c => c?.expiry === l.expiry);
+      const row = chain?.rows.find(r => Number(r.strike) === strike);
+      const quote = isCall ? row?.call : row?.put;
+      const ltp = Number(quote?.ltp);
+      const price =
+        Number.isFinite(ltp) && ltp > 0
+          ? ltp
+          : Number(l.entryPrice) || (quote?.ask ? Number(quote.ask) : quote?.bid ? Number(quote.bid) : 0);
+
+      // Time to expiry in years
+      let years = 7 / 365;
+      if (l.expiry) {
+        const parts = l.expiry.split("-").map(Number);
+        if (parts.length === 3) {
+          const expDate = new Date(parts[0], parts[1] - 1, parts[2], 15, 30, 0);
+          const diffMs = expDate.getTime() - now.getTime();
+          years = Math.max(0.0005, diffMs / (365 * 86400 * 1000));
+        }
+      }
+
+      const baseIv = quote?.iv ? Number(quote.iv) : solveImpliedVol(price, effSpot, strike, years, rate, dividend, l.right);
+      const effectiveIv = Math.max(0.001, baseIv + ivShiftPoints / 100);
+
+      return {
+        strike,
+        right: l.right,
+        qty,
+        basis: price,
+        years,
+        iv: effectiveIv,
+      };
+    });
+
+    const values = spots.map(s => {
+      return calibratedLegs.reduce((sum, leg) => {
+        const est = bsm(s, leg.strike, leg.years, rate, dividend, leg.iv, leg.right).price;
+        return sum + leg.qty * (est - leg.basis);
+      }, 0);
+    });
+
+    let netDelta = 0;
+    let netTheta = 0;
+    let netGamma = 0;
+    let netVega = 0;
+    let totalIv = 0;
+
+    for (const leg of calibratedLegs) {
+      const res = bsm(effSpot, leg.strike, leg.years, rate, dividend, leg.iv, leg.right);
+      netDelta += leg.qty * res.delta;
+      netTheta += leg.qty * res.theta;
+      netGamma += leg.qty * res.gamma;
+      netVega += leg.qty * res.vega;
+      totalIv += leg.iv;
+    }
+
+    const atSpotToday = valueAt(spots, values, effSpot);
+
+    return {
+      spots,
+      values,
+      atSpotToday,
+      greeks: {
+        delta: netDelta,
+        theta: netTheta,
+        gamma: netGamma,
+        vega: netVega,
+        ivPct: (totalIv / (calibratedLegs.length || 1)) * 100,
+      },
+    };
+  }, [model?.spots, held?.spots, legs, chains, spot, virtualBasket.spot, ivShiftPoints]);
+
   // Expiry figures
   const until = useMemo(() => {
     const dates = [...new Set(virtualBasket.payoffLegs.map(l => l.expiry).filter(Boolean))];
@@ -243,7 +410,13 @@ export default function PayoffChart({
   const chart = useMemo(() => {
     const modelSpots = model?.spots ?? [];
     const heldSpots = held?.spots ?? [];
-    const xs = modelSpots.length >= heldSpots.length ? modelSpots : heldSpots;
+    const localSpots = localToday?.spots ?? [];
+    const xs =
+      modelSpots.length >= heldSpots.length && modelSpots.length >= localSpots.length
+        ? modelSpots
+        : heldSpots.length >= localSpots.length
+        ? heldSpots
+        : localSpots;
 
     const resample = (fromSpots: number[] | undefined, fromValues: number[] | null | undefined) => {
       if (!fromValues || !fromSpots || fromSpots.length !== fromValues.length) return null;
@@ -254,7 +427,13 @@ export default function PayoffChart({
     const expiryLine = model?.expiry
       ? resample(modelSpots, model.expiry)
       : resample(heldSpots, held?.values);
-    const todayLine = model?.today ? resample(modelSpots, model.today) : null;
+
+    // T+0 curve: Use server model today line if present, else fallback to mathematical Black-Scholes localToday
+    const todayLine = model?.today
+      ? resample(modelSpots, model.today)
+      : localToday?.values
+      ? resample(localToday.spots, localToday.values)
+      : null;
 
     if (xs.length < 3 || (!expiryLine && !todayLine)) return null;
 
@@ -342,7 +521,7 @@ export default function PayoffChart({
     : spotOnChart && held
     ? valueAt(held.spots, held.values, effectiveSpot)
     : null;
-  const todayAtSpot = model?.atSpotToday ?? null;
+  const todayAtSpot = model?.atSpotToday ?? localToday?.atSpotToday ?? null;
 
   // Touch & Crosshair interaction
   const touchSpot =
