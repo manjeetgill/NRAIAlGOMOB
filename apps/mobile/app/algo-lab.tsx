@@ -46,8 +46,16 @@ export default function AlgoLabScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState<ManagedRun | null>(null);
 
-  const runs = useManagedRuns({ enabled: activeTab === "running" });
-  const drafts = useStrategyDrafts({ enabled: activeTab === "strategies" });
+  const runs = useManagedRuns({
+    enabled: activeTab === "running",
+    staleTime: 10_000,
+    gcTime: 15 * 60 * 1000,
+  });
+  const drafts = useStrategyDrafts({
+    enabled: activeTab === "strategies",
+    staleTime: 30_000,
+    gcTime: 15 * 60 * 1000,
+  });
   const readiness = useLiveReadiness({ enabled: activeTab === "strategies" });
   const startLive = useStartLiveCopy();
   const closeRun = useCloseRun();

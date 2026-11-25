@@ -90,8 +90,18 @@ export default function OrdersScreen() {
 
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
   const focused = useScreenFocused();
-  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused, gcTime: Infinity });
-  const { data: gtts, isLoading: gttLoading, isError: gttError, refetch: refetchGtts } = useGttOrders({ queryKey: queryKeys.orders.gtt(), subscribed: focused, gcTime: Infinity });
+  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount({
+    queryKey: queryKeys.brokerAccount.icici(),
+    subscribed: focused,
+    gcTime: Infinity,
+    staleTime: 10_000,
+  });
+  const { data: gtts, isLoading: gttLoading, isError: gttError, refetch: refetchGtts } = useGttOrders({
+    queryKey: queryKeys.orders.gtt(),
+    subscribed: focused,
+    gcTime: Infinity,
+    staleTime: 30_000,
+  });
 
   const allOrders = useMemo(() => iciciAccount ? iciciOrders(iciciAccount) : [], [iciciAccount]);
 

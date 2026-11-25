@@ -114,28 +114,28 @@ export default function ScannerScreen() {
     return !selectedFilter || filter === "all" ? signals : signals.filter(row => selectedFilter.kinds.has(row.kind));
   }, [signals, filter]);
 
-  const getBadgeStyle = (kind: string) => {
+  const getBadgeStyle = useCallback((kind: string) => {
     if (kind === "breakout" || kind === "hm_rsi_supertrend_buy") return styles.badgeBreakout;
     if (kind === "breakdown" || kind === "hm_rsi_supertrend_sell") return styles.badgeBreakdown;
     if (kind === "support_touch" || kind === "breakout_retest") return styles.badgeSupport;
     if (kind === "resistance_touch" || kind === "breakdown_retest") return styles.badgeResistance;
     return styles.badgeHM;
-  };
+  }, [styles]);
 
   /** A stored scan can carry a kind this list has never seen, and its own server word beats a blank badge. */
-  const getBadgeLabel = (kind: string) =>
-    SIGNAL_LABELS[kind as ScannerSignalType] ?? kind.replace(/_/g, " ");
+  const getBadgeLabel = useCallback((kind: string) =>
+    SIGNAL_LABELS[kind as ScannerSignalType] ?? kind.replace(/_/g, " "), []);
 
   /** The chart is read per saved scan, so the row carries its own identity down: the same symbol scanned on
    *  two sessions, or by a run and by the standing scan, are three different sets of candles. */
-  const openChart = (signal: { instrument: string; session: string; timeframe: string; kind: string; runId: string }) => {
+  const openChart = useCallback((signal: { instrument: string; session: string; timeframe: string; kind: string; runId: string }) => {
     router.push(`/scanner-chart?instrument=${encodeURIComponent(signal.instrument)}`
       + `&session=${encodeURIComponent(signal.session)}&timeframe=${encodeURIComponent(signal.timeframe || "1d")}`
       + `&kind=${encodeURIComponent(signal.kind)}`
       + (signal.runId ? `&run_id=${encodeURIComponent(signal.runId)}` : ""));
-  };
+  }, [router]);
 
-  const renderSignalCard = (signal: { instrument: string; kind: string; at: number | null; close: number | null; session: string; timeframe: string; runId: string }) => (
+  const renderSignalCard = useCallback((signal: { instrument: string; kind: string; at: number | null; close: number | null; session: string; timeframe: string; runId: string }) => (
     <TouchableOpacity
       style={styles.card}
       onPress={() => openChart(signal)}
@@ -174,7 +174,7 @@ export default function ScannerScreen() {
         </View>
       ) : null}
     </TouchableOpacity>
-  );
+  ), [styles, colors, openChart, getBadgeLabel, getBadgeStyle]);
 
   if (isLoading) {
     return (
@@ -235,9 +235,10 @@ export default function ScannerScreen() {
           renderItem={({ item }) => renderSignalCard(item)}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
-          maxToRenderPerBatch={10}
+          maxToRenderPerBatch={8}
           windowSize={5}
           removeClippedSubviews
+          getItemLayout={(_, index) => ({ length: 112, offset: 120 * index, index })}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetch()} colors={[colors.accent]} />}
         />
       )}

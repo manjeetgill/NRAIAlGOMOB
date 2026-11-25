@@ -84,13 +84,21 @@ export default function AlgoLabDetailScreen() {
   const [zoom, setZoom] = useState(1);
   const [touchPx, setTouchPx] = useState<number | null>(null);
 
-  const runs = useManagedRuns({ enabled: source === "run" });
+  const runs = useManagedRuns({
+    enabled: source === "run",
+    staleTime: 15_000,
+    gcTime: 15 * 60 * 1000,
+  });
   const run = source === "run" ? (runs.data?.runs ?? []).find(r => r.id === id) ?? null : null;
 
   // A saved strategy is edited through its copy id; a running algo is edited through the copy it started
   // from. Both resolve to one strategy-draft detail carrying legs + the editable config.
   const copyId = source === "draft" ? id : (run?.strategy_copy_id ?? "");
-  const draft = useDraftDetail(copyId || null, { enabled: !!copyId });
+  const draft = useDraftDetail(copyId || null, {
+    enabled: !!copyId,
+    staleTime: 30_000,
+    gcTime: 15 * 60 * 1000,
+  });
 
   const title = source === "run" ? (run?.name || params.name || "Algo") : (draft.data?.name || params.name || "Strategy");
   const underlying = run?.basket?.underlying || draft.data?.underlying || "";

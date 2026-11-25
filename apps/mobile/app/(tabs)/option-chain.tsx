@@ -111,86 +111,116 @@ interface OptionRowItemProps {
   onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
 }
 
-const OptionRowItem = React.memo(function OptionRowItem({
-  row,
-  expiry,
-  styles,
-  liveCall,
-  livePut,
-  onTrade,
-}: OptionRowItemProps) {
-  const callQuote = row.call;
-  const putQuote = row.put;
-  const callPrice = callQuote ? liveSide(callQuote, liveCall) : null;
-  const putPrice = putQuote ? liveSide(putQuote, livePut) : null;
-  const callOiChange = callQuote?.oiChangePct;
-  const putOiChange = putQuote?.oiChangePct;
+const OptionRowItem = React.memo(
+  function OptionRowItem({
+    row,
+    expiry,
+    styles,
+    liveCall,
+    livePut,
+    onTrade,
+  }: OptionRowItemProps) {
+    const callQuote = row.call;
+    const putQuote = row.put;
+    const callPrice = callQuote ? liveSide(callQuote, liveCall) : null;
+    const putPrice = putQuote ? liveSide(putQuote, livePut) : null;
+    const callOiChange = callQuote?.oiChangePct;
+    const putOiChange = putQuote?.oiChangePct;
 
-  return (
-    <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
-      <View style={[styles.cell, styles.callCell]}>
-        {!callQuote ? (
-          <>
-            <Text style={styles.noPrice}>Not listed</Text>
-            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
-              <Text style={styles.actionButtonText}>Trade</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            {callPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(callPrice.price)}</Text>}
-            <Text style={styles.metaText} numberOfLines={1}>
-              {callPrice?.word ? `${callPrice.word}  ·  ` : ""}
-              {callQuote.iv === null ? "No IV" : `IV ${formatNumber(callQuote.iv, 1)}%`}
-              {callQuote.oi === null ? "" : `  ·  OI ${formatNumber(callQuote.oi, 0)}`}
-              {callOiChange !== null && callOiChange !== 0 ? (
-                <Text style={callOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
-                  {`  ·  ${callOiChange > 0 ? "+" : ""}${formatNumber(callOiChange, 1)}%`}
-                </Text>
-              ) : null}
-            </Text>
-            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
-              <Text style={styles.actionButtonText}>Trade</Text>
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
+    return (
+      <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
+        <View style={[styles.cell, styles.callCell]}>
+          {!callQuote ? (
+            <>
+              <Text style={styles.noPrice}>Not listed</Text>
+              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
+                <Text style={styles.actionButtonText}>Trade</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              {callPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(callPrice.price)}</Text>}
+              <Text style={styles.metaText} numberOfLines={1}>
+                {callPrice?.word ? `${callPrice.word}  ·  ` : ""}
+                {callQuote.iv === null ? "No IV" : `IV ${formatNumber(callQuote.iv, 1)}%`}
+                {callQuote.oi === null ? "" : `  ·  OI ${formatNumber(callQuote.oi, 0)}`}
+                {callOiChange !== null && callOiChange !== 0 ? (
+                  <Text style={callOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
+                    {`  ·  ${callOiChange > 0 ? "+" : ""}${formatNumber(callOiChange, 1)}%`}
+                  </Text>
+                ) : null}
+              </Text>
+              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
+                <Text style={styles.actionButtonText}>Trade</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
 
-      <View style={[styles.cell, styles.strikeCell]}>
-        <Text style={styles.strikeText}>{formatNumber(Number(row.strike), 0)}</Text>
-        {row.isAtTheMoney ? <Text style={styles.atmTag}>ATM</Text> : null}
-      </View>
+        <View style={[styles.cell, styles.strikeCell]}>
+          <Text style={styles.strikeText}>{formatNumber(Number(row.strike), 0)}</Text>
+          {row.isAtTheMoney ? <Text style={styles.atmTag}>ATM</Text> : null}
+        </View>
 
-      <View style={[styles.cell, styles.putCell]}>
-        {!putQuote ? (
-          <>
-            <Text style={styles.noPrice}>Not listed</Text>
-            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
-              <Text style={styles.actionButtonText}>Trade</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            {putPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(putPrice.price)}</Text>}
-            <Text style={styles.metaText} numberOfLines={1}>
-              {putPrice?.word ? `${putPrice.word}  ·  ` : ""}
-              {putQuote.iv === null ? "No IV" : `IV ${formatNumber(putQuote.iv, 1)}%`}
-              {putQuote.oi === null ? "" : `  ·  OI ${formatNumber(putQuote.oi, 0)}`}
-              {putOiChange !== null && putOiChange !== 0 ? (
-                <Text style={putOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
-                  {`  ·  ${putOiChange > 0 ? "+" : ""}${formatNumber(putOiChange, 1)}%`}
-                </Text>
-              ) : null}
-            </Text>
-            <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
-              <Text style={styles.actionButtonText}>Trade</Text>
-            </TouchableOpacity>
-          </>
-        )}
+        <View style={[styles.cell, styles.putCell]}>
+          {!putQuote ? (
+            <>
+              <Text style={styles.noPrice}>Not listed</Text>
+              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
+                <Text style={styles.actionButtonText}>Trade</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              {putPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(putPrice.price)}</Text>}
+              <Text style={styles.metaText} numberOfLines={1}>
+                {putPrice?.word ? `${putPrice.word}  ·  ` : ""}
+                {putQuote.iv === null ? "No IV" : `IV ${formatNumber(putQuote.iv, 1)}%`}
+                {putQuote.oi === null ? "" : `  ·  OI ${formatNumber(putQuote.oi, 0)}`}
+                {putOiChange !== null && putOiChange !== 0 ? (
+                  <Text style={putOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
+                    {`  ·  ${putOiChange > 0 ? "+" : ""}${formatNumber(putOiChange, 1)}%`}
+                  </Text>
+                ) : null}
+              </Text>
+              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
+                <Text style={styles.actionButtonText}>Trade</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </View>
-    </View>
-  );
-});
+    );
+  },
+  (prev, next) => {
+    // Only re-render when prices, ticks, strike, or ATM designation changed
+    if (prev.row.strike !== next.row.strike || prev.row.isAtTheMoney !== next.row.isAtTheMoney) return false;
+    if (prev.expiry !== next.expiry || prev.styles !== next.styles) return false;
+
+    const prevCallPrice = prev.row.call?.ltp;
+    const nextCallPrice = next.row.call?.ltp;
+    if (prevCallPrice !== nextCallPrice) return false;
+
+    const prevPutPrice = prev.row.put?.ltp;
+    const nextPutPrice = next.row.put?.ltp;
+    if (prevPutPrice !== nextPutPrice) return false;
+
+    const prevLiveCall = prev.liveCall?.price;
+    const nextLiveCall = next.liveCall?.price;
+    if (prevLiveCall !== nextLiveCall) return false;
+
+    const prevLivePut = prev.livePut?.price;
+    const nextLivePut = next.livePut?.price;
+    if (prevLivePut !== nextLivePut) return false;
+
+    return (
+      prev.row.call?.oi === next.row.call?.oi &&
+      prev.row.put?.oi === next.row.put?.oi &&
+      prev.row.call?.iv === next.row.call?.iv &&
+      prev.row.put?.iv === next.row.put?.iv
+    );
+  }
+);
 
 export default function OptionChainScreen() {
   const { useOptionChain, useOptionChains, useChainUnderlyings } = useApi();
@@ -696,10 +726,10 @@ export default function OptionChainScreen() {
           ref={listRef}
           data={items}
           keyExtractor={item => item.key}
-          initialNumToRender={10}
-          maxToRenderPerBatch={6}
-          updateCellsBatchingPeriod={50}
-          windowSize={5}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={30}
+          windowSize={7}
           removeClippedSubviews
           onScrollBeginDrag={pauseQuoteDispatch}
           onScrollEndDrag={resumeQuoteDispatch}

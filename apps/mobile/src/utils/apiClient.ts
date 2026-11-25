@@ -107,9 +107,13 @@ export async function initializeApiClient(): Promise<boolean> {
       AsyncStorage.setItem(CACHED_USER_KEY, JSON.stringify(user)).catch(() => {});
       return true;
     } catch {
-      useAuthStore.getState().logout();
-      AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
-      return false;
+      const retained = await hydrateCachedUser();
+      if (!retained) {
+        useAuthStore.getState().logout();
+        AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
+        return false;
+      }
+      return true;
     } finally {
       initInFlight = null;
     }
