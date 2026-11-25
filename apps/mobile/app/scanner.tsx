@@ -238,7 +238,6 @@ export default function ScannerScreen() {
           maxToRenderPerBatch={8}
           windowSize={5}
           removeClippedSubviews
-          getItemLayout={(_, index) => ({ length: 112, offset: 120 * index, index })}
           refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetch()} colors={[colors.accent]} />}
         />
       )}

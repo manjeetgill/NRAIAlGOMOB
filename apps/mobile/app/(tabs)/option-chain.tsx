@@ -192,34 +192,16 @@ const OptionRowItem = React.memo(
       </View>
     );
   },
-  (prev, next) => {
-    // Only re-render when prices, ticks, strike, or ATM designation changed
-    if (prev.row.strike !== next.row.strike || prev.row.isAtTheMoney !== next.row.isAtTheMoney) return false;
-    if (prev.expiry !== next.expiry || prev.styles !== next.styles) return false;
-
-    const prevCallPrice = prev.row.call?.ltp;
-    const nextCallPrice = next.row.call?.ltp;
-    if (prevCallPrice !== nextCallPrice) return false;
-
-    const prevPutPrice = prev.row.put?.ltp;
-    const nextPutPrice = next.row.put?.ltp;
-    if (prevPutPrice !== nextPutPrice) return false;
-
-    const prevLiveCall = prev.liveCall?.price;
-    const nextLiveCall = next.liveCall?.price;
-    if (prevLiveCall !== nextLiveCall) return false;
-
-    const prevLivePut = prev.livePut?.price;
-    const nextLivePut = next.livePut?.price;
-    if (prevLivePut !== nextLivePut) return false;
-
-    return (
-      prev.row.call?.oi === next.row.call?.oi &&
-      prev.row.put?.oi === next.row.put?.oi &&
-      prev.row.call?.iv === next.row.call?.iv &&
-      prev.row.put?.iv === next.row.put?.iv
-    );
-  }
+  // Re-render when anything the row shows or hands to the ticket changed. The chain is re-read as a whole,
+  // so an unchanged row keeps its object and skips; comparing a few fields instead let a row keep a stale
+  // `row` (old bid/ask, old order symbol) and a stale onTrade (the previous underlying) for the Trade press.
+  (prev, next) =>
+    prev.row === next.row &&
+    prev.expiry === next.expiry &&
+    prev.styles === next.styles &&
+    prev.onTrade === next.onTrade &&
+    prev.liveCall === next.liveCall &&
+    prev.livePut === next.livePut
 );
 
 export default function OptionChainScreen() {

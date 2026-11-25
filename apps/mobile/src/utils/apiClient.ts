@@ -106,8 +106,12 @@ export async function initializeApiClient(): Promise<boolean> {
       useAuthStore.getState().setUser(user);
       AsyncStorage.setItem(CACHED_USER_KEY, JSON.stringify(user)).catch(() => {});
       return true;
-    } catch {
-      const retained = await hydrateCachedUser();
+    } catch (error) {
+      // A refusal the server sent (401/403) means the session is over: go to sign-in. Only an unreachable
+      // server keeps the saved user, so the app can open on its cached screens while offline.
+      const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : null;
+      const refused = status === 401 || status === 403;
+      const retained = refused ? false : await hydrateCachedUser();
       if (!retained) {
         useAuthStore.getState().logout();
         AsyncStorage.removeItem(CACHED_USER_KEY).catch(() => {});
