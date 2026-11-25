@@ -6,11 +6,12 @@
  */
 
 import React, { useCallback, useState, useMemo } from "react";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
-import { iciciOrders, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
+import { iciciOrders, queryKeys, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
 
 type TabId = "open" | "closed" | "gtt";
 
@@ -87,8 +88,10 @@ export default function OrdersScreen() {
   const { resolvedTheme } = useTheme();
   const [tab, setTab] = useState<TabId>("open");
 
-  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount();
-  const { data: gtts, isLoading: gttLoading, isError: gttError, refetch: refetchGtts } = useGttOrders();
+  // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
+  const focused = useScreenFocused();
+  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused });
+  const { data: gtts, isLoading: gttLoading, isError: gttError, refetch: refetchGtts } = useGttOrders({ queryKey: queryKeys.orders.gtt(), subscribed: focused });
 
   const allOrders = useMemo(() => iciciAccount ? iciciOrders(iciciAccount) : [], [iciciAccount]);
 

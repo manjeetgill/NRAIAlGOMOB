@@ -24,6 +24,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import {
   BUILTIN_LISTS,
   markWatchlist,
@@ -173,11 +174,17 @@ export default function WatchlistScreen() {
   const [lastList, setLastList] = useState(1);
   const listNumber = tab.kind === "list" ? tab.number : lastList;
 
-  const { data: strip } = useIndices();
-  const { data: saved, error: savedError } = useWatchlist(listNumber);
+  // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
+  const focused = useScreenFocused();
+  const { data: strip } = useIndices({ queryKey: queryKeys.market.indices(), subscribed: focused });
+  const { data: saved, error: savedError } = useWatchlist(listNumber, {
+    queryKey: queryKeys.watchlist.list(listNumber),
+    subscribed: focused,
+  });
   const { data: builtins, error: builtinError } = useBuiltinWatchlist(builtin, page, {
     queryKey: queryKeys.watchlist.builtin(builtin, page),
     enabled: tab.kind === "predefined",
+    subscribed: focused,
   });
   const { data: found } = useEquitySearch(debouncedSearch);
   const add = useAddToWatchlist();

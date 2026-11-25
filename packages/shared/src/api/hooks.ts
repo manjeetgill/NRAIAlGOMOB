@@ -411,7 +411,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.baskets.all(source),
       queryFn: () => client.get<BasketListResponse>("/v1/baskets", { params: { source } }),
       staleTime: 5 * 1000,
-      refetchInterval: 10 * 1000,
+      refetchInterval: 30 * 1000,
       ...options,
     });
   };
@@ -479,7 +479,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: async () =>
         iciciOpenPositions(await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account")),
       staleTime: 3 * 1000,
-      refetchInterval: 5 * 1000,
+      refetchInterval: 30 * 1000, // live rows arrive on the account SSE; this is only a fallback
       ...options,
     });
   };
@@ -540,7 +540,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.list(number),
       queryFn: () => client.get<WatchlistPage>("/v1/watchlist", { params: { list: number } }),
       staleTime: 2 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : 5_000),
+      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : 15_000),
       placeholderData: keepPreviousData,
       ...options,
     });
