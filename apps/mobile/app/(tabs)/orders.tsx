@@ -7,11 +7,16 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl, Modal } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
-import { iciciAccountSection, iciciOrders, queryKeys, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
+import {
+  GTT_REFUSED_REASON, INTENT_WINDOW, cancelDecision, cancelLegs, gttCancelState,
+  iciciAccountSection, iciciOrders, queryKeys,
+  type BrokerOrder, type CancelLeg, type GttOrder, type OrderIntent,
+} from "@nraialgo/shared/api";
 
 type TabId = "open" | "closed" | "all" | "gtt";
 
@@ -96,8 +101,64 @@ function asOfWord(value: string | null | undefined): string {
     : `read at ${value}`;
 }
 
+/** What the app calls the instruction: the name the desk filed it under, else the reference itself. */
+const basketOf = (intent: OrderIntent): string => intent.basketName?.trim() || intent.clientId;
+
+/** Prod's journal is the only place a cancel is recorded, so this is written the moment the 202 lands. */
+const WAITING = "Cancellation asked for. Waiting for ICICI to confirm it.";
+
+const legWord = (leg: CancelLeg): string => {
+  if (leg.unfilled <= 0) return `${formatNumber(leg.quantity)} filled · nothing left`;
+  if (leg.quantity - leg.unfilled <= 0) return `${formatNumber(leg.quantity)} · unfilled`;
+  return `${formatNumber(leg.quantity - leg.unfilled)} filled, ${formatNumber(leg.unfilled)} left`;
+};
+
+/**
+ * What a row may honestly do, in the trader's words.
+ *
+ * Each line answers a question the trader is actually asking — can I stop this, and if not, why not — and
+ * every refusal names the fact behind it. `unchecked` and `outside` are kept apart because one means the
+ * app has not looked yet and the other means it looked and found nothing, which decide whether a cancel
+ * exists somewhere at all.
+ */
+function cancelWord(decision: ReturnType<typeof cancelDecision>, window: number): { action: string | null; reason: string } {
+  switch (decision.kind) {
+    case "offer": {
+      const legs = decision.legs;
+      return {
+        action: "Cancel unfilled",
+        reason: `Placed here as ${basketOf(decision.intent)} · ${legs.length} unfilled leg${legs.length === 1 ? "" : "s"} in that order`,
+      };
+    }
+    case "requested":
+      return { action: null, reason: WAITING };
+    case "stopped": {
+      const rest = decision.filled > 0
+        ? `${formatNumber(decision.filled)} of ${formatNumber(decision.quantity)} had already filled and stays in your positions.`
+        : "Nothing filled, so this leg left no position.";
+      return { action: null, reason: `The unfilled part stopped. ${rest}` };
+    }
+    case "manual":
+      return {
+        action: null,
+        reason: decision.intent.message?.trim() || "Automatic cancellation has stopped for this order. Check it in ICICI's terminal.",
+      };
+    case "filled":
+      return { action: null, reason: "Filled leg. Nothing left to cancel." };
+    case "outside":
+      return {
+        action: null,
+        reason: decision.truncated
+          ? `Not among this app's newest ${window} instructions — cancel it in ICICI.`
+          : "Not placed in this app — cancel it in ICICI.",
+      };
+    case "unchecked":
+      return { action: null, reason: "Not checked against this app's instructions: that list is still loading or did not answer." };
+  }
+}
+
 export default function OrdersScreen() {
-  const { useIciciAccount, useGttOrders, readFreshOrders } = useApi();
+  const { useIciciAccount, useGttOrders, useOrderIntents, useCancelOrder, useCancelGtt, readFreshOrders } = useApi();
   const { resolvedTheme } = useTheme();
   const [tab, setTab] = useState<TabId>("open");
 
@@ -129,6 +190,32 @@ export default function OrdersScreen() {
   const brokerRead = iciciAccount?.refreshing === true;
   // Opening this screen (or coming back to it) and every pull read ICICI's order book directly, once.
   const [freshReading, setFreshReading] = useState(false);
+  // The journal that says whether a broker row is this app's to cancel. `GET /v1/orders` is a Postgres read
+  // of the app's own instruction table, so resolving a row costs ICICI nothing — no broker call, no meter.
+  const {
+    data: intentRows, isLoading: intentsLoading, isError: intentsError,
+  } = useOrderIntents({ limit: INTENT_WINDOW }, {
+    queryKey: queryKeys.orders.intents({ limit: INTENT_WINDOW }),
+    subscribed: focused,
+    gcTime: Infinity,
+    staleTime: 10_000,
+  });
+  // null is "the app does not know yet", which the card prints as a check that has not run rather than an
+  // order the app never placed. An empty journal is a real answer and keeps the second wording.
+  const journal = intentsLoading || intentsError ? null : (intentRows ?? null);
+
+  // One sheet for both destructive presses, because both stop something at the broker and both must name
+  // what they leave behind. Opening it sends nothing; only the labelled press does.
+  const [sheet, setSheet] = useState<
+    | { kind: "order"; clientId: string; basket: string; legs: CancelLeg[]; stopping: CancelLeg[] }
+    | { kind: "gtt"; id: string; symbol: string; line: string }
+    | null
+  >(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  // Which instructions this screen has already asked prod to stop. A 202 means the journal row is written,
+  // so flipping the card now is the server's own state a moment early — not a guess — and it stops a second
+  // press on a request the server would answer as a no-op.
+  const [asked, setAsked] = useState<Record<string, boolean>>({});
   const readOrdersNow = useCallback(() => {
     setFreshReading(true);
     void readFreshOrders().catch(() => undefined).finally(() => setFreshReading(false));
@@ -149,6 +236,36 @@ export default function OrdersScreen() {
   useEffect(() => {
     if (!ordersFetching && !freshReading) setPulled(false);
   }, [ordersFetching, freshReading]);
+
+  // One press = one command, with no auto-retry: a request that never answered is not proof nothing was
+  // sent, so the sheet stays open on a failure, prints the server's own sentence, and leaves the row exactly
+  // where it was for the trader to read ICICI's book before trying again. The cache invalidation lives in
+  // the hook, so the list re-reads itself whatever this screen does with the answer.
+  const cancelFallback = "Cancellation was not confirmed. Orders may still be active. Check the broker order book before trying again.";
+  const cancelOrder = useCancelOrder({
+    onSuccess: (snapshot) => {
+      // A 202 means prod's journal row is written, so the card flips to "asked" from the server's own state.
+      setAsked(prev => ({ ...prev, [snapshot.clientId]: true }));
+      setSheet(null);
+      setCancelError(null);
+    },
+    onError: (error) => setCancelError(error.message || cancelFallback),
+  });
+  // Prod answers a GTT delete with the row it just wrote, and the invalidation inside the mutation re-reads
+  // the list, so the card repaints from the journal's own state rather than from a local guess.
+  const cancelGttNow = useCancelGtt({
+    onSuccess: () => { setSheet(null); setCancelError(null); },
+    onError: (error) => setCancelError(error.message || cancelFallback),
+  });
+  const cancelling = cancelOrder.isPending || cancelGttNow.isPending;
+
+  const closeSheet = () => { setSheet(null); setCancelError(null); };
+
+  const sendCancel = () => {
+    if (!sheet || cancelling) return;
+    if (sheet.kind === "order") void cancelOrder.mutate(sheet.clientId);
+    else void cancelGttNow.mutate(sheet.id);
+  };
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
@@ -191,6 +308,26 @@ export default function OrdersScreen() {
     sectionHeader: { fontSize: 11, fontWeight: "600", color: colors.muted, textTransform: "uppercase", paddingVertical: 8, paddingHorizontal: 4, backgroundColor: colors.bg },
     note: { fontSize: 11, color: colors.muted, paddingBottom: 8 },
     noteWarn: { color: "#f59e0b" },
+    // The card's own action line: a press where prod answers, the fact where it does not.
+    action: { fontSize: 11, color: colors.muted, marginTop: 6 },
+    actionWrap: { marginTop: 8, borderRadius: 8, borderWidth: 1, borderColor: colors.sell, paddingVertical: 9, alignItems: "center" },
+    actionText: { fontSize: 13, fontWeight: "700", color: colors.sell },
+    requested: { color: "#f59e0b", fontWeight: "700" },
+    // Same sheet shape the basket builder uses, so a destructive press looks the same on every screen.
+    sheet: { backgroundColor: colors.bg, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, paddingBottom: 34 },
+    sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6, gap: 10 },
+    sheetClose: { padding: 4 },
+    title: { fontSize: 16, fontWeight: "700", color: colors.text, flexShrink: 1 },
+    small: { fontSize: 12, color: colors.muted, lineHeight: 18 },
+    legRow: { flexDirection: "row", justifyContent: "space-between", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
+    legName: { fontSize: 13, fontWeight: "600", color: colors.text, flexShrink: 1 },
+    legNote: { fontSize: 12, color: colors.muted, textAlign: "right" },
+    block: { marginTop: 12, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 14, alignItems: "center" },
+    dangerous: { backgroundColor: colors.sell },
+    dangerousText: { color: "#ffffff", fontSize: 15, fontWeight: "700" },
+    quiet: { borderWidth: 1, borderColor: colors.border },
+    quietText: { color: colors.text, fontSize: 15, fontWeight: "600" },
+    alert: { marginTop: 10, fontSize: 12, color: colors.sell, lineHeight: 18 },
   }), [colors]);
 
   // The broker's own words decide the tab, and no row is allowed to fall between them. ICICI sends more
@@ -218,6 +355,37 @@ export default function OrdersScreen() {
   const isError = tab === "gtt" ? gttError : ordersError;
   const refetch = tab === "gtt" ? refetchGtts : refetchOrders;
 
+  // A row ICICI still calls open is the only one with something to stop, so only it carries an action line.
+  // Everything it says comes from the two reads the screen already holds: the broker's book and the app's
+  // own instruction journal, joined on the id the exchange stamped.
+  const actionLine = (order: BrokerOrder) => {
+    if (normalizeStatus(order.status) !== "OPEN") return null;
+    const decision = cancelDecision(order, journal);
+    const word = cancelWord(decision, INTENT_WINDOW);
+    if (decision.kind !== "offer") {
+      return <Text style={[styles.action, decision.kind === "requested" ? styles.requested : undefined]}>{word.reason}</Text>;
+    }
+    const intent = decision.intent;
+    if (asked[intent.clientId]) return <Text style={[styles.action, styles.requested]}>{WAITING}</Text>;
+    const basket = basketOf(intent);
+    return (
+      <>
+        <Text style={styles.action}>{word.reason}</Text>
+        <TouchableOpacity
+          style={styles.actionWrap}
+          accessibilityRole="button"
+          accessibilityLabel={`Cancel the unfilled legs of ${basket}`}
+          onPress={() => {
+            setCancelError(null);
+            setSheet({ kind: "order", clientId: intent.clientId, basket, legs: cancelLegs(intent), stopping: decision.legs });
+          }}
+        >
+          <Text style={styles.actionText}>{word.action}</Text>
+        </TouchableOpacity>
+      </>
+    );
+  };
+
   const renderOrderCard = (order: BrokerOrder) => {
     const status = normalizeStatus(order.status);
     const isOpen = status === "OPEN";
@@ -243,7 +411,36 @@ export default function OrdersScreen() {
           <Text style={styles.label}>{order.exchange}</Text>
           <Text style={styles.label}>{formatOrderTime(order.timestamp)}</Text>
         </View>
+        {actionLine(order)}
       </View>
+    );
+  };
+
+  // A GTT has its own journal, so the press is offered only for the two states prod acts on: never sent, or
+  // active at the broker. A GTT that already fired is not this control's business — the order it placed
+  // lives in the book and has to be dealt with there — and prod refuses anything else in its own words.
+  const gttAction = (gtt: GttOrder, symbol: string, side: string, quantity: number, price: number) => {
+    const state = gttCancelState(gtt);
+    if (state === "closed") return null;
+    if (state === "waiting") return <Text style={[styles.action, styles.requested]}>{WAITING}</Text>;
+    if (state === "refused") return <Text style={styles.action}>{GTT_REFUSED_REASON}</Text>;
+    return (
+      <TouchableOpacity
+        style={styles.actionWrap}
+        accessibilityRole="button"
+        accessibilityLabel={`Cancel the GTT on ${symbol}`}
+        onPress={() => {
+          setCancelError(null);
+          setSheet({
+            kind: "gtt",
+            id: gtt.id,
+            symbol,
+            line: `${side} ${formatNumber(quantity)} · trigger ₹${gtt.trigger_price}${price > 0 ? ` · limit ${formatRupees(price)}` : ""}`,
+          });
+        }}
+      >
+        <Text style={styles.actionText}>Cancel GTT</Text>
+      </TouchableOpacity>
     );
   };
 
@@ -285,6 +482,7 @@ export default function OrdersScreen() {
             {gtt.provider}{exchange ? ` · ${exchange}` : ""} · {new Date(gtt.created_at).toLocaleDateString()}
           </Text>
         </View>
+        {gttAction(gtt, symbol, side, quantity, price)}
       </View>
     );
   };
@@ -310,7 +508,10 @@ export default function OrdersScreen() {
     );
   };
 
-  const renderOrderItem = useCallback(({ item }: { item: BrokerOrder }) => renderOrderCard(item), [styles, colors]);
+  // The card now reads two things that arrive after the first render — the instruction journal and this
+  // screen's own asked-flags — so both belong in the memo's dependencies. Memoising on styles alone would
+  // keep the first render's closure and print "not checked against this app's instructions" forever.
+  const renderOrderItem = useCallback(({ item }: { item: BrokerOrder }) => renderOrderCard(item), [styles, colors, journal, asked]);
   const renderGttItem = useCallback(({ item }: { item: GttOrder }) => renderGttCard(item), [styles, colors]);
 
   // Two broker rows can carry the same blank order id, and a FlatList renders one item per key — the row
@@ -337,6 +538,10 @@ export default function OrdersScreen() {
           seenExchanges.length ? `, ${seenExchanges.join(" + ")}` : ""}`}
       </Text>
       {ordersState.reason ? <Text style={[styles.note, styles.noteWarn]}>{ordersState.reason}</Text> : null}
+      {/* Where a cancel comes from, stated once instead of by implication on every card. */}
+      <Text style={styles.note}>
+        {"Cancel is offered for orders this app's desk filed, because the server stops what it journaled. An order placed in ICICI is cancelled in ICICI."}
+      </Text>
       {otherOrders.length > 0 ? (
         <Text style={[styles.note, styles.noteWarn]}>
           {`${otherOrders.length} order${otherOrders.length === 1 ? " is" : "s are"} in a state ICICI words differently, so ${
@@ -413,6 +618,67 @@ export default function OrdersScreen() {
     gtt: gtts ? String(gtts.length) : "–",
   };
 
+  // Opening this sheet sends nothing. Every leg of the instruction is listed, filled ones included, because
+  // the reference prod cancels is the basket's — and the press is labelled with the count it actually stops.
+  const orderSheet = sheet?.kind === "order" ? sheet : null;
+  const gttSheet = sheet?.kind === "gtt" ? sheet : null;
+  const cancelSheet = (
+    <Modal visible={sheet !== null} transparent animationType="slide" onRequestClose={closeSheet}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" }}>
+        <View style={styles.sheet}>
+          <View style={styles.sheetHead}>
+            <Text style={styles.title}>{orderSheet ? `Cancel the unfilled legs of ${orderSheet.basket}?` : "Cancel this GTT?"}</Text>
+            <TouchableOpacity style={styles.sheetClose} onPress={closeSheet} accessibilityRole="button" accessibilityLabel="Close without cancelling">
+              <Ionicons name="close" size={22} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          {orderSheet ? (
+            <>
+              <Text style={styles.small}>
+                ICICI will be asked to cancel what has not filled yet. Legs already filled are not reversed — they stay in your positions.
+              </Text>
+              {orderSheet.legs.map((leg, i) => (
+                <View key={`${leg.tradingsymbol}-${leg.side}-${i}`} style={styles.legRow}>
+                  <Text style={styles.legName}>{leg.tradingsymbol}</Text>
+                  <Text style={styles.legNote}>{`${leg.side} ${legWord(leg)}`}</Text>
+                </View>
+              ))}
+              <Text style={[styles.small, { marginTop: 8 }]}>
+                {'The order stays on this screen as "cancel requested" until ICICI confirms it. A cancel that is not confirmed is not a cancelled order.'}
+              </Text>
+            </>
+          ) : (
+            <>
+              {gttSheet ? <Text style={styles.title}>{`${gttSheet.symbol} · ${gttSheet.line}`}</Text> : null}
+              <Text style={styles.small}>
+                If ICICI is holding this GTT the app asks for the delete; if it was never sent, the app cancels it in its own journal. An order the GTT already triggered stays in your book.
+              </Text>
+            </>
+          )}
+          {cancelError ? <Text style={styles.alert}>{cancelError}</Text> : null}
+          <TouchableOpacity
+            style={[styles.block, styles.dangerous]}
+            onPress={sendCancel}
+            disabled={cancelling}
+            accessibilityRole="button"
+            accessibilityLabel={orderSheet ? `Confirm cancelling ${orderSheet.stopping.length} unfilled legs` : "Confirm cancelling this GTT"}
+          >
+            <Text style={styles.dangerousText}>
+              {cancelling
+                ? "Cancelling"
+                : orderSheet
+                  ? `Cancel ${orderSheet.stopping.length} unfilled leg${orderSheet.stopping.length === 1 ? "" : "s"}`
+                  : "Cancel GTT"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.block, styles.quiet]} onPress={closeSheet} accessibilityRole="button" accessibilityLabel="Keep the orders and close">
+            <Text style={styles.quietText}>{gttSheet ? "Keep the GTT" : "Keep the orders"}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.tabBar}>
@@ -427,6 +693,7 @@ export default function OrdersScreen() {
         ))}
       </View>
       {renderContent()}
+      {cancelSheet}
     </View>
   );
 }

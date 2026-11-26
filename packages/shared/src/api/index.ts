@@ -226,6 +226,18 @@ export {
 } from "./basket-desk";
 
 export {
+  cancelDecision,
+  cancelLegs,
+  stoppableLegs,
+  intentForOrder,
+  gttCancelState,
+  GTT_REFUSED_REASON,
+  INTENT_WINDOW,
+  type CancelDecision,
+  type CancelLeg,
+} from "./order-cancel";
+
+export {
   LAST_KNOWN,
   LAST_KNOWN_MAX_AGE_MS,
   LAST_KNOWN_PREFIX,
