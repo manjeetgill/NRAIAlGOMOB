@@ -65,6 +65,62 @@ export function openLiveBaskets(baskets: readonly Basket[]): Basket[] {
 }
 
 /**
+ * Broker positions the desk exits from the order ticket: a named order basket or one made from the book.
+ * Their legs ARE the book, so a leg the open-position rows no longer carry has been exited. The web desk's
+ * `ticketBasket`, same words, same two kinds - a live algo run's own record is its authority, and the book
+ * only marks it.
+ */
+const ticketBasket = (basket: Basket): boolean => basket.kind === "order" || basket.kind === "manual";
+
+/**
+ * How long a freshly opened basket is taken at its own word.
+ *
+ * The position book the desk compares against is prod's cached snapshot of a broker read, and the read
+ * runs a few seconds behind the fill that created it. Without a grace period, a basket this app filled a
+ * moment ago could be hidden as exited before its rows reached the book - a vanished order is the one
+ * thing a trading screen must never do. Five minutes is far past the snapshot's own age and far short of
+ * the days a phantom basket has usually been sitting on the desk.
+ */
+const FRESH_GRACE_MS = 5 * 60 * 1000;
+
+const justOpened = (basket: Basket): boolean => {
+  const openedAt = basket.openedAt ? Date.parse(basket.openedAt) : NaN;
+  return Number.isFinite(openedAt) && Date.now() - openedAt < FRESH_GRACE_MS;
+};
+
+/**
+ * Split the desk's rows into baskets the broker still holds and baskets holding nothing at all.
+ *
+ * `/v1/baskets` keeps filing a named basket after its legs have been exited at the broker - `status` only
+ * moves when this app closes it - so a phone that lists what the route returns shows cards for positions
+ * the account no longer has. The web desk does not show them because it repairs each row in the browser
+ * first: `withBook` zeroes a ticket leg the open-position book does not carry, and the pane then drops a
+ * basket with no open leg and nothing pending. This is that same rule applied before the rows are painted,
+ * so one trader sees one book on both screens.
+ *
+ * `bookAnswered` is the whole safety of it. Only a position book that actually answered - the broker proved
+ * the account flat or partial - may hide a ticket basket; after a cold or failed read every row stays,
+ * because a book the phone could not read is not evidence that a position is gone. A basket with live
+ * orders, one the server still marks as working, or one opened within the grace period is money in motion
+ * and is never hidden.
+ */
+export function deskList(baskets: readonly Basket[], positions: readonly OpenPosition[], bookAnswered: boolean): {
+  listed: Basket[];
+  emptied: Basket[];
+} {
+  const held = positions.filter(row => row.quantity > 0);
+  const listed: Basket[] = [];
+  const emptied: Basket[] = [];
+  for (const basket of baskets) {
+    const judged = bookAnswered && ticketBasket(basket) && !justOpened(basket);
+    const live = basket.legs.some(leg => leg.pending
+      || (leg.quantity > 0 && (!judged || held.some(row => sameContract(row, leg)))));
+    (basket.working || live ? listed : emptied).push(basket);
+  }
+  return { listed, emptied };
+}
+
+/**
  * The basket's own money, in the two figures the trader decides on: what is booked from exits already on
  * record, and what the open legs are worth at the broker's last price. `unpriced` counts the open legs
  * with no mark, because their absence has to sit beside the total rather than inside it.

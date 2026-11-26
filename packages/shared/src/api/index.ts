@@ -200,6 +200,7 @@ export {
   isLiveRun,
   isLiveMoney,
   openLiveBaskets,
+  deskList,
   basketPnl,
   sameContract,
   withBookMarks,

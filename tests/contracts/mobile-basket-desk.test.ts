@@ -6,6 +6,7 @@ import {
   buildAnalysis,
   closedUnits,
   curves,
+  deskList,
   expiryKey,
   heldPayoff,
   isLiveMoney,
@@ -196,6 +197,94 @@ it("sorts the desk by the day the basket was opened, newest first", () => {
     deskBasket({ id: "undated", openedAt: null }),
   ];
   expect(openLiveBaskets(rows).map(basket => basket.id)).toEqual(["new", "old", "undated"]);
+});
+
+it("lists a ticket basket only while the broker's book still holds its legs", () => {
+  const exited = deskBasket({ id: "exited", name: "NIFTY STRADDLE", legs: [brokerLeg()] });
+  const rows = (baskets: unknown[]) => baskets as Parameters<typeof deskList>[0];
+  const book = (positions: unknown[]) => positions as Parameters<typeof deskList>[1];
+  // The book answered and carries nothing: the legs were bought back, and prod's basket row simply has
+  // not caught up. The web desk already hides this card; the phone now agrees instead of showing a
+  // position the account no longer has.
+  expect(deskList(rows([exited]), book([]), true)).toEqual({ listed: [], emptied: [exited] });
+  // The same row, with the contract still in the book, stays on the desk.
+  expect(deskList(rows([exited]), book([bookRow()]), true).listed.map(basket => basket.id)).toEqual(["exited"]);
+  // One leg held is enough: a partially closed basket is still money on the table.
+  const spread = deskBasket({ id: "spread", legs: [brokerLeg(), brokerLeg({ symbol: "NIFTY26NOV25400PE" })] });
+  expect(deskList(rows([spread]), book([bookRow()]), true).listed.map(basket => basket.id)).toEqual(["spread"]);
+});
+
+it("gives a basket it just filled time to reach the position book", () => {
+  // The book the desk compares against is a cached broker read that runs seconds behind the fill, so a
+  // ticket that went off minutes ago must not be called exited before its rows arrive.
+  const fresh = deskBasket({ id: "fresh", openedAt: new Date(Date.now() - 40_000).toISOString(), legs: [brokerLeg()] });
+  expect(deskList([fresh] as Parameters<typeof deskList>[0], [] as Parameters<typeof deskList>[1], true).listed)
+    .toEqual([fresh]);
+  // Past the grace period the same record is judged like any other, which is how a phantom basket leaves.
+  const aged = deskBasket({ id: "aged", openedAt: new Date(Date.now() - 6 * 60_000).toISOString(), legs: [brokerLeg()] });
+  expect(deskList([aged] as Parameters<typeof deskList>[0], [] as Parameters<typeof deskList>[1], true).emptied)
+    .toEqual([aged]);
+});
+
+it("will not hide a basket on a position book that never answered", () => {
+  const exited = deskBasket({ id: "exited", legs: [brokerLeg()] });
+  // `answered` false is a cold, failed or unreadable read. Empty rows from that are not proof of an exit,
+  // so the card stays rather than vanishing on a server hiccup.
+  const blind = deskList(
+    [exited] as Parameters<typeof deskList>[0],
+    [] as Parameters<typeof deskList>[1],
+    false,
+  );
+  expect(blind.listed.map(basket => basket.id)).toEqual(["exited"]);
+  expect(blind.emptied).toEqual([]);
+});
+
+it("keeps a basket the moment money is still in motion", () => {
+  // A leg with an order riding on it is a position the broker has not finished moving, whatever the book
+  // row says this second.
+  const pending = deskBasket({ id: "pending", legs: [brokerLeg({ pending: true })] });
+  // Same for a live algo run the server still marks working.
+  const working = deskBasket({ id: "working", legs: [brokerLeg()], working: { label: "1 order open", filled: 0, total: 1 } });
+  const listed = deskList(
+    [pending, working] as Parameters<typeof deskList>[0],
+    [] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(listed.listed.map(basket => basket.id)).toEqual(["pending", "working"]);
+  expect(listed.emptied).toEqual([]);
+});
+
+it("reads a run's own record for what it holds, and the book only for a ticket basket", () => {
+  // An algo run's legs are what its durable record says, so an empty book does not flatten it - the web
+  // desk's `withBook` zeroes only order and manual rows.
+  const run = deskBasket({ id: "run", kind: "run", provider: "icici", legs: [brokerLeg()] });
+  expect(deskList([run] as Parameters<typeof deskList>[0], [] as Parameters<typeof deskList>[1], true).listed)
+    .toEqual([run]);
+  // A run whose own record shows nothing left is a finished one, and it comes off the desk without the
+  // book being asked.
+  const done = deskBasket({ id: "done", kind: "run", provider: "icici", legs: [brokerLeg({ quantity: 0, exited: 65 })] });
+  const split = deskList(
+    [run, done] as Parameters<typeof deskList>[0],
+    [] as Parameters<typeof deskList>[1],
+    false,
+  );
+  expect(split.listed.map(basket => basket.id)).toEqual(["run"]);
+  expect(split.emptied.map(basket => basket.id)).toEqual(["done"]);
+});
+
+it("recognises a held contract by its token, not only by the broker's own code", () => {
+  // The order-token shape (UNDERLYING_YYYYMMDD_STRIKE_RIGHT) beside the book row that embeds the same
+  // contract as ICICI writes it, so a basket named from a ticket is not hidden as exited.
+  const token = deskBasket({ id: "token", legs: [brokerLeg({ symbol: "NIFTY_20261127_25600_CE" })] });
+  const listed = deskList([token] as Parameters<typeof deskList>[0], [bookRow()] as Parameters<typeof deskList>[1], true);
+  expect(listed.listed.map(basket => basket.id)).toEqual(["token"]);
+  // A different strike in the book is not this contract, so no match still empties the basket.
+  const flat = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [bookRow({ symbol: "NIFTY26NOV25800CE", strike: "25800" })] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(flat.emptied.map(basket => basket.id)).toEqual(["token"]);
 });
 
 it("keeps booked and total present even when the open half has no price", () => {
@@ -569,7 +658,11 @@ it("keeps the phone honest about what it will not send", () => {
 it("prices the desk from the broker book and follows the theme", () => {
   const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
   expect(desk).toContain("withBookMarks(");
-  expect(desk).toContain("useOpenPositions()");
+  // One cached account read feeds both: the mapped rows price the legs, and the response's own state is
+  // what proves the book answered. The positions query is told not to poll the same route twice.
+  expect(desk).toContain("useOpenPositions({ refetchInterval: false })");
+  expect(desk).toContain("useIciciAccount(");
+  expect(desk).toContain('iciciAccountSection(account, "portfoliopositions")');
   // The two figures the owner decides on stay on every card, not only in the opened basket.
   expect(desk).toContain("Booked");
   expect(desk).toContain("Total P&amp;L");
@@ -585,6 +678,18 @@ it("prices the desk from the broker book and follows the theme", () => {
   expect(desk).toContain("moneyColor(value.booked, styles)");
   expect(desk).not.toContain("booked >= 0 ? styles.cPos");
   expect(desk).not.toContain("const BRAND =");
+});
+
+it("names the baskets the book no longer backs instead of dropping them quietly", () => {
+  const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
+  // The filter runs before the cards are painted, on the same rule the web desk uses.
+  expect(desk).toContain("deskList(openLiveBaskets(");
+  // And what it removed is said out loud, by name, so a card that vanished is never mistaken for a
+  // position the trader never had.
+  expect(desk).toContain("left this list because ICICI's open positions hold none of their legs");
+  expect(desk).toContain("desk.emptied");
+  // The empty desk says why it is empty when the book is the reason.
+  expect(desk).toContain("Every basket this app recorded has been exited at the broker");
 });
 
 it("puts the two tabs on the spread screen and hands the legs to the builder", () => {
