@@ -191,6 +191,7 @@ export {
   markWatchlist,
   type RowIdentity,
   type Marked,
+  type MarkedPosition,
 } from "./account-quotes";
 
 export {

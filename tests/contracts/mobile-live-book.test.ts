@@ -141,3 +141,89 @@ it("says which price came off the stream instead of leaving the trader to guess"
   expect(screen).not.toContain("NO TICKS");
   expect(screen).not.toContain("CONNECTING");
 });
+
+/**
+ * The live book on 2026-11-26 arrived with `marked_pnl_paise` absent on all 29 position rows, so a row only
+ * ever showed a P&L once its contract happened to trade. 24 of those rows already carried both an average
+ * price and a mark, which is everything the figure needs.
+ */
+const brokerOnlyRow = { ...optionRow, marked_pnl_paise: null };
+
+it("marks the P&L the broker's own price implies on a row the stream has not ticked", () => {
+  const [row] = iciciOpenPositions(book([brokerOnlyRow], []));
+  expect(row.unrealizedPnl).toBeNull();
+  const [marked] = markPositions([row], [], { NIFTY26NOV25000CE: "NIFTY" });
+  // 65 bought at 120.35, broker marks it 98.10: the number is the gap the screen already shows.
+  expect(marked.unrealizedPnl).toBeCloseTo((98.10 - 120.35) * 65, 2);
+  // The price itself still came from the broker, so it is still not drawn as a stream price.
+  expect(marked.live).toBe(false);
+  expect(marked.markPrice).toBe(98.10);
+});
+
+it("signs the derived P&L by the side the broker reported", () => {
+  const [row] = iciciOpenPositions(book([{ ...brokerOnlyRow, action: "SELL" }], []));
+  const [marked] = markPositions([row], [], {});
+  expect(marked.unrealizedPnl).toBeCloseTo((120.35 - 98.10) * 65, 2);
+});
+
+it("keeps a row unmarked when the broker named no cost, rather than printing a number from one price", () => {
+  const [row] = iciciOpenPositions(book([{ ...brokerOnlyRow, average_price: null }], []));
+  const [marked] = markPositions([row], [], {});
+  expect(marked.markPrice).toBe(98.10);
+  expect(marked.unrealizedPnl).toBeNull();
+});
+
+it("prefers the P&L the broker did report over the one this app would derive", () => {
+  const [row] = iciciOpenPositions(book([optionRow], []));
+  const [marked] = markPositions([row], [], {});
+  expect(marked.unrealizedPnl).toBe(-14462.5);
+});
+
+it("reads the rupee P&L the broker reported when prod wrote no mark", () => {
+  // `pnl` is the broker's own rupee figure, the same one the web desk reads as paise
+  // (frontend/nextjs/app/app/overview/icici-model.ts `reportedPnl`).
+  const [row] = iciciOpenPositions(book([{ ...optionRow, marked_pnl_paise: null, pnl: "-14462.50" }], []));
+  expect(row.unrealizedPnl).toBe(-14462.5);
+});
+
+/**
+ * The day figure the summary prints is only ever measured from the session's opening reference, which this
+ * endpoint already sends (`ICICI_FIELDS` lists `previous_close` beside `ltp`). A row without one is left
+ * without a day figure rather than given the P&L under a second name.
+ */
+const optionId = "instrument:v1:NSE:FO:NIFTY:OPT:2026-11-25:25000:CE";
+const closedRow = { ...brokerOnlyRow, previous_close: "110.00" };
+
+it("measures Today P&L from the close the broker sent, not from the cost", () => {
+  const [row] = iciciOpenPositions(book([closedRow], []));
+  expect(row.previousClose).toBe(110);
+  const [marked] = markPositions([row], [], { NIFTY26NOV25000CE: "NIFTY" });
+  expect(marked.todayPnl).toBeCloseTo((98.10 - 110) * 65, 2);
+  expect(marked.unrealizedPnl).toBeCloseTo((98.10 - 120.35) * 65, 2);
+});
+
+it("leaves Today empty on a row the broker sent no close for", () => {
+  const [row] = iciciOpenPositions(book([brokerOnlyRow], []));
+  expect(row.previousClose).toBeNull();
+  const [marked] = markPositions([row], [], { NIFTY26NOV25000CE: "NIFTY" });
+  expect(marked.todayPnl).toBeNull();
+  expect(marked.unrealizedPnl).not.toBeNull();
+});
+
+it("re-measures the day figure off a tick's own close when the stream carries one", () => {
+  const [row] = iciciOpenPositions(book([closedRow], []));
+  const [marked] = markPositions([row], [{ ...tick(optionId, 130), previousClose: 125 }], { NIFTY26NOV25000CE: "NIFTY" });
+  expect(marked.todayPnl).toBeCloseTo((130 - 125) * 65, 2);
+});
+
+it("sums the book at the top of both tabs, with the row counts that built each figure", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
+  expect(screen).toContain("{copyLine(positionCopy)}\n        {totalsCard(positionTotals)}");
+  expect(screen).toContain("{copyLine(holdingCopy)}\n        {totalsCard(holdingTotals)}");
+  expect(screen).toContain("rows carry a P&L");
+  expect(screen).toContain("rows carry a day figure");
+  // Below the last row, a total scrolled past the book read as the account's own figure whether or not
+  // every row carried one. Both are gone: nothing is summed below the rows now.
+  expect(screen).not.toContain("Total Unrealized P&L");
+  expect(screen).not.toContain("footer=");
+});
