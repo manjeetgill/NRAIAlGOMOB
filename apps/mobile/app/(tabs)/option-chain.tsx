@@ -340,6 +340,19 @@ export default function OptionChainScreen() {
   const itemsRef = useRef<ChainItem[]>(items);
   itemsRef.current = items;
   const [band, setBand] = useState<Band | null>(null);
+
+  // Initialize a band around ATM strikes immediately when items load so strikes subscribe to WebSocket ticks
+  // without waiting for onViewableItemsChanged to fire.
+  useEffect(() => {
+    if (items.length > 0 && !band) {
+      const atmIdx = items.findIndex(item => item.kind === "row" && item.row.isAtTheMoney);
+      const center = atmIdx >= 0 ? atmIdx : Math.floor(items.length / 2);
+      const from = Math.max(0, center - BAND_PAD);
+      const to = Math.min(items.length - 1, center + BAND_PAD);
+      setBand({ from, to });
+    }
+  }, [items, band]);
+
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: readonly { index?: number | null }[] }) => {
     const visible = viewableItems
       .map(token => token.index)
@@ -359,7 +372,7 @@ export default function OptionChainScreen() {
   }, [band, items, chain]);
 
   // Off-hours the stream carries nothing for these contracts and the ladder is the closing prices the
-  // trader expects, so the screen asks for ticks only while the exchange is trading.
+  // trader expects, so the screen asks for ticks only while the exchange is trading or marketOpen is true.
   const feed = useQuoteFeed(ids, !!chain?.marketOpen && ids.length > 0);
   useEffect(() => {
     streamedStrikes.current = ids;
@@ -514,7 +527,7 @@ export default function OptionChainScreen() {
       amount(side?.ltp) ?? undefined, { bid: amount(side?.bid), ask: amount(side?.ask) },
       // The row also carries the identity its own broker master places, which for ICICI is not the label it
       // quotes under. A ticket built from the quoted label alone names a contract prod cannot send.
-      side ? { symbol: side.order?.tradingsymbol || side.symbol, exchange: side.order?.exchange } : null);
+      side ? { symbol: side.order?.tradingsymbol || side.symbol, exchange: side.order?.exchange, instrumentId: side.instrumentId } : null);
   }, [underlying, ticket]);
 
   // Named off the store when no chain has arrived yet: the picker is the way out of a failed read, so it

@@ -225,7 +225,8 @@ export default function PayoffChart({
 
   // 2. Prepare chains: fallback missing ltp to close/ask/bid/entryPrice so after-hours builds succeed
   const preparedChains = useMemo(() => {
-    const answered = chains.filter((c): c is OptionChainData => !!c);
+    const list = chains ?? [];
+    const answered = list.filter((c): c is OptionChainData => !!c);
     if (!answered.length) return answered;
 
     return answered.map(c => ({
@@ -338,13 +339,16 @@ export default function PayoffChart({
       if (l.expiry) {
         const parts = l.expiry.split("-").map(Number);
         if (parts.length === 3) {
-          const expDate = new Date(parts[0], parts[1] - 1, parts[2], 15, 30, 0);
+          // 15:30 IST (UTC+05:30) on expiry day, whatever time zone the phone is set to.
+          const expDate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 10, 0, 0));
           const diffMs = expDate.getTime() - now.getTime();
           years = Math.max(0.0005, diffMs / (365 * 86400 * 1000));
         }
       }
 
-      const baseIv = quote?.iv ? Number(quote.iv) : solveImpliedVol(price, effSpot, strike, years, rate, dividend, l.right);
+      // The chain quotes IV in percent (17.3 = 17.3%); the model takes a fraction.
+      const chainIv = quote?.iv != null && Number(quote.iv) > 0 ? Number(quote.iv) / 100 : null;
+      const baseIv = chainIv ?? solveImpliedVol(price, effSpot, strike, years, rate, dividend, l.right);
       const effectiveIv = Math.max(0.001, baseIv + ivShiftPoints / 100);
 
       return {

@@ -54,16 +54,23 @@ export default function StockScreen() {
   const feed = useQuoteFeed(cashId ? [cashId] : [], !!cashId);
   const liveTick = feed.quotes[0];
   const quote = useMemo(() => {
-    if (!rawQuote || !liveTick || !liveTick.fresh || !(liveTick.price > 0)) return rawQuote;
+    if (!rawQuote) return rawQuote;
+    if (!liveTick || !liveTick.fresh) return rawQuote;
+    const ltp = liveTick.price > 0 ? liveTick.price : rawQuote.ltp;
     const prev = liveTick.previousClose ?? rawQuote.close;
-    const change = prev && prev > 0 ? liveTick.price - prev : rawQuote.change;
+    const change = prev && prev > 0 && ltp ? ltp - prev : rawQuote.change;
     const changePct = prev && prev > 0 && change !== null ? (change / prev) * 100 : rawQuote.changePct;
+    const hasLiveBidAsk = (liveTick.bid && liveTick.bid > 0) || (liveTick.ask && liveTick.ask > 0);
     return {
       ...rawQuote,
-      ltp: liveTick.price,
+      ltp,
       change,
       changePct,
       quality: "live",
+      bid: hasLiveBidAsk ? liveTick.bid ?? rawQuote.bid : rawQuote.bid,
+      ask: hasLiveBidAsk ? liveTick.ask ?? rawQuote.ask : rawQuote.ask,
+      bidQuantity: hasLiveBidAsk ? liveTick.bidQty ?? rawQuote.bidQuantity : rawQuote.bidQuantity,
+      askQuantity: hasLiveBidAsk ? liveTick.askQty ?? rawQuote.askQuantity : rawQuote.askQuantity,
     };
   }, [rawQuote, liveTick]);
   const { data: cross } = useEquityQuote(other ?? "NSE", symbol, !!other && symbol.length > 0);

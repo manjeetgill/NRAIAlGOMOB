@@ -622,14 +622,40 @@ export function legValue(leg: BasketLeg): { price: number | null; label: string 
 /** How much of a leg was already closed, so a partly exited leg can say "85 of 170". */
 export const closedUnits = (leg: BasketLeg): number => (Number.isFinite(leg.exited) && leg.exited > 0 ? leg.exited : 0);
 
-/** The open legs' canonical ids, the ones the live price socket can stream. Position-made legs named
- * by a broker symbol carry no canonical id and keep the REST mark. */
+/**
+ * Resolves the canonical instrument ID for a basket leg, allowing WebSocket subscriptions
+ * even if leg.instrumentId is an order token (e.g. NIFTY_20261201_25000_PE) or broker symbol.
+ */
+export function canonicalLegInstrumentId(leg: BasketLeg, basket?: Basket): string | null {
+  if (leg.instrumentId && leg.instrumentId.startsWith("instrument:v1:")) {
+    return leg.instrumentId;
+  }
+  // Only an exact identity counts: substring matches against other legs (strike "2500" inside "25000",
+  // or an empty symbol matching every id) priced a leg off another contract.
+  // Parse order token format: e.g. HINLEV_20261229_2200_PE or NIFTY_20261201_25000_PE
+  const sym = (leg.symbol ?? leg.instrumentId ?? "").trim().toUpperCase();
+  const parsed = /^([A-Z0-9&-]+)_(\d{8})_([\dP]+)_(CE|PE)$/.exec(sym);
+  if (parsed) {
+    const underlying = parsed[1]!;
+    const isoDate = `${parsed[2]!.slice(0, 4)}-${parsed[2]!.slice(4, 6)}-${parsed[2]!.slice(6, 8)}`;
+    const strike = parsed[3]!.replace("P", ".");
+    const right = parsed[4]!;
+    const venue = leg.exchange === "BSE" ? "BSE" : "NSE";
+    return `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(isoDate)}:${encodeURIComponent(strike)}:${right}`;
+  }
+  return null;
+}
+
+/** The open legs' canonical ids, the ones the live price socket can stream. */
 export function basketStreamIds(baskets: readonly Basket[]): string[] {
   const ids = new Set<string>();
   for (const basket of baskets) {
     if (basket.provider === "paper") continue;
     for (const leg of basket.legs) {
-      if (leg.quantity > 0 && leg.instrumentId.startsWith("instrument:v1:")) ids.add(leg.instrumentId);
+      if (leg.quantity > 0) {
+        const canonical = canonicalLegInstrumentId(leg, basket);
+        if (canonical) ids.add(canonical);
+      }
     }
   }
   return [...ids].sort();
@@ -650,7 +676,9 @@ export function withStreamMarks(baskets: readonly Basket[], ticks: readonly Quot
     if (basket.provider === "paper") return basket;
     let changed = false;
     const legs = basket.legs.map(leg => {
-      const live = leg.quantity > 0 ? fresh.get(leg.instrumentId) : undefined;
+      if (leg.quantity <= 0) return leg;
+      const canonical = canonicalLegInstrumentId(leg, basket);
+      const live = (canonical ? fresh.get(canonical) : undefined) ?? fresh.get(leg.instrumentId);
       if (live === undefined || live === leg.markPrice) return leg;
       changed = true;
       return { ...leg, markPrice: live };

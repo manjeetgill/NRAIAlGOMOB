@@ -44,6 +44,7 @@ export interface OrderTicketConfig {
   source?: "option-chain" | "global-search" | "basket" | "positions" | "watchlist" | "terminal" | "manual";
   basketId?: string;
   legId?: string;
+  instrumentId?: string;
   book?: OptionBook;
   onSuccess?: (orderId: string) => void;
   onError?: (error: Error) => void;
@@ -265,7 +266,7 @@ export function useOrderTicket() {
     ltp?: number,
     book?: OptionBook,
     /** What the broker's own master calls the pressed contract, carried off the ladder row that offered it. */
-    contract?: { symbol: string; exchange?: string | null } | null,
+    contract?: { symbol: string; exchange?: string | null; instrumentId?: string | null } | null,
   ) => {
     // The readable string of a contract is not an order. Prod's model takes one uppercase token and its
     // placement stage matches that token against the broker's instrument master, so a spaced
@@ -283,6 +284,7 @@ export function useOrderTicket() {
       price: ltp || 0,
       tag: `option-chain:${underlying}`,
       source: "option-chain",
+      instrumentId: contract?.instrumentId || undefined,
       book,
     });
   }, [open]);

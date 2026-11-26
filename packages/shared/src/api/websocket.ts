@@ -46,6 +46,14 @@ export interface QuoteTick {
    * against the wrong close is a wrong number, not a fuller one.
    */
   previousClose?: number | null;
+  /** Best bid price from Breeze/broker quote stream (bPrice). */
+  bid?: number | null;
+  /** Best ask price from Breeze/broker quote stream (sPrice). */
+  ask?: number | null;
+  /** Best bid quantity from Breeze/broker quote stream (bQty). */
+  bidQty?: number | null;
+  /** Best ask quantity from Breeze/broker quote stream (sQty). */
+  askQty?: number | null;
 }
 
 export interface FeedSnapshot {
@@ -72,6 +80,14 @@ interface WireQuote {
   priceSource?: string;
   previousClose?: number | string | null;
   fresh?: boolean;
+  bid?: number | string | null;
+  ask?: number | string | null;
+  bidQty?: number | string | null;
+  askQty?: number | string | null;
+  bPrice?: number | string | null;
+  sPrice?: number | string | null;
+  bQty?: number | string | null;
+  sQty?: number | string | null;
 }
 
 interface WireFrame {
@@ -125,6 +141,10 @@ function toTick(quote: WireQuote, id: string): QuoteTick {
     broker: quote.broker ?? "",
     subscriptionId: quote.subscriptionId ?? "",
     previousClose: positiveNumber(quote.previousClose),
+    bid: positiveNumber(quote.bid ?? quote.bPrice),
+    ask: positiveNumber(quote.ask ?? quote.sPrice),
+    bidQty: positiveNumber(quote.bidQty ?? quote.bQty),
+    askQty: positiveNumber(quote.askQty ?? quote.sQty),
   };
 }
 

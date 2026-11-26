@@ -728,3 +728,14 @@ it("ticks open legs from the price socket and leaves the rest on the read's mark
   expect(stale.legs[0].markPrice).toBe(100);
   expect(basketStreamIds([{ ...(basket as object), provider: "paper" } as never])).toEqual([]);
 });
+
+it("never borrows another leg's contract by substring when resolving a stream id", async () => {
+  const { canonicalLegInstrumentId } = await import("../../packages/shared/src/api/basket-desk.ts");
+  const other = "instrument:v1:NSE:FO:NIFTY:OPT:2026-12-01:25000:CE";
+  const basket = { provider: "icici", payoffLegs: [{ instrumentId: other, strike: "2500", right: "CE" }], legs: [] } as never;
+  // Strike 2500 sits inside "25000", and an empty symbol used to match every id.
+  expect(canonicalLegInstrumentId({ instrumentId: "XYZ25000CE", symbol: "XYZ25000CE", exchange: "NSE" } as never, basket)).toBeNull();
+  expect(canonicalLegInstrumentId({ instrumentId: "", symbol: "", exchange: "NSE" } as never, basket)).toBeNull();
+  expect(canonicalLegInstrumentId({ instrumentId: "NIFTY_20261201_25000_PE", exchange: "NSE" } as never, basket))
+    .toBe("instrument:v1:NSE:FO:NIFTY:OPT:2026-12-01:25000:PE");
+});

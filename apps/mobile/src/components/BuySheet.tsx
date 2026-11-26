@@ -32,15 +32,20 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   // a shares endpoint and has nothing to say about an NFO contract - prod answers it with a refusal.
   const fromChain = !!config?.book;
   const { data: quote } = useEquityQuote(localState.exchange, localState.symbol, !fromChain);
-  const cashId = !fromChain && localState.exchange === "NSE" ? streamId(localState.symbol) : null;
-  const feed = useQuoteFeed(cashId ? [cashId] : [], !!cashId);
+  const streamInstrumentId = config?.instrumentId || (!fromChain && localState.exchange === "NSE" ? streamId(localState.symbol) : null);
+  const feed = useQuoteFeed(streamInstrumentId ? [streamInstrumentId] : [], !!streamInstrumentId);
   const liveTick = feed.quotes[0];
-  const ask = fromChain ? config?.book?.ask ?? null : quote?.ask ?? null;
-  const bid = fromChain ? config?.book?.bid ?? null : quote?.bid ?? null;
+  const livePrice = liveTick?.fresh && liveTick.price > 0 ? liveTick.price : null;
+  const liveAsk = liveTick?.fresh && (liveTick.ask ?? 0) > 0 ? liveTick.ask : null;
+  const liveBid = liveTick?.fresh && (liveTick.bid ?? 0) > 0 ? liveTick.bid : null;
+  // Live touch first for both routes, so "last" and bid/ask never mix a live tick with a stale book.
+  const ask = liveAsk ?? (fromChain ? config?.book?.ask ?? null : quote?.ask ?? null);
+  const bid = liveBid ?? (fromChain ? config?.book?.bid ?? null : quote?.bid ?? null);
+  const askQty = fromChain ? null : (liveTick?.fresh && liveTick.askQty ? liveTick.askQty : quote?.askQuantity);
+  const bidQty = fromChain ? null : (liveTick?.fresh && liveTick.bidQty ? liveTick.bidQty : quote?.bidQuantity);
   // The price the press arrived with, kept apart from the editable limit field so "last" never comes
   // to mean whatever the trader has typed into the ticket so far.
-  const liveLtp = !fromChain && liveTick?.fresh && liveTick.price > 0 ? liveTick.price : null;
-  const lastTouch = fromChain ? config?.price ?? null : liveLtp ?? quote?.ltp ?? null;
+  const lastTouch = livePrice ?? (fromChain ? config?.price ?? null : quote?.ltp ?? null);
 
   // Seeded once at mount: the sheet only exists while a ticket is open, so a new press always
   // starts from the ticket's own values rather than from a previous symbol's half-typed text.
@@ -177,12 +182,12 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
             <View style={styles.side}>
               <Text style={styles.sideName}>Ask</Text>
               <Text style={styles.figure}>{touch(ask)}</Text>
-              {fromChain ? null : <Text style={styles.size}>{size(quote?.askQuantity)}</Text>}
+              {fromChain ? null : <Text style={styles.size}>{size(askQty)}</Text>}
             </View>
             <View style={styles.side}>
               <Text style={styles.sideName}>Bid</Text>
               <Text style={styles.figure}>{touch(bid)}</Text>
-              {fromChain ? null : <Text style={styles.size}>{size(quote?.bidQuantity)}</Text>}
+              {fromChain ? null : <Text style={styles.size}>{size(bidQty)}</Text>}
             </View>
           </View>
 
