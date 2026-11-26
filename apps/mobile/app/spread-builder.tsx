@@ -507,14 +507,27 @@ export default function SpreadBuilderScreen() {
   };
 
   const addLeg = () => {
-    if (!strikes.length) return;
+    // If current chain ladder is ready, use it; otherwise fallback to ladderOf(wanted) or ladder of the first leg
+    const activeLadder = strikes.length
+      ? strikes
+      : wanted && ladderOf(wanted).length
+        ? ladderOf(wanted)
+        : legs[0]?.expiry && ladderOf(legs[0].expiry).length
+          ? ladderOf(legs[0].expiry)
+          : legs.map(l => l.strike);
+
+    if (!activeLadder.length) return;
+
+    const targetExpiry = wanted || (chain ? chain.expiry : "") || legs[0]?.expiry || date || "";
+    const atm = atTheMoney && activeLadder.includes(atTheMoney) ? atTheMoney : activeLadder[Math.floor(activeLadder.length / 2)];
+
     edit(current => [...current, {
       id: `leg-${current.length}-${Date.now()}`,
       side: "BUY",
       right: "CE",
       lots: 1,
-      expiry: wanted,
-      strike: atTheMoney && strikes.includes(atTheMoney) ? atTheMoney : strikes[Math.floor(strikes.length / 2)],
+      expiry: targetExpiry,
+      strike: atm,
     }]);
   };
 
@@ -1123,7 +1136,12 @@ export default function SpreadBuilderScreen() {
             <View style={styles.legRow}>
               {leg.held ? (
                 // The contract is the broker's, not a choice: no flip, no strike stepper, only the close mark.
-                <Text style={[styles.held, closingNow && styles.struck]}>{`${leg.side} ${leg.strike} ${leg.right}`}</Text>
+                <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={[styles.held, closingNow && styles.struck]}>{`${leg.side} ${leg.strike} ${leg.right}`}</Text>
+                  {closingNow ? (
+                    <Text style={{ fontSize: 10, fontWeight: "700", color: colors.warn, textTransform: "uppercase" }}>Marked to close</Text>
+                  ) : null}
+                </View>
               ) : (
                 <>
                   <TouchableOpacity style={[styles.pill, { borderColor: colors[leg.side === "BUY" ? "buy" : "sell"] }]} onPress={() => flip(leg, "side")}>
@@ -1189,7 +1207,31 @@ export default function SpreadBuilderScreen() {
                     <Text style={styles.small}>{left > 0 ? `${left} lot${left > 1 ? "s" : ""} left open` : "whole leg closes"}</Text>
                   </>
                 ) : (
-                  <Text style={styles.small}>{`${heldLots} lot${heldLots > 1 ? "s" : ""}  ·  ${heldLots * size} qty`}</Text>
+                  <>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity
+                        style={styles.stepButton}
+                        onPress={() => {
+                          if (heldLots > 1) {
+                            // Trim 1 lot
+                            setMarked(current => ({ ...current, [leg.id]: 1 }));
+                          }
+                        }}
+                        accessibilityLabel={`Trim lots of ${leg.strike} ${leg.right}`}
+                      >
+                        <Ionicons name="remove" size={16} color={heldLots > 1 ? colors.text : colors.muted} />
+                      </TouchableOpacity>
+                      <Text style={[styles.price, { minWidth: 80, textAlign: "center" }]}>{`${heldLots} lot${heldLots > 1 ? "s" : ""}`}</Text>
+                      <TouchableOpacity
+                        style={[styles.stepButton, { opacity: 0.4 }]}
+                        disabled
+                        accessibilityLabel={`Held maximum is ${heldLots} lots`}
+                      >
+                        <Ionicons name="add" size={16} color={colors.muted} />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.small}>{`${heldLots * size} qty (held max)`}</Text>
+                  </>
                 )
               ) : (
                 <>
@@ -1218,7 +1260,9 @@ export default function SpreadBuilderScreen() {
               ) : null}
               <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
                 {leg.held && !closingNow
-                  ? entry === null ? "" : formatNumber(entry, 2)
+                  ? entry === null
+                    ? (quote === null ? "" : `LTP ${formatNumber(quote.price, 2)}`)
+                    : `LTP ${quote ? formatNumber(quote.price, 2) : "—"} · bought @ ${formatNumber(entry, 2)}`
                   : quote === null
                     ? ""
                     : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)}`}
