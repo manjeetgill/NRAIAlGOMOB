@@ -1734,16 +1734,17 @@ export type AccountSectionKind = "cold" | "ready" | "stale" | "degraded" | "unav
  *  this instead of treating "no rows" as "nothing to show", which during a cold snapshot is a lie. */
 export function iciciAccountSection(
   payload: IciciAccountPayload | undefined | null,
-  name: "portfolioholdings" | "portfoliopositions",
+  name: "portfolioholdings" | "portfoliopositions" | "order",
 ): { kind: AccountSectionKind; reason: string | null } {
   if (!payload) return { kind: "unavailable", reason: null };
   if (!payload.sections && typeof payload.detail === "string" && payload.detail !== "") {
     return { kind: "cold", reason: payload.detail };
   }
-  const section = name === "portfolioholdings" ? payload.sections?.portfolioholdings : payload.sections?.portfoliopositions;
+  const section = payload.sections?.[name];
   // An answer that names sections but omits this one never carried the list at all. Calling that `ready`
   // let the desk render an empty book, which is the one reading a trader cannot act on.
-  if (!section) return { kind: "unavailable", reason: `The broker's answer did not include ${name === "portfolioholdings" ? "holdings" : "positions"}.` };
+  const word = name === "portfolioholdings" ? "holdings" : name === "portfoliopositions" ? "positions" : "orders";
+  if (!section) return { kind: "unavailable", reason: `The broker's answer did not include ${word}.` };
   const status = String(section?.status ?? "");
   if (status === "unavailable") return { kind: "unavailable", reason: section?.reason ?? payload.staleReason ?? null };
   if (status === "degraded") return { kind: "degraded", reason: section?.reason ?? payload.staleReason ?? null };

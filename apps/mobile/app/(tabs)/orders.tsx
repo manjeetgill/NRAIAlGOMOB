@@ -5,19 +5,20 @@
  * appears here — whether placed from this app or from the broker's own app.
  */
 
-import React, { useCallback, useState, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl } from "react-native";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
-import { iciciOrders, queryKeys, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
+import { iciciAccountSection, iciciOrders, queryKeys, type BrokerOrder, type GttOrder } from "@nraialgo/shared/api";
 
-type TabId = "open" | "closed" | "gtt";
+type TabId = "open" | "closed" | "all" | "gtt";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "open", label: "Open" },
   { id: "closed", label: "Closed" },
+  { id: "all", label: "All" },
   { id: "gtt", label: "GTT Orders" },
 ];
 
@@ -83,6 +84,18 @@ function priceCell(order: BrokerOrder): string {
   return /^(MARKET|MO)$/.test(String(order.orderType ?? "").trim().toUpperCase()) ? "Market price" : "No price sent";
 }
 
+/**
+ * When prod last read ICICI, in the trader's own clock. A list with no read time on it cannot be told
+ * apart from a list that never arrived, so the absence is printed rather than hidden.
+ */
+function asOfWord(value: string | null | undefined): string {
+  if (!value) return "no read time printed";
+  const ms = Date.parse(value);
+  return Number.isFinite(ms)
+    ? `read at ${new Date(ms).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" })} IST`
+    : `read at ${value}`;
+}
+
 export default function OrdersScreen() {
   const { useIciciAccount, useGttOrders } = useApi();
   const { resolvedTheme } = useTheme();
@@ -90,7 +103,10 @@ export default function OrdersScreen() {
 
   // A hidden tab stops polling (see useScreenFocused); it refreshes once when shown again.
   const focused = useScreenFocused();
-  const { data: iciciAccount, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders } = useIciciAccount({
+  const {
+    data: iciciAccount, isLoading: ordersLoading, isFetching: ordersFetching,
+    isError: ordersError, refetch: refetchOrders,
+  } = useIciciAccount({
     queryKey: queryKeys.brokerAccount.icici(),
     subscribed: focused,
     gcTime: Infinity,
@@ -104,6 +120,27 @@ export default function OrdersScreen() {
   });
 
   const allOrders = useMemo(() => iciciAccount ? iciciOrders(iciciAccount) : [], [iciciAccount]);
+  // What prod says about this particular list — cold, degraded, stale or its own answer — so an empty
+  // tab can name the reason instead of telling the trader the broker has nothing.
+  const ordersState = iciciAccountSection(iciciAccount, "order");
+  // A display read never waits for the broker: /v1/broker-auth/icici/account answers from the saved
+  // snapshot and runs the ICICI order-list call behind it, saying so with `refreshing`. One pull therefore
+  // always showed the previous book, so the screen re-reads the moment that read lands.
+  const brokerRead = iciciAccount?.refreshing === true;
+  const waitingOnBroker = useRef(false);
+  // The spinner answers the pull, not the 30-second safety poll the account query also runs; otherwise the
+  // list appears to refresh itself all day and a real gesture is indistinguishable from it.
+  const [pulled, setPulled] = useState(false);
+  useEffect(() => {
+    if (brokerRead) waitingOnBroker.current = true;
+    else if (waitingOnBroker.current) {
+      waitingOnBroker.current = false;
+      void refetchOrders();
+    }
+  }, [brokerRead, refetchOrders]);
+  useEffect(() => {
+    if (!ordersFetching) setPulled(false);
+  }, [ordersFetching]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
@@ -140,14 +177,21 @@ export default function OrdersScreen() {
     buyValue: { color: colors.buy },
     sellValue: { color: colors.sell },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
+    emptyContent: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
     emptyText: { fontSize: 14, color: colors.muted, textAlign: "center" },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     sectionHeader: { fontSize: 11, fontWeight: "600", color: colors.muted, textTransform: "uppercase", paddingVertical: 8, paddingHorizontal: 4, backgroundColor: colors.bg },
+    note: { fontSize: 11, color: colors.muted, paddingBottom: 8 },
+    noteWarn: { color: "#f59e0b" },
   }), [colors]);
 
-  const { openOrders, closedOrders } = useMemo(() => {
+  // The broker's own words decide the tab, and no row is allowed to fall between them. ICICI sends more
+  // state strings than the collapse knows ("EXPIRED", "APPROVAL PENDING"), and until now an order in one of
+  // those sat in neither list — a missing row reads as an order that never was.
+  const { openOrders, closedOrders, otherOrders } = useMemo(() => {
     const open: BrokerOrder[] = [];
     const closed: BrokerOrder[] = [];
+    const other: BrokerOrder[] = [];
     for (let i = 0; i < allOrders.length; i++) {
       const order = allOrders[i];
       const s = normalizeStatus(order.status);
@@ -155,9 +199,11 @@ export default function OrdersScreen() {
         open.push(order);
       } else if (s === "COMPLETE" || s === "CANCELLED" || s === "REJECTED") {
         closed.push(order);
+      } else {
+        other.push(order);
       }
     }
-    return { openOrders: open, closedOrders: closed };
+    return { openOrders: open, closedOrders: closed, otherOrders: other };
   }, [allOrders]);
 
   const isLoading = tab === "gtt" ? gttLoading : ordersLoading;
@@ -259,47 +305,62 @@ export default function OrdersScreen() {
   const renderOrderItem = useCallback(({ item }: { item: BrokerOrder }) => renderOrderCard(item), [styles, colors]);
   const renderGttItem = useCallback(({ item }: { item: GttOrder }) => renderGttCard(item), [styles, colors]);
 
+  // Two broker rows can carry the same blank order id, and a FlatList renders one item per key — the row
+  // that vanished was there, just not keyed. A blank id gets a key of its own.
+  const orderKey = (order: BrokerOrder, index: number) =>
+    order.orderId || `${order.symbol ?? "order"}-${order.timestamp ?? ""}-${index}`;
+
+  // What the list is, in prod's own words: whose book, when it was read, which section it could not fill,
+  // and that ICICI's order list is a session of NSE + NFO rather than the account's whole history.
+  const orderHeader = (
+    <View>
+      <Text style={styles.note}>{`ICICI order book · ${asOfWord(iciciAccount?.asOf)} · today's session, NSE + NFO`}</Text>
+      {ordersState.reason ? <Text style={[styles.note, styles.noteWarn]}>{ordersState.reason}</Text> : null}
+      {otherOrders.length > 0 ? (
+        <Text style={[styles.note, styles.noteWarn]}>
+          {`${otherOrders.length} order${otherOrders.length === 1 ? " is" : "s are"} in a state ICICI words differently, so ${
+            tab === "all" ? "they sit here and in neither Open nor Closed" : "they are listed under All"}`}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  const orderList = (data: BrokerOrder[], emptyText: string) => (
+    <FlatList
+      data={data}
+      keyExtractor={orderKey}
+      renderItem={renderOrderItem}
+      contentContainerStyle={[styles.listContent, data.length === 0 && styles.emptyContent]}
+      ListHeaderComponent={orderHeader}
+      ListEmptyComponent={<Text style={styles.emptyText}>{emptyText}</Text>}
+      initialNumToRender={10}
+      maxToRenderPerBatch={10}
+      windowSize={5}
+      removeClippedSubviews
+      refreshControl={<RefreshControl refreshing={brokerRead || pulled} onRefresh={() => { setPulled(true); void refetchOrders(); }} colors={[colors.accent]} tintColor={colors.accent} title={brokerRead ? "Reading ICICI..." : undefined} titleColor={colors.muted} />}
+    />
+  );
+
   const renderContent = () => {
     const pane = statusPane();
     if (pane) return pane;
 
-    if (tab === "open") {
-      if (openOrders.length === 0) {
-        return <View style={styles.empty}><Text style={styles.emptyText}>No open orders</Text></View>;
-      }
+    // "No orders" is a claim about the broker's book, so it is only printed when the book is actually
+    // there. A cold or half-filled read answers with the server's own reason instead.
+    if (tab !== "gtt" && (ordersState.kind === "unavailable" || ordersState.kind === "cold")) {
       return (
-        <FlatList
-          data={openOrders}
-          keyExtractor={(item) => item.orderId}
-          renderItem={renderOrderItem}
-          contentContainerStyle={styles.listContent}
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          removeClippedSubviews
-          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
-        />
+        <View style={[styles.empty, { flex: 1 }]}>
+          <Text style={styles.emptyText}>{ordersState.reason ?? "The broker's order book is not available."}</Text>
+          <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => { setPulled(true); void refetchOrders(); }}>
+            <Text style={{ color: colors.accent, fontWeight: "600" }}>Read ICICI again</Text>
+          </TouchableOpacity>
+        </View>
       );
     }
 
-    if (tab === "closed") {
-      if (closedOrders.length === 0) {
-        return <View style={styles.empty}><Text style={styles.emptyText}>No closed orders</Text></View>;
-      }
-      return (
-        <FlatList
-          data={closedOrders}
-          keyExtractor={(item) => item.orderId}
-          renderItem={renderOrderItem}
-          contentContainerStyle={styles.listContent}
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          removeClippedSubviews
-          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetchOrders()} colors={[colors.accent]} />}
-        />
-      );
-    }
+    if (tab === "open") return orderList(openOrders, "No open orders in today's book");
+    if (tab === "closed") return orderList(closedOrders, "No closed orders in today's book");
+    if (tab === "all") return orderList(allOrders, "ICICI returned no orders for this session");
 
     if (tab === "gtt") {
       if (!gtts || gtts.length === 0) {
