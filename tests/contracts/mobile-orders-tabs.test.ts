@@ -113,8 +113,20 @@ describe("Orders screen shows four tabs", () => {
     // rather than the three copies that used to be written out per branch.
     expect(screen).toContain("RefreshControl");
     expect((screen.match(/<RefreshControl/g) ?? [])).toHaveLength(2);
-    expect(screen).toContain("onRefresh={() => { setPulled(true); void refetchOrders(); }}");
+    expect(screen).toContain("onRefresh={() => { setPulled(true); readOrdersNow(); }}");
     expect(screen).toContain("onRefresh={() => void refetchGtts()}");
+  });
+
+  it("reads ICICI's order book directly on every open and pull, never a cache (26 Nov 2026)", () => {
+    expect(hooks).toContain('"/v1/broker-auth/icici/account?orders=fresh"');
+    expect(hooks).toContain("if (freshOrdersRead) return freshOrdersRead;");
+    expect(hooks).toContain("keepNewerOrders(queryClient.getQueryData<IciciAccountPayload>(queryKeys.brokerAccount.icici()), read)");
+    expect(screen).toContain("useEffect(() => { if (focused) void readFreshOrders().catch(() => undefined); }, [focused, readFreshOrders]);");
+  });
+
+  it("shows a count on every tab at the top", () => {
+    expect(screen).toContain("{`${t.label} (${tabCounts[t.id]})`}");
+    for (const tab of ["open", "closed", "all", "gtt"]) expect(screen).toMatch(new RegExp(`${tab}: \\w+ \\? String\\(`));
   });
 
   it("shows the refresh it asked for and re-reads when the broker answer lands", () => {
@@ -123,9 +135,9 @@ describe("Orders screen shows four tabs", () => {
     // showed the previous book, so the spinner has to stay up and the list re-read when that clears.
     expect(screen).toContain("isFetching: ordersFetching");
     expect(screen).toContain("const brokerRead = iciciAccount?.refreshing === true;");
-    expect(screen).toContain("refreshing={brokerRead || pulled}");
-    expect(screen).toContain("onRefresh={() => { setPulled(true); void refetchOrders(); }}");
-    expect(screen).toContain("if (!ordersFetching) setPulled(false);");
+    expect(screen).toContain("refreshing={brokerRead || pulled || freshReading}");
+    expect(screen).toContain("onRefresh={() => { setPulled(true); readOrdersNow(); }}");
+    expect(screen).toContain("if (!ordersFetching && !freshReading) setPulled(false);");
     expect(screen).toContain("waitingOnBroker.current = true;");
     expect(screen).toContain("void refetchOrders();");
   });

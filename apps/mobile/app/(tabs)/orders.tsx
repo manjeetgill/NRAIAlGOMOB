@@ -97,7 +97,7 @@ function asOfWord(value: string | null | undefined): string {
 }
 
 export default function OrdersScreen() {
-  const { useIciciAccount, useGttOrders } = useApi();
+  const { useIciciAccount, useGttOrders, readFreshOrders } = useApi();
   const { resolvedTheme } = useTheme();
   const [tab, setTab] = useState<TabId>("open");
 
@@ -127,6 +127,14 @@ export default function OrdersScreen() {
   // snapshot and runs the ICICI order-list call behind it, saying so with `refreshing`. One pull therefore
   // always showed the previous book, so the screen re-reads the moment that read lands.
   const brokerRead = iciciAccount?.refreshing === true;
+  // Opening this screen (or coming back to it) and every pull read ICICI's order book directly, once.
+  const [freshReading, setFreshReading] = useState(false);
+  const readOrdersNow = useCallback(() => {
+    setFreshReading(true);
+    void readFreshOrders().catch(() => undefined).finally(() => setFreshReading(false));
+  }, [readFreshOrders]);
+  // readFreshOrders is the one API singleton's function, so this runs once per show, not per render.
+  useEffect(() => { if (focused) void readFreshOrders().catch(() => undefined); }, [focused, readFreshOrders]);
   const waitingOnBroker = useRef(false);
   // The spinner answers the pull, not the 30-second safety poll the account query also runs; otherwise the
   // list appears to refresh itself all day and a real gesture is indistinguishable from it.
@@ -139,8 +147,8 @@ export default function OrdersScreen() {
     }
   }, [brokerRead, refetchOrders]);
   useEffect(() => {
-    if (!ordersFetching) setPulled(false);
-  }, [ordersFetching]);
+    if (!ordersFetching && !freshReading) setPulled(false);
+  }, [ordersFetching, freshReading]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
@@ -350,7 +358,7 @@ export default function OrdersScreen() {
       maxToRenderPerBatch={10}
       windowSize={5}
       removeClippedSubviews
-      refreshControl={<RefreshControl refreshing={brokerRead || pulled} onRefresh={() => { setPulled(true); void refetchOrders(); }} colors={[colors.accent]} tintColor={colors.accent} title={brokerRead ? "Reading ICICI..." : undefined} titleColor={colors.muted} />}
+      refreshControl={<RefreshControl refreshing={brokerRead || pulled || freshReading} onRefresh={() => { setPulled(true); readOrdersNow(); }} colors={[colors.accent]} tintColor={colors.accent} title={brokerRead ? "Reading ICICI..." : undefined} titleColor={colors.muted} />}
     />
   );
 
@@ -364,7 +372,7 @@ export default function OrdersScreen() {
       return (
         <View style={[styles.empty, { flex: 1 }]}>
           <Text style={styles.emptyText}>{ordersState.reason ?? "The broker's order book is not available."}</Text>
-          <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => { setPulled(true); void refetchOrders(); }}>
+          <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => { setPulled(true); readOrdersNow(); }}>
             <Text style={{ color: colors.accent, fontWeight: "600" }}>Read ICICI again</Text>
           </TouchableOpacity>
         </View>
@@ -397,6 +405,14 @@ export default function OrdersScreen() {
     return null;
   };
 
+  // Every tab names how many it holds; a list still loading shows a dash rather than a false zero.
+  const tabCounts: Record<TabId, string> = {
+    open: iciciAccount ? String(openOrders.length) : "–",
+    closed: iciciAccount ? String(closedOrders.length) : "–",
+    all: iciciAccount ? String(allOrders.length) : "–",
+    gtt: gtts ? String(gtts.length) : "–",
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.tabBar}>
@@ -406,7 +422,7 @@ export default function OrdersScreen() {
             style={[styles.tab, tab === t.id && styles.tabActive]}
             onPress={() => setTab(t.id)}
           >
-            <Text style={[styles.tabText, tab === t.id && styles.tabTextActive]}>{t.label}</Text>
+            <Text style={[styles.tabText, tab === t.id && styles.tabTextActive]}>{`${t.label} (${tabCounts[t.id]})`}</Text>
           </TouchableOpacity>
         ))}
       </View>
