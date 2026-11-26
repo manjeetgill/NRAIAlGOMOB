@@ -489,7 +489,7 @@ export default function OptionChainScreen() {
       amount(side?.ltp) ?? undefined, { bid: amount(side?.bid), ask: amount(side?.ask) },
       // The row also carries the identity its own broker master places, which for ICICI is not the label it
       // quotes under. A ticket built from the quoted label alone names a contract prod cannot send.
-      side ? { symbol: side.order?.tradingsymbol || side.symbol, exchange: side.order?.exchange } : null);
+      side ? { symbol: side.order?.tradingsymbol || side.symbol, exchange: side.order?.exchange, instrumentId: side.instrumentId } : null);
   }, [underlying, ticket]);
 
   // Named off the store when no chain has arrived yet: the picker is the way out of a failed read, so it

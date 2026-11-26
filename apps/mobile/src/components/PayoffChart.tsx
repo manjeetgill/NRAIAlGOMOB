@@ -225,7 +225,8 @@ export default function PayoffChart({
 
   // 2. Prepare chains: fallback missing ltp to close/ask/bid/entryPrice so after-hours builds succeed
   const preparedChains = useMemo(() => {
-    const answered = chains.filter((c): c is OptionChainData => !!c);
+    const list = chains ?? [];
+    const answered = list.filter((c): c is OptionChainData => !!c);
     if (!answered.length) return answered;
 
     return answered.map(c => ({
