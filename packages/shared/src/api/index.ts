@@ -221,6 +221,7 @@ export {
   legValue,
   closedUnits,
   heldLots,
+  manualPayoff,
   type AnalysisBuild,
   type HeldPayoff,
   type LegMark,

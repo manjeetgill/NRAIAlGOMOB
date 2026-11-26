@@ -28,8 +28,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, heldLots, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
-import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, expiryKey, heldLots, ladderUnderlying, manualPayoff, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
+import type { Basket, OptionChainData, OptionDraftLeg, PayoffLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
@@ -81,6 +81,14 @@ interface Staging {
   ladder: string;
   name: string;
   legs: Array<Omit<Leg, "id">>;
+  /**
+   * Set while a basket's exact contracts are not in the desk's row: `/v1/baskets` files a hand-made basket's
+   * legs by the broker's own label with no strike, right or expiry, and puts the held quantity where the lot
+   * count belongs. Its contracts are rebuilt in the effect below, once the ladder has reported its lot size.
+   */
+  manual?: Basket;
+  /** The broker's code for the basket's underlying, while the exchange's name for it is still unknown. */
+  brokerCode?: string;
 }
 
 /**
@@ -144,7 +152,7 @@ function bookOf(chain: OptionChainData | undefined, strike: string, right: "CE" 
 
 
 export default function SpreadBuilderScreen() {
-  const { useOptionChain, useOptionChains, useChainUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
+  const { useOptionChain, useOptionChains, useChainUnderlyings, useContractUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
   const { resolvedTheme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
   const {
@@ -190,6 +198,12 @@ export default function SpreadBuilderScreen() {
 
   const { data: destinations } = useOrderDestinations(true);
   const account = destinations?.accounts?.[0];
+  // A hand-made basket is filed under the broker's own code for its underlying (RELIND, HINLEV), which the
+  // ladder does not answer to, so the exchange's name behind that code is asked of the same derivatives master
+  // the Options tab is built from - and only while such a basket is actually waiting to be staged.
+  const { data: aliases, isLoading: aliasLoading, error: aliasError } = useContractUnderlyings(
+    staging?.brokerCode ? [staging.brokerCode] : []
+  );
   const { mutateAsync: createDrafts } = useOptionDrafts();
   const { mutateAsync: placeOrder } = usePlaceOrder();
   const { data: outcome } = useOrderSnapshot(sentId, sentId !== "");
@@ -268,20 +282,12 @@ export default function SpreadBuilderScreen() {
   };
 
   /**
-   * Stage a live basket's own contracts here so it can be narrowed or widened. Nothing is sent by this: the
-   * trader presses Execute. The rows come from the desk's exact contracts, not from the symbol strings,
-   * because a broker token and the contract the ladder lists are not always the same name - and a close must
-   * be aimed at the contract the broker actually holds, so the held strike is kept as it arrived.
+   * Put a basket's exact contracts on the sheet, aimed at the ladder they will be priced against. Nothing is
+   * sent by this: the trader presses Execute. `ladderName` overrides the name the row is filed under when the
+   * desk's own underlying is the broker's code rather than the one the chain answers to.
    */
-  const adjustFromBasket = (row: Basket) => {
-    setTab("builder");
+  const stageContracts = (row: Basket, contracts: PayoffLeg[], ladderName?: string) => {
     const title = row.name?.trim() || row.underlying;
-    const contracts = row.payoffLegs;
-    if (!contracts.length) {
-      setStaging(null);
-      setNote(`${title}: the desk files this basket’s legs without their exact strike and expiry, so there is nothing to stage here. Its legs at the broker are unchanged; adjust it from the web desk.`);
-      return;
-    }
     // Finding #2: Reject mixed-underlying baskets. All legs must share one underlying so the builder
     // does not stage NIFTY + BANKNIFTY legs under one symbol and submit orders for the wrong underlying.
     const underlyings = [...new Set(contracts.map(leg => leg.underlying).filter(Boolean))];
@@ -294,7 +300,7 @@ export default function SpreadBuilderScreen() {
     // The ladder and the drafts are both addressed by the canonical name, while the basket row carries the
     // broker's own code - staging under BSESEN asked prod for a chain it does not serve, so the legs never
     // arrived.
-    const symbol = ladderUnderlying(row);
+    const symbol = ladderName || ladderUnderlying(row);
     // A leg the book shows fewer lots of than the payoff still carries has been partly exited, and closing
     // the difference would open a fresh position under the name of a close. A row with no lot count is not
     // such evidence, so the payoff's own lots stand - see heldLots.
@@ -330,11 +336,52 @@ export default function SpreadBuilderScreen() {
     if (symbol.toUpperCase() !== underlying.toUpperCase()) setOptionChainUnderlying(symbol);
   };
 
+  /**
+   * Stage a live basket's own contracts here so it can be narrowed or widened. The rows come from the desk's
+   * exact contracts, not from the symbol strings, because a broker token and the contract the ladder lists are
+   * not always the same name - and a close must be aimed at the contract the broker actually holds, so the held
+   * strike is kept as it arrived. A basket the desk files without those contracts - every hand-made one - is
+   * held pending instead, and staged by the effect below once the ladder names its lot size.
+   */
+  const adjustFromBasket = (row: Basket) => {
+    setTab("builder");
+    const title = row.name?.trim() || row.underlying;
+    if (row.payoffLegs.length) {
+      stageContracts(row, row.payoffLegs);
+      return;
+    }
+    const code = (row.underlying || "").trim().toUpperCase();
+    if (!row.legs.length || !code) {
+      setStaging(null);
+      setNote(`${title}: the desk files this basket’s legs without their exact strike and expiry, so there is nothing to stage here. Its legs at the broker are unchanged; adjust it from the web desk.`);
+      return;
+    }
+    // The broker's code is not the ladder's name and a hand-made basket's lot count is really a quantity, so
+    // neither the symbol to read nor the legs to stage can be settled in this press. See manualPayoff.
+    setStaging({ underlying: code, ladder: expiryKey(row.expiry) ?? "", name: title, legs: [], manual: row, brokerCode: code });
+  };
+
   // The basket's legs land only once the ladder they will be priced against has answered, on the date the
   // basket was actually bought on. Before that the strikes of another date would be staged as if they were
   // the held contracts, and an unlisted date means the held contracts no longer exist to adjust.
   useEffect(() => {
-    if (!staging || !chain || chain.underlying.toUpperCase() !== staging.underlying.toUpperCase()) return;
+    if (!staging) return;
+    // A hand-made basket is filed under the broker's own code for its underlying (RELIND, HINLEV), which the
+    // ladder does not answer to, so the exchange's name behind it comes from the derivatives master before any
+    // chain read is pointed at it. A code the master does not list keeps the name the desk already shows.
+    if (staging.brokerCode) {
+      if (aliasError) {
+        setStaging(null);
+        setNote(`${staging.name}: prod's derivatives master could not be read, so the exchange's name behind ${staging.brokerCode} is unknown. Nothing was sent.`);
+        return;
+      }
+      if (aliasLoading) return;
+      const name = (aliases?.[staging.brokerCode] || staging.brokerCode).toUpperCase();
+      setStaging({ ...staging, underlying: name, brokerCode: undefined });
+      if (name !== underlying.toUpperCase()) setOptionChainUnderlying(name);
+      return;
+    }
+    if (!chain || chain.underlying.toUpperCase() !== staging.underlying.toUpperCase()) return;
     if (!staging.ladder || !chain.expiries.includes(staging.ladder)) {
       setStaging(null);
       setNote(`${staging.ladder || "That expiry"} is no longer a listed ${staging.underlying} date, so its legs cannot be staged here. Nothing was sent.`);
@@ -348,6 +395,23 @@ export default function SpreadBuilderScreen() {
     if (!ladder.length) {
       setStaging(null);
       setNote(`${staging.underlying} answered ${staging.ladder} with no strikes, so nothing could be staged.`);
+      return;
+    }
+    // Only now can a basket the desk filed without exact contracts be named: its legs divide into lots by the
+    // size this ladder reports, and nothing about them is guessed. `stageContracts` hands back a basket whose
+    // legs are settled, so the next run of this effect lands them.
+    if (staging.manual) {
+      const built = manualPayoff(staging.manual, chain.lotSize);
+      if (built.refused.length || !built.contracts.length) {
+        setStaging(null);
+        setNote(
+          `${staging.name}: ${built.refused.length
+            ? built.refused.join("; ")
+            : "the desk files no leg the broker still holds"}. Its legs at the broker are unchanged; nothing was staged.`,
+        );
+        return;
+      }
+      stageContracts(staging.manual, built.contracts, staging.underlying);
       return;
     }
     const listed = new Set(ladder);
@@ -1413,7 +1477,13 @@ export default function SpreadBuilderScreen() {
           <Text style={styles.note}>{note}</Text>
         </View>
       ) : staging ? (
-        <Text style={styles.meta}>{`Reading the ${staging.ladder} ladder of ${staging.underlying} to stage ${staging.name}`}</Text>
+        <Text style={styles.meta}>
+          {staging.brokerCode
+            ? `Asking prod which exchange underlying ${staging.brokerCode} is, to stage ${staging.name}`
+            : staging.manual
+              ? `Reading the ${staging.ladder} ladder of ${staging.underlying} to count ${staging.name}’s lots`
+              : `Reading the ${staging.ladder} ladder of ${staging.underlying} to stage ${staging.name}`}
+        </Text>
       ) : null}
 
       {sentId && outcome ? (

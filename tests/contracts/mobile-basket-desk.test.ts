@@ -14,6 +14,7 @@ import {
   isLiveRun,
   ladderUnderlying,
   legValue,
+  manualPayoff,
   openLiveBaskets,
   payoffExpiries,
   payoffFigures,
@@ -734,6 +735,97 @@ it("stages an adjustment with the payoff's lots and says why a press sent nothin
   // A held basket is staged once its ladder answers, which takes seconds, so the wait is named too rather
   // than leaving an empty builder that reads like the press did nothing.
   expect(screen).toContain("ladder of ${staging.underlying} to stage ${staging.name}");
+});
+
+/** One leg exactly as `/v1/baskets` files it on a hand-made basket, read off prod's own rows. */
+function manualLeg(over: Record<string, unknown> = {}) {
+  return {
+    instrumentId: "icici:AG297134:NFO:NIFTY 27000 Put:Options",
+    symbol: "NIFTY 27000 Put",
+    exchange: "NFO",
+    product: "Options",
+    side: "SELL",
+    quantity: 910,
+    entryPrice: 1138.52,
+    markPrice: 1138.52,
+    lots: 910,
+    lotSize: 1,
+    exited: 0,
+    pending: false,
+    ...over,
+  };
+}
+
+/** The desk row of a hand-made basket, whose legs carry no strike, right or expiry at all. */
+function handmade(legs: unknown[], over: Record<string, unknown> = {}, lotSize = 65) {
+  return manualPayoff(
+    deskBasket({ kind: "manual", underlying: "NIFTY", expiry: "01-Dec-2026", legs, ...over }) as Parameters<typeof manualPayoff>[0],
+    lotSize
+  );
+}
+
+it("rebuilds a hand-made basket's contracts from the broker label and the ladder's lot size", () => {
+  // Prod's row for "3rd DEC NIFTY": 910 contracts of a 65-lot NIFTY put, filed as `lots` 910 and `lotSize` 1.
+  // Taking either number literally would have staged a close sixty-five times the size of the book.
+  expect(handmade([manualLeg()])).toEqual({
+    contracts: [{
+      instrumentId: "icici:AG297134:NFO:NIFTY 27000 Put:Options",
+      underlying: "NIFTY",
+      symbol: "NIFTY 27000 Put",
+      expiry: "2026-12-01",
+      strike: "27000",
+      right: "PE",
+      action: "sell",
+      lots: 14,
+      lotSize: 65,
+      entryPrice: "1138.52",
+    }],
+    refused: [],
+  });
+  // The other two label shapes prod holds: a BSE index call, and a stock leg with a decimal strike.
+  expect(handmade([manualLeg({ symbol: "BSESEN 84000 Call", quantity: 120 })], { underlying: "BSESEN" }, 20).contracts[0])
+    .toMatchObject({ strike: "84000", right: "CE", action: "sell", lots: 6, expiry: "2026-12-01" });
+  expect(handmade([manualLeg({ symbol: "INFTEC 1294.50 Put", quantity: 400 })], {}, 200).contracts[0])
+    .toMatchObject({ strike: "1294.5", right: "PE", lots: 2 });
+  // A leg the broker no longer holds is not a leg of the adjustment, and it is not a refusal either.
+  expect(handmade([manualLeg({ quantity: 0 })])).toEqual({ contracts: [], refused: [] });
+});
+
+it("refuses a hand-made leg it cannot count instead of guessing it", () => {
+  // 900 of a 65-lot strike is neither 13 nor 14 lots. Rounding would stage a close the broker cannot fill, or
+  // one that leaves a contract unmentioned, so the leg is named and the whole staging stops.
+  expect(handmade([manualLeg({ symbol: "NIFTY 26000 Put", quantity: 900 })]).refused[0])
+    .toContain("NIFTY 26000 Put: the broker holds 900 contracts, which is not a whole number of 65-sized lots");
+  // A compact order token is not a label with a strike and a right in it, and a prefix is never stripped off.
+  expect(handmade([manualLeg({ symbol: "NIFTY26DEC27000PE" })]).refused[0])
+    .toContain("names no strike and call or put");
+  // A side the desk did not file as a buy or a sell has no direction to close with.
+  expect(handmade([manualLeg({ side: "OTHER" })]).refused[0]).toContain('files it as "OTHER"');
+  // Until the ladder reports a lot size, nothing can be divided, so the screen stages after that read.
+  expect(handmade([manualLeg()], {}, 0).refused[0]).toContain("no lot size has been reported for NIFTY yet");
+  // A card with no readable date cannot be put on a ladder.
+  expect(handmade([manualLeg()], { expiry: "" }).refused[0]).toContain("not a date the ladder can be read for");
+});
+
+it("stages a hand-made basket once the master names its ladder and that ladder has answered", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // A basket with no exact contracts is held pending, not refused: the row's own legs are the book's truth.
+  expect(screen).toContain("stageContracts(row, row.payoffLegs)");
+  expect(screen).toContain("manual: row, brokerCode: code");
+  // The broker's code (RELIND, HINLEV) is not the name the chain answers to, so prod's derivatives master is
+  // asked - and only while such a basket is actually waiting, which keeps the cost off every other press.
+  expect(screen).toContain("staging?.brokerCode ? [staging.brokerCode] : []");
+  // Both waits are printed, so a press that is still working reads as working rather than as nothing.
+  expect(screen).toContain("Asking prod which exchange underlying");
+  expect(screen).toContain("ladder of ${staging.underlying} to count ${staging.name}");
+  // The code is resolved before any chain read is aimed at it, and the lots are counted only after the
+  // ladder for the basket's own date has answered, which is the only place the exchange's lot size lives.
+  expect(screen.indexOf("if (staging.brokerCode) {")).toBeLessThan(screen.indexOf("chain.underlying.toUpperCase() !== staging.underlying"));
+  expect(screen.indexOf("manualPayoff(staging.manual, chain.lotSize)")).toBeGreaterThan(screen.indexOf("if (chain.expiry !== staging.ladder)"));
+  expect(screen).toContain("stageContracts(staging.manual, built.contracts, staging.underlying)");
+  // A refused leg is written out in full, and the basket's money at the broker is stated as untouched.
+  expect(screen).toContain("built.refused.join(\"; \")");
+  expect(screen).toContain("Its legs at the broker are unchanged; nothing was staged.");
 });
 
 it("makes every held leg read-only and marks a close instead of deleting the row", () => {

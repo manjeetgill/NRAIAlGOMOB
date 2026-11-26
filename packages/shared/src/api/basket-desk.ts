@@ -235,6 +235,75 @@ export function heldLots(payoff: number, book: number | null | undefined): numbe
   return typeof book === "number" && Number.isFinite(book) && book > 0 ? Math.min(payoff, book) : payoff;
 }
 
+/** How the broker's own book labels a right, which is the only form a hand-made basket's leg carries. */
+const LABEL_RIGHT: Record<string, "CE" | "PE"> = { CALL: "CE", PUT: "PE", CE: "CE", PE: "PE" };
+
+/** `HINLEV 2360 Put` - the broker's code, then the strike, then the right, and nothing else. */
+const LABEL_CONTRACT = /^(?:[A-Z0-9&._-]+\s+)?(\d+(?:\.\d+)?)\s+(CALL|PUT|CE|PE)$/i;
+
+/**
+ * The exact contracts a hand-made basket holds, rebuilt from the broker label and the ladder's lot size.
+ *
+ * `/v1/baskets` maps a manual basket's legs through a model that has no expiry, strike or right, so the card
+ * names each leg by the broker's own label ("NIFTY 27000 Put") and reports the held *quantity* where the lot
+ * count belongs: prod's rows carry `lots` 910 and `lotSize` 1 for a position of fourteen 65-lot NIFTY puts.
+ * Taking either number at face value would stage an adjustment sixty-five times the size of the book, so the
+ * contracts are named from the label and the lots from the quantity divided by the lot size the exchange
+ * itself reported for that ladder. Anything that does not divide exactly - an unreadable label, a date the
+ * ladder cannot be put on, a part-lot holding - is named in `refused` rather than guessed at or dropped: an
+ * adjustment that quietly lost a leg would let the trader close a contract the broker does not hold.
+ */
+export function manualPayoff(basket: Basket, lotSize: number | null | undefined): {
+  contracts: PayoffLeg[];
+  refused: string[];
+} {
+  const day = expiryKey(basket.expiry);
+  const size = typeof lotSize === "number" && Number.isFinite(lotSize) && lotSize > 0 ? Math.trunc(lotSize) : 0;
+  const contracts: PayoffLeg[] = [];
+  const refused: string[] = [];
+  for (const leg of basket.legs) {
+    const quantity = Math.trunc(leg.quantity);
+    if (!(quantity > 0)) continue;
+    const label = (leg.symbol || leg.instrumentId || "").trim();
+    const match = LABEL_CONTRACT.exec(label);
+    const right = match ? LABEL_RIGHT[match[2].toUpperCase()] : null;
+    const action = leg.side === "BUY" ? "buy" : leg.side === "SELL" ? "sell" : null;
+    const strike = match ? Number(match[1]) : NaN;
+    if (!match || !right || !Number.isFinite(strike) || strike <= 0) {
+      refused.push(`${label || "a leg"}: its broker label names no strike and call or put`);
+      continue;
+    }
+    if (!action) {
+      refused.push(`${label}: the desk files it as "${leg.side || "no side"}", which is neither a buy nor a sell`);
+      continue;
+    }
+    if (!day) {
+      refused.push(`${label}: the basket names ${basket.expiry || "no expiry"}, which is not a date the ladder can be read for`);
+      continue;
+    }
+    if (!size) {
+      refused.push(`${label}: no lot size has been reported for ${basket.underlying} yet`);
+      continue;
+    }
+    if (quantity % size !== 0) {
+      refused.push(`${label}: the broker holds ${quantity} contracts, which is not a whole number of ${size}-sized lots`);
+      continue;
+    }
+    contracts.push({
+      instrumentId: leg.instrumentId,
+      underlying: basket.underlying,
+      symbol: label,
+      expiry: day,
+      strike: String(strike),
+      right,
+      action,
+      lots: quantity / size,
+      lotSize: size,
+      entryPrice: String(leg.entryPrice ?? ""),
+    });
+  }
+  return { contracts, refused };
+}
 /**
  * The dates the payoff needs a ladder for. One read per distinct expiry is the whole cost: a basket is
  * built on one date, and a calendar spread needs both of its own dates and nothing else.
