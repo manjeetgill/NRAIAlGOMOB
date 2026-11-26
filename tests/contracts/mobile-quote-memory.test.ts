@@ -297,7 +297,10 @@ it("fills an unpriced watchlist row and keeps its minute on the row", () => {
   // The memory is offered what the stream and prod just priced, then asked only about the rows neither did.
   expect(screen).toContain("quotes.remember([...tickEntries(feed.quotes), ...cashEntries(liveRows)])");
   expect(screen).toContain("paintWatchlist(liveRows, quotes.seen)");
-  expect(screen).toContain("data={shownRows}");
+  // Ordering is the last step before the list, and it reads the painted rows, so a price the phone supplied
+  // sorts the list exactly like a price prod sent.
+  expect(screen).toContain("sortRows(shownRows, SORT_KEYS, sort)");
+  expect(screen).toContain("data={orderedRows}");
   // A remembered row trades its day's move — measured against the close it was seen with — for the minute.
   expect(screen).toContain("{ color: item.seen ? colors.text : priceTone(item.change) }");
   expect(screen).toContain("? item.seen");
