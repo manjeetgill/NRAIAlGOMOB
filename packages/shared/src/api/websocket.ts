@@ -255,6 +255,11 @@ function accept(frame: WireFrame) {
     const price = Number(quote.price);
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
     const tick = toTick(quote, id);
+    const seen = published.get(quoteKey(quote));
+    // A session's previous close is a constant, but only a snapshot frame names it - the deltas that follow
+    // carry the price alone. Without carrying it forward, a day figure measured from the tick would appear
+    // and disappear between frames of the same session.
+    if (tick.previousClose === null && (seen?.previousClose ?? null) !== null) tick.previousClose = seen?.previousClose ?? null;
     published.set(quoteKey(quote), tick);
     if (tick.fresh) {
       lastFreshTickAt = Date.now();

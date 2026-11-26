@@ -255,24 +255,32 @@ export default function PortfolioScreen() {
   const holdingTotals = totals(holdings);
 
   /** The book's two sums, above the rows that make them up. Each names the rows it actually added. */
-  const totalsCard = (summary: ReturnType<typeof totals>) => (
-    <View style={styles.totals}>
-      <View style={styles.totalsFigure}>
-        <Text style={styles.totalsLabel}>Total P&L</Text>
-        <Text style={[styles.totalsValue, summary.pnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-          {sumText(summary.pnl)}
-        </Text>
-        <Text style={styles.totalsCoverage}>{summary.pnlRows} of {summary.rows} rows carry a P&L</Text>
+  const totalsCard = (summary: ReturnType<typeof totals>) => {
+    const figures = [
+      { label: "Total P&L", noun: "P&L", value: summary.pnl, counted: summary.pnlRows,
+        none: "the broker priced none of them" },
+      { label: "Today P&L", noun: "day figure", value: summary.day, counted: summary.dayRows,
+        none: "no previous close has arrived for them" },
+    ];
+    return (
+      <View style={styles.totals}>
+        {figures.map((figure) => (
+          <View key={figure.label} style={styles.totalsFigure}>
+            <Text style={styles.totalsLabel}>{figure.label}</Text>
+            {/* A sum of nothing is not a flat book: 0.00 would be a figure the market never gave. */}
+            <Text style={[styles.totalsValue,
+              figure.counted === 0 ? styles.dimValue : figure.value >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
+              {figure.counted === 0 ? "Not available" : sumText(figure.value)}
+            </Text>
+            <Text style={styles.totalsCoverage}>
+              {figure.counted} of {summary.rows} rows carry a {figure.noun}
+              {figure.counted === 0 ? ` · ${figure.none}` : ""}
+            </Text>
+          </View>
+        ))}
       </View>
-      <View style={styles.totalsFigure}>
-        <Text style={styles.totalsLabel}>Today P&L</Text>
-        <Text style={[styles.totalsValue, summary.day >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
-          {sumText(summary.day)}
-        </Text>
-        <Text style={styles.totalsCoverage}>{summary.dayRows} of {summary.rows} rows carry a day figure</Text>
-      </View>
-    </View>
-  );
+    );
+  };
 
 
   // Prod's own words still label a list that has nothing in it, and the phone's own copy still has to say
