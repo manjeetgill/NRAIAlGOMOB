@@ -4,6 +4,12 @@
  * Everything here is prod data: the built-in lists NSE publishes, the user's own five lists, and the
  * search that adds to them. The index strip that used to head this screen is on every screen now.
  *
+ * Prod sends a list in the order its owner put it in, and that order is worth keeping, so sorting is a tap on
+ * the heading rather than a setting: the price or the day's percentage, then the same tap turned the other way,
+ * then a third tap that hands the saved order back. Rows are ordered by the figures they actually show, so a
+ * price that arrived on the stream or out of the phone's own memory counts, and one neither ever gave stays at
+ * the bottom of the column whichever way it is turned.
+ *
  * A REST read prices the list once, so a row that only ever comes from one is a number from the moment that
  * read happened. The prices that move are the ones this screen subscribes to on prod's tick stream, by the
  * canonical id the stream parses for that exchange and symbol; only a price the server published as fresh
@@ -38,6 +44,7 @@ import {
   pauseQuoteDispatch,
   resumeQuoteDispatch,
   queryKeys,
+  sortRows,
   streamIdFor,
   indexStreamIds,
   tickEntries,
@@ -45,6 +52,8 @@ import {
   type BuiltinListName,
   type Marked,
   type Remembered,
+  type SortKey,
+  type SortState,
   type WatchlistInfo,
   type WatchlistRow,
 } from "@nraialgo/shared/api";
@@ -66,6 +75,27 @@ const WATCHLIST_ROW_HEIGHT = 65;
 
 /** A row is the list's own figures, plus whether the stream marked it and whether the phone supplied it. */
 type PricedRow = WatchlistRow & Marked & Remembered;
+
+/**
+ * The two figures a list can be ordered by, each read from the row exactly as the row prints it. A price the
+ * list never received is null, and `sortRows` keeps nulls last whichever way the column is turned, so a symbol
+ * prod has not priced cannot push one it has off the screen.
+ */
+const SORT_KEYS: SortKey<PricedRow>[] = [
+  { key: "price", label: "Price ₹", numeric: true, value: (row) => row.ltp },
+  { key: "change", label: "Change", numeric: true, value: (row) => row.changePct },
+];
+
+/**
+ * Price high to low, then low to high, then the order the list is saved in.
+ *
+ * The book table only flips between two directions because it has no order of its own to return to; a watchlist
+ * does - prod sends the symbols in the sequence the owner put them in - so the third tap gives that back.
+ */
+function nextWatchlistSort(key: SortKey<PricedRow>, current: SortState | null): SortState | null {
+  if (!current || current.key !== key.key) return { key: key.key, descending: true };
+  return current.descending ? { key: key.key, descending: false } : null;
+}
 
 interface WatchlistRowItemProps {
   item: PricedRow;
@@ -180,6 +210,8 @@ export default function WatchlistScreen() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Which column the rows are ordered by, and which way. Null is the order the list is saved in.
+  const [sort, setSort] = useState<SortState | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -257,6 +289,13 @@ export default function WatchlistScreen() {
     },
     counter: { fontSize: 12, color: colors.muted },
     status: { paddingHorizontal: 14, paddingBottom: 8, fontSize: 12, color: colors.muted },
+    // The heading sits over the figures it orders: the label block takes the same flex as the row's symbol and
+    // name columns, and the two sort cells take the same minWidth as the row's price block.
+    head: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.card },
+    headLabel: { flex: 2.1, fontSize: 10, fontWeight: "600", color: colors.muted, lineHeight: 13 },
+    headCell: { minWidth: 86, alignItems: "flex-end" },
+    headText: { fontSize: 10, fontWeight: "600", color: colors.muted, lineHeight: 13, paddingVertical: 2 },
+    headTextOn: { color: colors.brand },
     row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.border },
     left: { flex: 1, paddingRight: 8 },
     symbol: { fontSize: 15, fontWeight: "600", color: colors.text },
@@ -391,6 +430,9 @@ export default function WatchlistScreen() {
     quotes.remember([...tickEntries(feed.quotes), ...cashEntries(liveRows)]);
   }, [quotes, feed.quotes, liveRows]);
   const shownRows = useMemo(() => paintWatchlist(liveRows, quotes.seen), [liveRows, quotes]);
+  // Ordered last, from the figures the rows actually show: a price the stream brought and a price the phone
+  // remembered are both numbers the trader can see, so both belong in the ordering.
+  const orderedRows = useMemo(() => sortRows(shownRows, SORT_KEYS, sort), [shownRows, sort]);
   // Prod returns a list's symbols before it has finished pricing them, so an empty price here
   // usually means "still being read" rather than "this stock has no price". Say which.
   const pricesPending = (tab.kind === "predefined" ? builtins?.pricesPending : saved?.pricesPending) === true;
@@ -535,38 +577,58 @@ export default function WatchlistScreen() {
           </Text>
         </View>
       ) : (
-        <FlatList
-          data={shownRows}
-          keyExtractor={item => `${item.exchange}:${item.symbol}`}
-          renderItem={renderRow}
-          initialNumToRender={10}
-          maxToRenderPerBatch={8}
-          windowSize={5}
-          removeClippedSubviews={true}
-          getItemLayout={(_, index) => ({
-            length: WATCHLIST_ROW_HEIGHT,
-            offset: WATCHLIST_ROW_HEIGHT * index,
-            index,
-          })}
-          onScrollBeginDrag={pauseQuoteDispatch}
-          onScrollEndDrag={resumeQuoteDispatch}
-          onMomentumScrollEnd={resumeQuoteDispatch}
-          ListFooterComponent={
-            <>
-              {tab.kind === "predefined" && pages > 1 ? (
-                <View style={styles.pager}>
-                  <TouchableOpacity style={styles.pagerButton} onPress={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>
-                    <Text style={styles.pagerText}>Previous</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.pagerLabel}>{`Page ${page + 1} of ${pages}`}</Text>
-                  <TouchableOpacity style={styles.pagerButton} onPress={() => setPage(p => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1}>
-                    <Text style={styles.pagerText}>Next</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-            </>
-          }
-        />
+        <View style={{ flex: 1 }}>
+          <View style={styles.head}>
+            <Text style={styles.headLabel}>Symbol</Text>
+            {SORT_KEYS.map((key) => (
+              <TouchableOpacity
+                key={key.key}
+                style={styles.headCell}
+                onPress={() => setSort((current) => nextWatchlistSort(key, current))}
+                accessibilityRole="button"
+                accessibilityLabel={`Sort by ${key.label}`}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[styles.headText, sort?.key === key.key && styles.headTextOn]}>
+                  {key.label}
+                  {sort?.key === key.key ? (sort.descending ? " ▼" : " ▲") : ""}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <FlatList
+            data={orderedRows}
+            keyExtractor={item => `${item.exchange}:${item.symbol}`}
+            renderItem={renderRow}
+            initialNumToRender={10}
+            maxToRenderPerBatch={8}
+            windowSize={5}
+            removeClippedSubviews={true}
+            getItemLayout={(_, index) => ({
+              length: WATCHLIST_ROW_HEIGHT,
+              offset: WATCHLIST_ROW_HEIGHT * index,
+              index,
+            })}
+            onScrollBeginDrag={pauseQuoteDispatch}
+            onScrollEndDrag={resumeQuoteDispatch}
+            onMomentumScrollEnd={resumeQuoteDispatch}
+            ListFooterComponent={
+              <>
+                {tab.kind === "predefined" && pages > 1 ? (
+                  <View style={styles.pager}>
+                    <TouchableOpacity style={styles.pagerButton} onPress={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>
+                      <Text style={styles.pagerText}>Previous</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.pagerLabel}>{`Page ${page + 1} of ${pages}`}</Text>
+                    <TouchableOpacity style={styles.pagerButton} onPress={() => setPage(p => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1}>
+                      <Text style={styles.pagerText}>Next</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </>
+            }
+          />
+        </View>
       )}
 
       {/* Mounted only while a ticket is open, so every press seeds the sheet from that row instead

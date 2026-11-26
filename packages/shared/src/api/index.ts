@@ -263,6 +263,7 @@ export {
   nextSort,
   sortRows,
   type SortColumn,
+  type SortKey,
   type SortState,
 } from "./table-sort";
 

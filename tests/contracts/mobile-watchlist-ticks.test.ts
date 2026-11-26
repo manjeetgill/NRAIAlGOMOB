@@ -107,7 +107,9 @@ it("subscribes the rendered list off the stream instead of only re-reading it", 
   expect(screen).toContain("markWatchlist(rows, feed.quotes)");
   // What gets rendered is what was ticked, then painted only in the gaps the ticks left (see quote-memory.ts).
   expect(screen).toContain("paintWatchlist(liveRows, quotes.seen)");
-  expect(screen).toContain("data={shownRows}");
+  // The ticked and painted rows are what gets ordered and rendered; a tap on the heading never re-reads prod.
+  expect(screen).toContain("sortRows(shownRows, SORT_KEYS, sort)");
+  expect(screen).toContain("data={orderedRows}");
   // The state line used to cover an open socket with no ticks and a closed one with the same word.
   expect(screen).toContain('"ticking" : feed.connected ? "waiting for ticks" : "no live stream"');
 });
