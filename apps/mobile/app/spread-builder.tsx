@@ -28,7 +28,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, heldLots, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -279,7 +279,7 @@ export default function SpreadBuilderScreen() {
     const contracts = row.payoffLegs;
     if (!contracts.length) {
       setStaging(null);
-      setNote(`${title}: the desk does not hold this basket’s exact contracts, so there is nothing to stage. Its legs at the broker are unchanged.`);
+      setNote(`${title}: the desk files this basket’s legs without their exact strike and expiry, so there is nothing to stage here. Its legs at the broker are unchanged; adjust it from the web desk.`);
       return;
     }
     // Finding #2: Reject mixed-underlying baskets. All legs must share one underlying so the builder
@@ -296,12 +296,13 @@ export default function SpreadBuilderScreen() {
     // arrived.
     const symbol = ladderUnderlying(row);
     // A leg the book shows fewer lots of than the payoff still carries has been partly exited, and closing
-    // the difference would open a fresh position under the name of a close.
+    // the difference would open a fresh position under the name of a close. A row with no lot count is not
+    // such evidence, so the payoff's own lots stand - see heldLots.
     const open = contracts.map(leg => {
       const held = row.legs.find(item => item.instrumentId === leg.instrumentId || item.symbol === leg.symbol);
       const entryPrice = held?.entryPrice != null ? String(held.entryPrice) : leg.entryPrice;
       const enrichedLeg = { ...leg, entryPrice };
-      return { leg: enrichedLeg, lots: held ? Math.min(leg.lots, held.lots) : leg.lots };
+      return { leg: enrichedLeg, lots: heldLots(leg.lots, held?.lots) };
     });
     const flat = open.filter(item => item.lots > 0);
     if (!flat.length) {
@@ -822,6 +823,7 @@ export default function SpreadBuilderScreen() {
     cancel: { height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
     cancelText: { fontSize: 14, fontWeight: "700", color: colors.muted },
     note: { fontSize: 12, color: colors.warn, lineHeight: 17 },
+    noteCard: { borderWidth: 1, borderColor: colors.warn, borderRadius: 8, backgroundColor: `${colors.warn}15`, padding: 10 },
     outcome: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.card, padding: 10, gap: 6 },
     outcomeLeg: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
     outcomeText: { fontSize: 12, color: colors.text, flex: 1 },
@@ -1403,6 +1405,16 @@ export default function SpreadBuilderScreen() {
                   : [closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}
         </Text>
       </TouchableOpacity>
+
+      {/* Every refusal, lost answer and suppressed receipt of this screen is written to `note`, so a press
+          that sent nothing would otherwise look identical to a press that worked. */}
+      {note ? (
+        <View style={styles.noteCard} accessibilityLiveRegion="polite">
+          <Text style={styles.note}>{note}</Text>
+        </View>
+      ) : staging ? (
+        <Text style={styles.meta}>{`Reading the ${staging.ladder} ladder of ${staging.underlying} to stage ${staging.name}`}</Text>
+      ) : null}
 
       {sentId && outcome ? (
         <View style={styles.outcome}>

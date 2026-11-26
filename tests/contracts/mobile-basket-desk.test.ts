@@ -9,6 +9,7 @@ import {
   deskList,
   expiryKey,
   heldPayoff,
+  heldLots,
   isLiveMoney,
   isLiveRun,
   ladderUnderlying,
@@ -704,6 +705,35 @@ it("puts the two tabs on the spread screen and hands the legs to the builder", (
   // A held contract is not moved to the nearest listed strike: that would send an order for a contract
   // nobody holds, so the strike stays and an off-ladder one is refused by name instead.
   expect(screen).not.toContain("nearestStrike");
+});
+
+it("narrows a held leg only on a book row that actually counts lots", () => {
+  // `/v1/baskets` fills an order ticket's legs from filled quantity and hard-codes lots: 0, so a row that
+  // reports no lots is not evidence of an exit. Reading it as one left every staged lot at zero and the
+  // Adjust press on a basket the account still held had nothing to send.
+  expect(heldLots(2, 0)).toBe(2);
+  expect(heldLots(2, undefined)).toBe(2);
+  expect(heldLots(2, null)).toBe(2);
+  expect(heldLots(2, NaN)).toBe(2);
+  // A row that does count narrows, because closing more than the broker holds opens a fresh position.
+  expect(heldLots(2, 1)).toBe(1);
+  expect(heldLots(2, 2)).toBe(2);
+  expect(heldLots(2, 5)).toBe(2);
+});
+
+it("stages an adjustment with the payoff's lots and says why a press sent nothing", () => {
+  const screen = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
+  // The staging rule is the shared one, so a ticket row carrying no lot count cannot zero the basket.
+  expect(screen).toContain("lots: heldLots(leg.lots, held?.lots)");
+  expect(screen).not.toContain("Math.min(leg.lots, held.lots)");
+  // Every refusal, thrown error and suppressed receipt of this screen is written to `note`. The builder tab
+  // had no place that rendered it, so a press that sent nothing looked exactly like one that worked.
+  expect(screen).toContain("<View style={styles.noteCard}");
+  expect(screen.indexOf("<View style={styles.noteCard}")).toBeGreaterThan(screen.indexOf("onPress={ask}"));
+  expect(screen).toContain("<Text style={styles.note}>{note}</Text>");
+  // A held basket is staged once its ladder answers, which takes seconds, so the wait is named too rather
+  // than leaving an empty builder that reads like the press did nothing.
+  expect(screen).toContain("ladder of ${staging.underlying} to stage ${staging.name}");
 });
 
 it("makes every held leg read-only and marks a close instead of deleting the row", () => {

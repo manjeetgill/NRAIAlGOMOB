@@ -223,6 +223,19 @@ export function withBookMarks(baskets: readonly Basket[], positions: readonly Op
 }
 
 /**
+ * How many lots of a payoff contract the broker still holds, which is all an adjustment may close.
+ *
+ * The book row narrows the payoff's own count: a leg shown with fewer lots has been partly exited, and
+ * closing the difference would open a fresh position under the name of a close. A row that reports no lots
+ * narrows nothing, because `/v1/baskets` fills an order ticket's legs from filled quantity and leaves
+ * `lots` at 0 - reading that as "nothing held" zeroes every leg of a basket the account still holds and
+ * leaves the adjustment with nothing to stage.
+ */
+export function heldLots(payoff: number, book: number | null | undefined): number {
+  return typeof book === "number" && Number.isFinite(book) && book > 0 ? Math.min(payoff, book) : payoff;
+}
+
+/**
  * The dates the payoff needs a ladder for. One read per distinct expiry is the whole cost: a basket is
  * built on one date, and a calendar spread needs both of its own dates and nothing else.
  */

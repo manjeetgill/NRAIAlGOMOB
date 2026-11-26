@@ -220,6 +220,7 @@ export {
   payoffFigures,
   legValue,
   closedUnits,
+  heldLots,
   type AnalysisBuild,
   type HeldPayoff,
   type LegMark,
