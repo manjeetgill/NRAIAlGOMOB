@@ -298,8 +298,10 @@ export default function SpreadBuilderScreen() {
     // A leg the book shows fewer lots of than the payoff still carries has been partly exited, and closing
     // the difference would open a fresh position under the name of a close.
     const open = contracts.map(leg => {
-      const held = row.legs.find(item => item.instrumentId === leg.instrumentId);
-      return { leg, lots: held ? Math.min(leg.lots, held.lots) : leg.lots };
+      const held = row.legs.find(item => item.instrumentId === leg.instrumentId || item.symbol === leg.symbol);
+      const entryPrice = held?.entryPrice != null ? String(held.entryPrice) : leg.entryPrice;
+      const enrichedLeg = { ...leg, entryPrice };
+      return { leg: enrichedLeg, lots: held ? Math.min(leg.lots, held.lots) : leg.lots };
     });
     const flat = open.filter(item => item.lots > 0);
     if (!flat.length) {
@@ -824,6 +826,14 @@ export default function SpreadBuilderScreen() {
     outcomeLeg: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
     outcomeText: { fontSize: 12, color: colors.text, flex: 1 },
     outcomeState: { fontSize: 12, fontWeight: "700", color: colors.muted },
+    closeBadge: { backgroundColor: `${colors.warn}22`, borderWidth: 1, borderColor: colors.warn, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+    closeBadgeText: { fontSize: 10, fontWeight: "700", color: colors.warn, textTransform: "uppercase" },
+    diffSection: { gap: 6, marginVertical: 4 },
+    diffTitle: { fontSize: 11, fontWeight: "700", color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
+    diffRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 3 },
+    diffBadge: { paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, borderWidth: 1 },
+    diffBadgeText: { fontSize: 10, fontWeight: "700" },
+    diffText: { fontSize: 12, color: colors.text, flex: 1 },
     center: { padding: 32, alignItems: "center", gap: 10 },
     centerText: { fontSize: 13, color: colors.muted, textAlign: "center" },
   }), [colors]);
@@ -1056,19 +1066,88 @@ export default function SpreadBuilderScreen() {
 
   const executeConfirmModal = (
     <Modal visible={confirmExecute} transparent animationType="fade" onRequestClose={() => setConfirmExecute(false)}>
-      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 20 }}>
-        <View style={{ backgroundColor: colors.card, borderRadius: 12, padding: 16, maxWidth: 380, width: "100%", gap: 8 }}>
-          <Text style={styles.title}>Execute adjustment?</Text>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 16 }}>
+        <View style={{ backgroundColor: colors.card, borderRadius: 14, padding: 18, maxWidth: 420, width: "100%", gap: 8, borderWidth: 1, borderColor: colors.border }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <Text style={styles.title}>Execute adjustment?</Text>
+            <TouchableOpacity onPress={() => setConfirmExecute(false)} accessibilityRole="button" accessibilityLabel="Close confirmation">
+              <Ionicons name="close" size={22} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          <Text style={[styles.small, { fontWeight: "700", color: colors.brand }]}>{`Basket: ${basket}`}</Text>
           <Text style={styles.small}>
             {`${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}  ·  ${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
           </Text>
           <Text style={styles.small}>This sends real broker orders under this basket name.</Text>
+
+          <ScrollView style={{ maxHeight: 220, marginVertical: 4 }}>
+            {plan.filter(line => line.kind === "close").length > 0 && (
+              <View style={styles.diffSection}>
+                <Text style={styles.diffTitle}>Orders to close / trim</Text>
+                {plan.filter(line => line.kind === "close").map((line, idx) => (
+                  <View key={`close-${idx}`} style={styles.diffRow}>
+                    <View style={[styles.diffBadge, { backgroundColor: `${colors.sell}22`, borderColor: colors.sell }]}>
+                      <Text style={[styles.diffBadgeText, { color: colors.sell }]}>{line.side}</Text>
+                    </View>
+                    <Text style={styles.diffText} numberOfLines={1}>
+                      {`${line.lots} lot${line.lots > 1 ? "s" : ""} ${underlying} ${line.strike} ${line.right} · ${line.price !== null ? `₹${formatNumber(line.price, 2)}` : "Market"}`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {plan.filter(line => line.kind === "add").length > 0 && (
+              <View style={styles.diffSection}>
+                <Text style={styles.diffTitle}>Orders to open (new legs)</Text>
+                {plan.filter(line => line.kind === "add").map((line, idx) => (
+                  <View key={`add-${idx}`} style={styles.diffRow}>
+                    <View style={[styles.diffBadge, { backgroundColor: `${colors.buy}22`, borderColor: colors.buy }]}>
+                      <Text style={[styles.diffBadgeText, { color: colors.buy }]}>{line.side}</Text>
+                    </View>
+                    <Text style={styles.diffText} numberOfLines={1}>
+                      {`${line.lots} lot${line.lots > 1 ? "s" : ""} ${underlying} ${line.strike} ${line.right} (${line.expiry}) · ${line.price !== null ? `₹${formatNumber(line.price, 2)}` : "Market"}`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {legs.filter(leg => leg.held && ((leg.held.lots ?? leg.lots) - closeLotsOf(leg)) > 0).length > 0 && (
+              <View style={styles.diffSection}>
+                <Text style={styles.diffTitle}>Kept open (no orders placed)</Text>
+                {legs.filter(leg => leg.held && ((leg.held.lots ?? leg.lots) - closeLotsOf(leg)) > 0).map(leg => {
+                  const kept = (leg.held?.lots ?? leg.lots) - closeLotsOf(leg);
+                  return (
+                    <View key={`kept-${leg.id}`} style={styles.diffRow}>
+                      <View style={[styles.diffBadge, { backgroundColor: `${colors.muted}22`, borderColor: colors.muted }]}>
+                        <Text style={[styles.diffBadgeText, { color: colors.muted }]}>HELD</Text>
+                      </View>
+                      <Text style={styles.diffText} numberOfLines={1}>
+                        {`${leg.side} ${kept} lot${kept > 1 ? "s" : ""} ${underlying} ${leg.strike} ${leg.right} · Kept open`}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </ScrollView>
+
+          <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 6, gap: 2 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={[styles.small, { fontWeight: "700" }]}>Net Impact:</Text>
+              <Text style={[styles.small, { fontWeight: "700", color: net >= 0 ? colors.sell : colors.buy }]}>
+                {`${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
+              </Text>
+            </View>
+          </View>
+
           <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
             <TouchableOpacity style={[styles.cancel, { flex: 1 }]} onPress={() => setConfirmExecute(false)} accessibilityRole="button" accessibilityLabel="Cancel adjustment">
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.execute, { flex: 1 }]} onPress={() => { setConfirmExecute(false); void send(); }} disabled={sending} accessibilityRole="button" accessibilityLabel="Confirm adjustment orders">
-              <Text style={styles.executeText}>{sending ? "Sending" : "Execute"}</Text>
+            <TouchableOpacity style={[styles.execute, { flex: 1.5 }]} onPress={() => { setConfirmExecute(false); void send(); }} disabled={sending} accessibilityRole="button" accessibilityLabel="Confirm adjustment orders">
+              <Text style={styles.executeText}>{sending ? "Sending" : "Confirm & Place Orders"}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1136,10 +1215,12 @@ export default function SpreadBuilderScreen() {
             <View style={styles.legRow}>
               {leg.held ? (
                 // The contract is the broker's, not a choice: no flip, no strike stepper, only the close mark.
-                <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <Text style={[styles.held, closingNow && styles.struck]}>{`${leg.side} ${leg.strike} ${leg.right}`}</Text>
                   {closingNow ? (
-                    <Text style={{ fontSize: 10, fontWeight: "700", color: colors.warn, textTransform: "uppercase" }}>Marked to close</Text>
+                    <View style={styles.closeBadge}>
+                      <Text style={styles.closeBadgeText}>{left === 0 ? "MARKED TO CLOSE" : `TRIMMING ${going} LOT${going > 1 ? "S" : ""}`}</Text>
+                    </View>
                   ) : null}
                 </View>
               ) : (
@@ -1204,7 +1285,7 @@ export default function SpreadBuilderScreen() {
                         <Ionicons name="add" size={16} color={colors.text} />
                       </TouchableOpacity>
                     </View>
-                    <Text style={styles.small}>{left > 0 ? `${left} lot${left > 1 ? "s" : ""} left open` : "whole leg closes"}</Text>
+                    <Text style={styles.small}>{left > 0 ? `Closing ${going} lots, leaving ${left} lot${left > 1 ? "s" : ""} open` : "whole leg closes"}</Text>
                   </>
                 ) : (
                   <>
@@ -1259,10 +1340,12 @@ export default function SpreadBuilderScreen() {
                 </Text>
               ) : null}
               <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
-                {leg.held && !closingNow
-                  ? entry === null
-                    ? (quote === null ? "" : `LTP ${formatNumber(quote.price, 2)}`)
-                    : `LTP ${quote ? formatNumber(quote.price, 2) : "—"} · bought @ ${formatNumber(entry, 2)}`
+                {leg.held
+                  ? [
+                      quote ? `LTP ₹${formatNumber(quote.price, 2)}` : null,
+                      entry !== null ? `Bought @ ₹${formatNumber(entry, 2)}` : null,
+                      closingNow ? `(Close ${going} lots)` : null,
+                    ].filter(Boolean).join(" · ")
                   : quote === null
                     ? ""
                     : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)}`}
@@ -1315,7 +1398,9 @@ export default function SpreadBuilderScreen() {
               ? "Add a leg"
               : !plan.length
                 ? "Mark a leg to close or add one"
-                : [closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}
+                : adjusting
+                  ? `Execute Adjustment · ${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}`
+                  : [closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}
         </Text>
       </TouchableOpacity>
 
@@ -1335,6 +1420,14 @@ export default function SpreadBuilderScreen() {
               </Text>
             </View>
           ))}
+          <TouchableOpacity
+            style={[styles.cancel, { marginTop: 6, borderColor: colors.brand, backgroundColor: `${colors.brand}15` }]}
+            onPress={() => setTab("basket")}
+            accessibilityRole="button"
+            accessibilityLabel="Return to Basket Desk"
+          >
+            <Text style={[styles.cancelText, { color: colors.brand, fontWeight: "700" }]}>Return to Basket Desk</Text>
+          </TouchableOpacity>
         </View>
       ) : null}
 
