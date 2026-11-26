@@ -5,7 +5,7 @@
  * Uses the shared ApiClient for consistent behavior
  */
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
 import { subscribeSSE, type SseSubscription } from "./sse";
@@ -736,17 +736,25 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
    * not a silent one.
    */
   const useOptionChains = (underlying: string, expiries: readonly string[], wanted: boolean) => {
+    // The expiry list is the whole request: each entry reads one listed day of one underlying. Rebuilding
+    // the array on every render makes the query layer re-arm every observer per paint, and the chain screen
+    // paints on each price tick, so the ladder never settles. The joined list is the identity.
+    const expiryList = expiries.join(",");
+    const today = todayIST();
     return useQueries({
-      queries: expiries.map(expiry => ({
-        queryKey: queryKeys.optionChain.chain(underlying, expiry, FULL_WINDOW),
-        queryFn: () => client.get<OptionChainData>("/v1/option-chain", {
-          params: { underlying, expiry, window: FULL_WINDOW, rate: 0, dividend: 0 },
-        }),
-        enabled: wanted && !!underlying && ISO_DATE.test(expiry) && expiry >= todayIST(),
-        staleTime: LADDER_STALE_MS,
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
-      })),
+      queries: useMemo(() => {
+        if (!expiryList) return [];
+        return expiryList.split(",").map(expiry => ({
+          queryKey: queryKeys.optionChain.chain(underlying, expiry, FULL_WINDOW),
+          queryFn: () => client.get<OptionChainData>("/v1/option-chain", {
+            params: { underlying, expiry, window: FULL_WINDOW, rate: 0, dividend: 0 },
+          }),
+          enabled: wanted && !!underlying && ISO_DATE.test(expiry) && expiry >= today,
+          staleTime: LADDER_STALE_MS,
+          refetchOnWindowFocus: false,
+          refetchOnReconnect: false,
+        }));
+      }, [client, underlying, expiryList, wanted, today]),
     });
   };
 
