@@ -617,7 +617,9 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     return useQuery({
       queryKey: queryKeys.brokerAccount.icici(),
       queryFn: async () => {
-        const account = await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account");
+        const read = await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account");
+        // An Orders open/refresh may have just read ICICI's book directly; this poll's copy must not undo it.
+        const account = keepNewerOrders(queryClient.getQueryData<IciciAccountPayload>(queryKeys.brokerAccount.icici()), read);
         // Seed the derived open-positions cache so screens using useOpenPositions()
         // receive fresh rows without firing a duplicate /v1/broker-auth/icici/account poll.
         queryClient.setQueryData(queryKeys.positions.open(), iciciOpenPositions(account));
@@ -627,6 +629,23 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       refetchInterval: accountPoll,
       ...options,
     });
+  };
+
+  // Orders screen opened or refreshed (Manjeet, 26 Nov 2026): one direct ICICI order-book read, never a
+  // cache. Only the order list is taken from it; a second call while one is reading is ignored.
+  let freshOrdersRead: Promise<void> | null = null;
+  const readFreshOrders = (): Promise<void> => {
+    if (freshOrdersRead) return freshOrdersRead;
+    freshOrdersRead = (async () => {
+      try {
+        const fresh = await client.get<IciciAccountPayload>("/v1/broker-auth/icici/account?orders=fresh");
+        const order = fresh?.sections?.order;
+        if (!order) return;
+        queryClient.setQueryData<IciciAccountPayload>(queryKeys.brokerAccount.icici(), current =>
+          current && current.accountId === fresh.accountId ? { ...current, sections: { ...current.sections, order } } : current ?? fresh);
+      } finally { freshOrdersRead = null; }
+    })();
+    return freshOrdersRead;
   };
 
   const useClosedPositions = (params?: QueryParams, options?: UseQueryOptions<ClosedPosition[], ApiError>) => {
@@ -1260,6 +1279,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useOpenPositions,
     useClosedPositions,
     useIciciAccount,
+    readFreshOrders,
     // Watchlist
     useWatchlist,
     useBuiltinWatchlist,
@@ -1591,6 +1611,15 @@ export interface IciciAccountPayload {
     orders_NSE?: IciciSection<IciciOrderRow> | null;
     orders_NFO?: IciciSection<IciciOrderRow> | null;
   } | null;
+}
+
+/** Keep the order list a direct read returned when the incoming poll's copy is older. */
+export function keepNewerOrders(previous: IciciAccountPayload | undefined, incoming: IciciAccountPayload): IciciAccountPayload {
+  const kept = previous?.sections?.order;
+  if (!kept?.asOf || kept.status !== "available" || previous?.accountId !== incoming.accountId) return incoming;
+  const next = incoming.sections?.order?.asOf;
+  if (next && Date.parse(next) >= Date.parse(kept.asOf)) return incoming;
+  return { ...incoming, sections: { ...incoming.sections, order: kept } };
 }
 
 export interface IciciOrderRow {
