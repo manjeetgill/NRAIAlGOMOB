@@ -139,8 +139,11 @@ describe("Orders screen shows four tabs", () => {
   });
 
   it("says whose book the list is and how wide it goes", () => {
-    // ICICI's order list is one session of NSE + NFO. Without that on screen, yesterday's trades look lost.
-    expect(screen).toContain("today's session, NSE + NFO");
+    // ICICI's order list is one session, and the exchanges prod asks for have already moved once (NSE/NFO,
+    // then BSE/BFO), so the header names the exchanges the rows actually came from rather than a phrase.
+    expect(screen).toContain("today's session");
+    expect(screen).toContain("seenExchanges.join(\" + \")");
+    expect(screen).not.toContain("NSE + NFO`");
     expect(screen).toContain("asOfWord(iciciAccount?.asOf)");
     expect(screen).toContain("no read time printed");
   });

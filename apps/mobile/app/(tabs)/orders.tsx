@@ -310,11 +310,24 @@ export default function OrdersScreen() {
   const orderKey = (order: BrokerOrder, index: number) =>
     order.orderId || `${order.symbol ?? "order"}-${order.timestamp ?? ""}-${index}`;
 
-  // What the list is, in prod's own words: whose book, when it was read, which section it could not fill,
-  // and that ICICI's order list is a session of NSE + NFO rather than the account's whole history.
+  // What the list is, in prod's own words: whose book, when it was read, and which exchanges the rows came
+  // from. The exchange scope is read from the rows rather than written here, because prod has already widened
+  // it once (NSE + NFO, then BSE + BFO) and a hard-coded claim on screen outlives the code that made it true.
+  const seenExchanges = useMemo(() => {
+    const found = new Set<string>();
+    for (const order of allOrders) {
+      const code = String(order.exchange ?? "").trim().toUpperCase();
+      if (code) found.add(code);
+    }
+    return [...found].sort();
+  }, [allOrders]);
+
   const orderHeader = (
     <View>
-      <Text style={styles.note}>{`ICICI order book · ${asOfWord(iciciAccount?.asOf)} · today's session, NSE + NFO`}</Text>
+      <Text style={styles.note}>
+        {`ICICI order book · ${asOfWord(iciciAccount?.asOf)} · today's session${
+          seenExchanges.length ? `, ${seenExchanges.join(" + ")}` : ""}`}
+      </Text>
       {ordersState.reason ? <Text style={[styles.note, styles.noteWarn]}>{ordersState.reason}</Text> : null}
       {otherOrders.length > 0 ? (
         <Text style={[styles.note, styles.noteWarn]}>
