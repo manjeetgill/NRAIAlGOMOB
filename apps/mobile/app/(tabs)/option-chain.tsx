@@ -45,6 +45,7 @@ import {
   resumeQuoteDispatch,
   watchBand,
   type Band,
+  type OptionChainData,
   type OptionRow,
   type QuoteTick,
   type RememberedQuote,
@@ -58,6 +59,7 @@ import { BuySheet } from "@/components/BuySheet";
 import { useApi } from "@/hooks/useApi";
 import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 import { readChainSelection, rememberChainSelection } from "@/utils/chainSelection";
+import { prefetchChainExpiries } from "@/utils/prefetch";
 
 /** Prod sends prices as decimal strings so nothing rounds on the way here; the ticket takes numbers. */
 function amount(value: string | number | null | undefined): number | null {
@@ -72,6 +74,19 @@ function readAge(ms: number): string {
   if (mins < 1) return "read just now";
   if (mins < 60) return `read ${mins} min ago`;
   return `read ${Math.round(mins / 60)} h ago`;
+}
+
+/**
+ * How long ago the prices on a saved frame were observed.
+ *
+ * A cold switch now answers with the last frame the server kept and finishes the broker read behind the
+ * response, so the ladder is on the screen a second after opening it instead of seven. That makes the one
+ * number this desk shows come from an earlier moment while the session dot beside it legitimately says live,
+ * so the frame carries its own age in words, the same way each date in "All dates" already does.
+ */
+function frameAge(chain: OptionChainData): string {
+  const at = Date.parse(chain.spot?.at ?? chain.asOf ?? "");
+  return Number.isFinite(at) ? readAge(at) : "read earlier";
 }
 
 /**
@@ -671,7 +686,13 @@ export default function OptionChainScreen() {
 
           <TouchableOpacity
             style={styles.selector}
-            onPress={() => { setExpiryOpen(open => !open); setPickerOpen(false); }}
+            onPress={() => {
+              // A cold ladder read is seconds, and the date behind the picker is the only thing the trader is
+              // about to tap, so the reads start while the list is being read rather than after the press.
+              prefetchChainExpiries(underlying, chain.expiries, chain.expiry);
+              setExpiryOpen(open => !open);
+              setPickerOpen(false);
+            }}
           >
             <View style={styles.selectorBody}>
               <Text style={styles.selectorLabel}>Expiry</Text>
@@ -734,6 +755,15 @@ export default function OptionChainScreen() {
           {shownSpot !== null && spotWord ? <Text style={styles.spotLabel}>{spotWord}</Text> : null}
           <View style={[styles.statusDot, chain.marketOpen ? styles.dotLive : styles.dotClosed]} />
         </View>
+
+        {/* The server answers a cold read with the last frame it kept so the ladder appears at once, and while
+            that frame is on the screen the session dot beside it says live — so the frame says its own age,
+            and whether a fresh read is still coming underneath it. */}
+        {chain.displaySnapshot ? (
+          <Text style={[styles.note, styles.noteWarn]} numberOfLines={2}>
+            {`Prices ${frameAge(chain)} · ${chain.refreshing ? "live chain still loading" : "the live read is not answering"}`}
+          </Text>
+        ) : null}
 
         {error ? <Text style={[styles.note, styles.noteWarn]}>{`Refresh failed: ${error.message}`}</Text> : null}
       </View>

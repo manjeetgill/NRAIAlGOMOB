@@ -16,6 +16,7 @@ import { readChainSelection } from "@/utils/chainSelection";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import {
   chainRequest,
+  chainWarmTargets,
   iciciOpenPositions,
   queryKeys,
   type GttOrder,
@@ -52,6 +53,50 @@ export function prefetchOptionChain() {
     queryFn: () => client.get<UnderlyingList>("/v1/option-chain/underlyings"),
     staleTime: 60 * 60 * 1000,
   }).catch(() => {});
+}
+
+/**
+ * How recent a warmed ladder has to be for the tap to be served from the cache instead of asking again.
+ * The desk's own hook holds a chain read for a minute, so warming anything staler than that buys nothing.
+ */
+const CHAIN_WARM_FRESH_MS = 60 * 1000;
+
+/** The newest warm-up the picker asked for. Every date after it belongs to a ladder the trader walked away from. */
+let chainWarmRun = 0;
+
+/**
+ * Warm the dates behind the expiry picker, a few at a time, while the trader is still reading the list.
+ *
+ * A cold switch is the slowest thing this desk does: prod measures 4.4 s average and 7.3 s worst for one
+ * ladder read, and the picker is the only way to reach a different date, so the tap that pays for it is the
+ * one this can afford to start early. Three dates, one after the other, on the lane that also places orders —
+ * so the run is superseded the moment the picker is opened for another contract, skips anything the desk can
+ * already answer from, and stops at the first refusal rather than retrying a lane that is saying no.
+ *
+ * Each entry is written under the key `chainRequest` builds, which is the one `useOptionChain` reads, so the
+ * tap is a cache hit rather than a second read for the same ladder.
+ */
+export function prefetchChainExpiries(underlying: string, expiries: readonly string[], onScreen: string) {
+  const targets = chainWarmTargets(underlying, expiries, onScreen);
+  if (!targets.length) return;
+  const run = ++chainWarmRun;
+
+  void (async () => {
+    for (const request of targets) {
+      if (run !== chainWarmRun) return;
+      const state = queryClient.getQueryState(request.queryKey);
+      if (state && Date.now() - state.dataUpdatedAt < CHAIN_WARM_FRESH_MS) continue;
+      try {
+        await queryClient.prefetchQuery({
+          queryKey: request.queryKey,
+          queryFn: () => client.get<OptionChainData>("/v1/option-chain", { params: request.params }),
+          staleTime: CHAIN_WARM_FRESH_MS,
+        });
+      } catch {
+        return;
+      }
+    }
+  })();
 }
 
 export function prefetchPortfolio() {

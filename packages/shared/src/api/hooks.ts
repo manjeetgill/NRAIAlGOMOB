@@ -218,6 +218,39 @@ export function chainRequest(underlying: string, expiry: string) {
 }
 
 /**
+ * How many dates behind the expiry picker are worth warming.
+ *
+ * One of these is a full broker chain read of a few seconds, asked on the same lane that places the trader's
+ * orders, and a picker lists every date the exchange carries. Three is the band a trader actually taps from
+ * (the next weekly or two, then the month-end) and stays cheaper than the single window-400 ladder that
+ * "All dates" already pays for.
+ */
+export const CHAIN_WARM_LIMIT = 3;
+
+/**
+ * The dates to warm before a tap, in the order to ask for them, each as the read the tap itself will make.
+ *
+ * Listed order is soonest first, which is where a tap lands, so the queue is that list without the date
+ * already on screen — that one is cached or in flight, and asking twice for it is the whole cost of the
+ * warm-up with none of the benefit. A settled date drops out rather than warming: `chainRequest` turns one
+ * into "whatever your front expiry is", so it would re-pay the read on screen instead of buying the one ahead.
+ */
+export function chainWarmTargets(
+  underlying: string,
+  expiries: readonly string[],
+  onScreen: string,
+  limit = CHAIN_WARM_LIMIT,
+) {
+  const queued: ReturnType<typeof chainRequest>[] = [];
+  for (const expiry of expiries) {
+    if (queued.length >= limit) break;
+    const request = chainRequest(underlying, expiry);
+    if (ISO_DATE.test(expiry) && request.asked === expiry && expiry !== onScreen) queued.push(request);
+  }
+  return queued;
+}
+
+/**
  * The listed contract that closes out the nearest month, which is the one a desk opens on. Weeklies
  * are listed earlier in their own month, so the last date of a month is that month's monthly — the
  * same rule the web desk prints "Monthly" under. Empty when nothing on the ladder is still live.
@@ -1855,6 +1888,14 @@ export interface OptionChainData {
   provider: string;
   /** Present only when the live source could not answer and another one supplied these prices. */
   fallback?: { from: string; to: string; reason: string } | null;
+  /**
+   * Set when these prices are the last complete frame the server kept rather than a read of this moment.
+   * The server answers with it twice: after the session closes, and while a cold ladder read finishes behind
+   * the response — the second case leaves `marketOpen` true, so a screen cannot tell the two apart from it.
+   */
+  displaySnapshot?: boolean;
+  /** Set with `displaySnapshot` while the read that will replace these prices is still running. */
+  refreshing?: boolean;
   asOf: string;
 }
 
