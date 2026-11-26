@@ -108,19 +108,30 @@ it("marks a top-of-book fallback as not live, so the dot cannot read as a tickin
 });
 
 it("labels the price by the server's own quality and session", () => {
-  expect(quoteProvenance({ quality: "live", priceDate: today })).toEqual({ word: "Live", live: true, date: today });
-  expect(quoteProvenance({ quality: "delayed", priceDate: today }).word).toBe("Delayed");
-  expect(quoteProvenance({ quality: "stale", priceDate: today }).word).toBe("Last known");
-  expect(quoteProvenance({ quality: "eod", priceDate: yesterday }).word).toBe("Last close");
-  expect(quoteProvenance({ quality: "unavailable" }).word).toBe("No price");
+  // Every case here carries a figure: a badge that dates a price has to have one to date.
+  expect(quoteProvenance({ ltp: 6282.5, quality: "live", priceDate: today })).toEqual({ word: "Live", live: true, date: today });
+  expect(quoteProvenance({ ltp: 6282.5, quality: "delayed", priceDate: today }).word).toBe("Delayed");
+  expect(quoteProvenance({ ltp: 6282.5, quality: "stale", priceDate: today }).word).toBe("Last known");
+  expect(quoteProvenance({ ltp: 6282.5, quality: "eod", priceDate: yesterday }).word).toBe("Last close");
+  expect(quoteProvenance({ ltp: null, quality: "unavailable" }).word).toBe("No price");
   // A live-labelled figure from an earlier session is still a closing price, whatever the flag says.
-  expect(quoteProvenance({ quality: "live", priceDate: yesterday })).toEqual({ word: "Last close", live: false, date: yesterday });
+  expect(quoteProvenance({ ltp: 6282.5, quality: "live", priceDate: yesterday })).toEqual({ word: "Last close", live: false, date: yesterday });
 });
 
 it("answers a read with no quality word by its date alone", () => {
-  expect(quoteProvenance({ priceDate: today })).toEqual({ word: "Today", live: true, date: today });
-  expect(quoteProvenance({ priceDate: yesterday }).word).toBe("Last close");
-  expect(quoteProvenance(null).word).toBe("Today");
+  expect(quoteProvenance({ ltp: 6282.5, priceDate: today })).toEqual({ word: "Today", live: true, date: today });
+  expect(quoteProvenance({ ltp: 6282.5, priceDate: yesterday }).word).toBe("Last close");
+});
+
+/**
+ * What the emulator sweep caught on RELIIND: `/v1/equities/quote` answered 503, the header printed a bare
+ * "No price" under a green "Today" badge, and the server's reason vanished behind a spinner on every retry.
+ * A badge describes the figure beside it, so it has no business dating a figure that never arrived.
+ */
+it("refuses to date a price that never arrived", () => {
+  expect(quoteProvenance(null)).toEqual({ word: "No price", live: false, date: null });
+  expect(quoteProvenance({ priceDate: today })).toEqual({ word: "No price", live: false, date: today });
+  expect(quoteProvenance({ ltp: null, quality: "live", priceDate: today })).toEqual({ word: "No price", live: false, date: today });
 });
 
 // The screen is where these numbers either reach the trader or get quietly invented.
@@ -139,6 +150,27 @@ it("names a field the server omitted and the reason a book is short", () => {
   expect(screen).toContain("No range in this read");
   expect(screen).toContain("quote?.depthMessage ??");
   expect(screen).toContain("Top of book only");
+});
+
+/**
+ * The three states the sweep found missing: the header admits it has no price yet instead of printing an
+ * empty box, the refusal keeps its place while the query retries, and a session that aged out is named and
+ * given the sign-in press rather than left as "Sign in required." on a dead screen.
+ */
+it("keeps the badge and the change line attached to a real price", () => {
+  expect(screen).toContain("const price = shown(quote?.ltp);");
+  expect(screen).toContain("{price === null ? null : (");
+  expect(screen).toContain('price ?? (isLoading && !failure ? "Waiting for price" : "No price")');
+});
+
+it("holds the refusal on screen and offers the way back", () => {
+  expect(screen).toContain("const failure = error ? readFailure(error,");
+  // Both branches are gated on there being nothing to show, so a cached quote outranks a failed poll.
+  expect(screen).toContain("isLoading && !quote && !failure");
+  expect(screen).toContain("failure && price === null");
+  expect(screen).toContain('router.replace("/login")');
+  expect(screen).toContain("Sign in again");
+  expect(screen).toContain("trying the broker again");
 });
 
 it("leaves out the figures this backend does not serve, rather than approximating them", () => {

@@ -16,6 +16,7 @@ import { formatRupees } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { asMs } from "@/utils/scan-chart";
+import { readFailure } from "@nraialgo/shared/api";
 import type { ScannerSignalType } from "@nraialgo/shared/api";
 
 type SignalFilter = "all" | "breakout" | "breakdown" | "support" | "resistance" | "hm";
@@ -56,7 +57,9 @@ export default function ScannerScreen() {
   const [filter, setFilter] = useState<SignalFilter>("all");
   const focused = useScreenFocused();
 
-  const { data, isLoading, isError, refetch } = useTechnicalEvents({ enabled: focused });
+  const { data, isLoading, isFetching, error, refetch } = useTechnicalEvents({ enabled: focused });
+  /** Prod's own words for a scan read that came back refused, or null while nothing has failed. */
+  const failure = error ? readFailure(error, "The stored scans could not be read.", "the stored scans") : null;
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
@@ -178,21 +181,32 @@ export default function ScannerScreen() {
     </TouchableOpacity>
   ), [styles, colors, openChart, getBadgeLabel, getBadgeStyle]);
 
-  if (isLoading) {
+  if (isLoading && !failure) {
     return (
       <View style={[styles.loading, { backgroundColor: colors.bg }]}>
         <ActivityIndicator size="large" color={colors.accent} />
+        {/* The first read walks every saved scan, and it is slow enough that a bare spinner looks like a
+            dead screen: measured on a cold install it took 10-15 s before the first row appeared. */}
+        <Text style={[styles.emptyText, { marginTop: 14 }]}>Reading the stored scans. The first load takes a while.</Text>
       </View>
     );
   }
 
-  if (isError) {
+  // A refused read only replaces the screen when it has nothing to replace: rows the earlier read
+  // delivered stay on screen, with the refusal printed above them.
+  if (failure && !data) {
     return (
       <View style={[styles.empty, { backgroundColor: colors.bg }]}>
-        <Text style={styles.emptyText}>Failed to load scanner data</Text>
-        <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => void refetch()}>
-          <Text style={{ color: colors.accent, fontWeight: "600" }}>Tap to retry</Text>
-        </TouchableOpacity>
+        <Text style={styles.emptyText}>{failure.text}</Text>
+        {failure.needsSignIn ? (
+          <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => router.replace("/login")}>
+            <Text style={{ color: colors.accent, fontWeight: "600" }}>Sign in again</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={{ marginTop: 16, paddingVertical: 12, alignItems: "center" }} onPress={() => void refetch()}>
+            <Text style={{ color: colors.accent, fontWeight: "600" }}>{isFetching ? "Retrying the scan read…" : "Tap to retry"}</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -220,10 +234,19 @@ export default function ScannerScreen() {
       {data?.run && (
         <View style={styles.status}>
           <Text style={styles.statusText}>
-            {data.run.status === "running" ? "Scan running…" : `Data through ${data.session ?? "—"} · ${data.run.status}`}
+            {data.run.status === "running"
+              ? "Scan running…"
+              : `${data.session ? `Data through ${data.session}` : "The scan carried no session date"} · ${data.run.status}`}
           </Text>
         </View>
       )}
+      {failure ? (
+        <View style={styles.status}>
+          <TouchableOpacity onPress={() => (failure.needsSignIn ? router.replace("/login") : void refetch())} accessibilityRole="button" accessibilityLabel={failure.needsSignIn ? "Sign in again" : "Read the stored scans again"}>
+            <Text style={[styles.statusText, { color: colors.sell }]}>{failure.text}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       {filteredSignals.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>
@@ -240,7 +263,7 @@ export default function ScannerScreen() {
           maxToRenderPerBatch={8}
           windowSize={5}
           removeClippedSubviews
-          refreshControl={<RefreshControl refreshing={false} onRefresh={() => void refetch()} colors={[colors.accent]} />}
+          refreshControl={<RefreshControl refreshing={isFetching} onRefresh={() => void refetch()} colors={[colors.accent]} />}
         />
       )}
     </View>

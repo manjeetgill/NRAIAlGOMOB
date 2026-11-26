@@ -165,6 +165,9 @@ export interface Provenance {
 export function quoteProvenance(quote: OverviewQuote | null | undefined): Provenance {
   const quality = (quote?.quality ?? "").toLowerCase();
   const date = quote?.priceDate ?? null;
+  // A badge describes the figure beside it. With no figure there is nothing to date, so it must not fall
+  // through to "Today" - which is what a refused read used to print, in green, over an empty price.
+  if (quote?.ltp === null || quote?.ltp === undefined) return { word: "No price", live: false, date };
   const today = date ? isTodayIST(date) : true;
   if (quality === "live" && today) return { word: "Live", live: true, date };
   if (quality === "delayed") return { word: "Delayed", live: false, date };

@@ -11,7 +11,7 @@ import { createApiClient, ApiClient, ApiError } from "./client";
 import { subscribeSSE, type SseSubscription } from "./sse";
 import { quoteStreamCarries } from "./websocket";
 import { Constants } from "../constants";
-import { formatISTDate } from "../utils";
+import { formatISTDate, isAuthError } from "../utils";
 
 /**
  * Stream first, REST as a safety net (owner, 25 Nov 2026: "use websocket and SSE instead of REST").
@@ -263,6 +263,32 @@ export function chartFailureReason(error: unknown, fallback = "The chart could n
   }
   const message = (error as Error | null)?.message;
   return message && !/^HTTP \d{3}/.test(message) ? message : fallback;
+}
+
+/** One sentence, closed by exactly one period, whatever the server already put on the end of it. */
+function closeSentence(text: string): string {
+  return `${text.replace(/\s+/g, " ").trim().replace(/\.+$/, "")}.`;
+}
+
+/**
+ * Why a read was refused, and whether the trader has to sign in again for it.
+ *
+ * Two things the screens got wrong on their own. Prod writes its refusals as finished sentences
+ * ("Sign in required."), and a template that appends its own period printed "Sign in required.." -
+ * so the doubled full stop reads as a bug rather than as the server's words. And a 401 reaches a phone
+ * that *is* signed in: prod expires a session after its own idle window, so a screen left open over lunch
+ * is refused by a session that aged out, not by a wrong password. Naming it a timeout and
+ * offering the sign-in press is the difference between a dead screen and a recoverable one.
+ *
+ * `subject` names the read in plain words, so two refusals on one screen - the ladder and the list of
+ * underlyings - each say what they lost instead of printing the same sentence twice.
+ */
+export function readFailure(error: unknown, fallback: string, subject = "this read"): { text: string; needsSignIn: boolean } {
+  const needsSignIn = isAuthError(error);
+  return {
+    text: closeSentence(needsSignIn ? `Your sign-in timed out, so the server refused ${subject}` : chartFailureReason(error, fallback)),
+    needsSignIn,
+  };
 }
 
 /**

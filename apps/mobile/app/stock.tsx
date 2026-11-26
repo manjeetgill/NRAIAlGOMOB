@@ -14,7 +14,7 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useQuoteFeed } from "@nraialgo/shared/api";
+import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, readFailure, streamId, useQuoteFeed } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
@@ -240,6 +240,10 @@ export default function StockScreen() {
 
   const depth = Math.min(LADDER_ROWS, Math.max(book.bids.length, book.asks.length));
 
+  /** The header states one thing: whether this read has a price. `shown` is the only judge of that. */
+  const price = shown(quote?.ltp);
+  const failure = error ? readFailure(error, "The broker has not priced this stock yet.", "the price of this stock") : null;
+
   return (
     <View style={styles.container}>
       <View style={styles.head}>
@@ -255,15 +259,21 @@ export default function StockScreen() {
           {quote?.name && quote.name.toUpperCase() !== symbol ? <Text style={styles.name}>{quote.name}</Text> : null}
         </View>
         <View style={styles.priceBox}>
-          <Text style={styles.ltp}>{shown(quote?.ltp) ?? "No price"}</Text>
-          <Text style={[styles.change, { color: tone(quote?.change) }]}>{signed(quote?.change)}</Text>
-          <View style={styles.badge}>
-            <View style={[styles.dot, { backgroundColor: provenance.live ? colors.up : colors.amber }]} />
-            <Text style={styles.badgeText}>
-              {provenance.word}
-              {provenance.date && !provenance.live ? ` · ${formatISTDate(provenance.date)}` : ""}
-            </Text>
-          </View>
+          {/* While the first read runs the honest word is that the price has not arrived yet; a refusal
+              already explained below the tabs must not be reprinted here as its own mystery. */}
+          <Text style={styles.ltp}>{price ?? (isLoading && !failure ? "Waiting for price" : "No price")}</Text>
+          {price === null ? null : (
+            <>
+              <Text style={[styles.change, { color: tone(quote?.change) }]}>{signed(quote?.change)}</Text>
+              <View style={styles.badge}>
+                <View style={[styles.dot, { backgroundColor: provenance.live ? colors.up : colors.amber }]} />
+                <Text style={styles.badgeText}>
+                  {provenance.word}
+                  {provenance.date && !provenance.live ? ` · ${formatISTDate(provenance.date)}` : ""}
+                </Text>
+              </View>
+            </>
+          )}
         </View>
       </View>
 
@@ -282,16 +292,26 @@ export default function StockScreen() {
         </TouchableOpacity>
       </View>
 
-      {isLoading && !quote ? (
+      {isLoading && !quote && !failure ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} />
         </View>
-      ) : error && !quote ? (
+      ) : failure && price === null ? (
+        /* The refusal stays on screen while the next poll runs: this query retries on its own, and the
+           spinner used to replace the server's reason every few seconds, so the trader saw a blank that
+           alternated with a sentence and could not tell which one was true. */
         <View style={styles.center}>
-          <Text style={styles.empty}>{error.message}</Text>
-          <TouchableOpacity style={styles.retry} onPress={() => refetch()}>
-            <Text style={styles.retryText}>Tap to try again</Text>
-          </TouchableOpacity>
+          <Text style={styles.empty}>{failure.text}</Text>
+          {failure.needsSignIn ? (
+            <TouchableOpacity style={styles.retry} onPress={() => router.replace("/login")}>
+              <Text style={styles.retryText}>Sign in again</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.retry} onPress={() => void refetch()}>
+              <Text style={styles.retryText}>Tap to try again</Text>
+            </TouchableOpacity>
+          )}
+          {isFetching ? <Text style={styles.meta}>trying the broker again</Text> : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.body}>

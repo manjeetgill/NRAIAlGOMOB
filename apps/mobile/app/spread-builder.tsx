@@ -25,10 +25,11 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
+import { chartPickerSections, ladderUnderlying, queryKeys, readFailure, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -146,6 +147,7 @@ function bookOf(chain: OptionChainData | undefined, strike: string, right: "CE" 
 export default function SpreadBuilderScreen() {
   const { useOptionChain, useOptionChains, useChainUnderlyings, useOrderDestinations, useOptionDrafts, usePlaceOrder, useOrderSnapshot } = useApi();
   const { resolvedTheme } = useTheme();
+  const router = useRouter();
   const { width: screenWidth } = useWindowDimensions();
   const {
     optionChain: { underlying, expiry },
@@ -157,7 +159,9 @@ export default function SpreadBuilderScreen() {
   // read rather than a re-labelled one.
   const [date, setDate] = useState("");
   const focused = useScreenFocused();
-  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry, { enabled: focused && !!underlying });
+  const { data: chain, error: chainError, refetch: refetchChain } = useOptionChain(underlying, date || expiry, { enabled: focused && !!underlying });
+  /** Why the ladder is missing, in one sentence the template can safely continue. */
+  const chainFailure = chainError ? readFailure(chainError, "The option chain could not be read.", "the option chain") : null;
   useEffect(() => {
     setDate("");
   }, [underlying]);
@@ -166,10 +170,14 @@ export default function SpreadBuilderScreen() {
   // the sheet is actually opened - a builder that never switches symbols pays no second prod read.
   const [symbolOpen, setSymbolOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const { data: catalogue, isLoading: catalogueLoading, error: catalogueError } = useChainUnderlyings({
+  const { data: catalogue, isLoading: catalogueLoading, error: catalogueError, refetch: refetchCatalogue } = useChainUnderlyings({
     queryKey: queryKeys.optionChain.underlyings(),
     enabled: symbolOpen,
   });
+  /** The picker's own refusal - the ladder can be fine while the master list is not. */
+  const catalogueFailure = catalogueError
+    ? readFailure(catalogueError, "The list of underlyings could not be read.", "the list of underlyings")
+    : null;
   const sections = useMemo(() => chartPickerSections(catalogue?.underlyings ?? [], search), [catalogue, search]);
 
   const [legs, setLegs] = useState<Leg[]>([]);
@@ -893,10 +901,24 @@ export default function SpreadBuilderScreen() {
           />
           {catalogueLoading ? (
             <Text style={styles.meta}>Reading the list of underlyings with listed options</Text>
-          ) : catalogueError ? (
-            <Text style={styles.note}>
-              {chartFailureReason(catalogueError, "The list of underlyings could not be read.")}
-            </Text>
+          ) : catalogueFailure ? (
+            <View>
+              <Text style={styles.note}>{catalogueFailure.text}</Text>
+              {/* The ladder's own block below carries the press when both reads were refused by the same
+                  aged session; a second button would say the same thing twice. */}
+              {!chainFailure ? (
+                <TouchableOpacity
+                  onPress={() => (catalogueFailure.needsSignIn ? router.replace("/login") : void refetchCatalogue())}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={catalogueFailure.needsSignIn ? "Sign in again" : "Read the list of underlyings again"}
+                >
+                  <Text style={{ fontSize: 14, fontWeight: "600", color: colors.brand }}>
+                    {catalogueFailure.needsSignIn ? "Sign in again" : "Tap to try again"}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
           ) : !sections.length ? (
             <Text style={styles.meta}>{`No listed underlying matches “${search.trim().toUpperCase()}”.`}</Text>
           ) : null}
@@ -941,12 +963,24 @@ export default function SpreadBuilderScreen() {
         {tabs}
         {header}
         <View style={styles.center}>
-          <ActivityIndicator color={colors.brand} />
+          {chainFailure ? null : <ActivityIndicator color={colors.brand} />}
           <Text style={styles.centerText}>
-            {chainError
-              ? `Chain read failed: ${chainError.message}. Pick another symbol to build on.`
+            {chainFailure
+              ? `${chainFailure.text} Pick another symbol to build on.`
               : `Reading ${underlying}`}
           </Text>
+          {chainFailure ? (
+            <TouchableOpacity
+              onPress={() => (chainFailure.needsSignIn ? router.replace("/login") : void refetchChain())}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={chainFailure.needsSignIn ? "Sign in again" : "Read the chain again"}
+            >
+              <Text style={{ fontSize: 14, fontWeight: "600", color: colors.brand }}>
+                {chainFailure.needsSignIn ? "Sign in again" : "Tap to try again"}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
         {picker}
       </ScrollView>

@@ -40,6 +40,7 @@ export {
   chartInstrument,
   chartRequest,
   chartFailureReason,
+  readFailure,
   chartPickerSections,
   type User,
   type BrokerStatus,
