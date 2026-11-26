@@ -32,6 +32,7 @@ import {
   withBookMarks,
   withStreamMarks,
   basketStreamIds,
+  canonicalLegInstrumentId,
   useQuoteFeed,
   type Basket,
   type StrategyAnalysis,
@@ -39,7 +40,6 @@ import {
 import { formatISTTime, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
-import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 
 interface Props {
   /** Hand a basket's legs to the Builder tab, where an adjustment is actually placed. */
@@ -101,7 +101,7 @@ export default function BasketDesk({ onAdjust }: Props) {
   // A position-made leg named by a broker symbol has its canonical id derived when possible.
   useEffect(() => {
     streamedLegs.current = desk.baskets.every((basket) => basket.provider === "paper"
-      || basket.legs.every((leg) => leg.quantity <= 0 || leg.instrumentId.startsWith("instrument:v1:") || streamIds.length > 0))
+      || basket.legs.every((leg) => leg.quantity <= 0 || canonicalLegInstrumentId(leg, basket) !== null))
       ? streamIds
       : null;
   }, [desk.baskets, streamIds]);
@@ -287,18 +287,6 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
   const { width: screenWidth } = useWindowDimensions();
   const expiries = useMemo(() => payoffExpiries(basket), [basket]);
   const chains = useOptionChains(ladderUnderlying(basket), expiries, true);
-  const allChains = useMemo(() => chains.map(c => c.data), [chains]);
-  const payoffChartLegs = useMemo<PayoffChartLeg[]>(() => {
-    return (basket.payoffLegs || []).map(l => ({
-      strike: String(l.strike),
-      right: l.right,
-      side: (l.action === "buy" ? "BUY" : "SELL") as "BUY" | "SELL",
-      lots: l.lots || 1,
-      lotSize: l.lotSize || 1,
-      expiry: l.expiry,
-      entryPrice: l.entryPrice ? Number(l.entryPrice) : undefined,
-    }));
-  }, [basket.payoffLegs]);
   const built = useMemo(() => buildAnalysis(basket, chains.map(read => read.data)), [basket, chains]);
   const analysis = useStrategyAnalysis(built.body);
   const margin = usePlanningMargin(built.margin);
@@ -373,13 +361,18 @@ function OpenBasket({ basket, basis, onBack, onAdjust, styles }: {
         </View>
       </View>
 
-      <PayoffChart
-        underlying={basket.underlying}
-        expiry={basket.expiry || expiries[0]}
-        legs={payoffChartLegs}
-        spot={Number(analysis.data?.spot ?? built.body?.spot ?? basket.spot) || null}
-        chains={allChains}
-        title={basket.name || `${basket.underlying} Basket`}
+      <Payoff
+        basket={basket}
+        built={built}
+        analysis={analysis.data ?? null}
+        loading={chains.some(read => read.isFetching) || (analysis.isPending && !!built.body)}
+        failed={analysis.isError ? analysis.error.message : null}
+        model={model}
+        held={held}
+        figures={figures}
+        margin={marginLine}
+        screenWidth={screenWidth}
+        styles={styles}
       />
 
       <View style={styles.actions}>

@@ -38,8 +38,9 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   const livePrice = liveTick?.fresh && liveTick.price > 0 ? liveTick.price : null;
   const liveAsk = liveTick?.fresh && (liveTick.ask ?? 0) > 0 ? liveTick.ask : null;
   const liveBid = liveTick?.fresh && (liveTick.bid ?? 0) > 0 ? liveTick.bid : null;
-  const ask = fromChain ? config?.book?.ask ?? null : liveAsk ?? quote?.ask ?? null;
-  const bid = fromChain ? config?.book?.bid ?? null : liveBid ?? quote?.bid ?? null;
+  // Live touch first for both routes, so "last" and bid/ask never mix a live tick with a stale book.
+  const ask = liveAsk ?? (fromChain ? config?.book?.ask ?? null : quote?.ask ?? null);
+  const bid = liveBid ?? (fromChain ? config?.book?.bid ?? null : quote?.bid ?? null);
   const askQty = fromChain ? null : (liveTick?.fresh && liveTick.askQty ? liveTick.askQty : quote?.askQuantity);
   const bidQty = fromChain ? null : (liveTick?.fresh && liveTick.bidQty ? liveTick.bidQty : quote?.bidQuantity);
   // The price the press arrived with, kept apart from the editable limit field so "last" never comes

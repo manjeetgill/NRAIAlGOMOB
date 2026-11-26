@@ -630,14 +630,8 @@ export function canonicalLegInstrumentId(leg: BasketLeg, basket?: Basket): strin
   if (leg.instrumentId && leg.instrumentId.startsWith("instrument:v1:")) {
     return leg.instrumentId;
   }
-  // Try matching against payoffLegs which carry canonical instrumentId
-  if (basket?.payoffLegs?.length) {
-    const matched = basket.payoffLegs.find(p => p.instrumentId?.startsWith("instrument:v1:") && (
-      (p.strike && p.right && leg.symbol?.includes(`${p.strike}`) && leg.symbol?.includes(p.right)) ||
-      (p.instrumentId.includes(leg.symbol ?? ""))
-    ));
-    if (matched) return matched.instrumentId;
-  }
+  // Only an exact identity counts: substring matches against other legs (strike "2500" inside "25000",
+  // or an empty symbol matching every id) priced a leg off another contract.
   // Parse order token format: e.g. HINLEV_20261229_2200_PE or NIFTY_20261201_25000_PE
   const sym = (leg.symbol ?? leg.instrumentId ?? "").trim().toUpperCase();
   const parsed = /^([A-Z0-9&-]+)_(\d{8})_([\dP]+)_(CE|PE)$/.exec(sym);

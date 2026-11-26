@@ -387,7 +387,7 @@ export default function SpreadBuilderScreen() {
       if (quote?.instrumentId && quote.instrumentId.startsWith("instrument:v1:")) {
         ids.add(quote.instrumentId);
       } else {
-        const venue = "NSE";
+        const venue = ["SENSEX", "BANKEX"].includes(underlying.toUpperCase()) ? "BSE" : "NSE";
         const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
         ids.add(canonical);
       }
@@ -413,7 +413,7 @@ export default function SpreadBuilderScreen() {
       const t = ticks.get(quote.instrumentId);
       if (t) return t;
     }
-    const venue = "NSE";
+    const venue = ["SENSEX", "BANKEX"].includes(underlying.toUpperCase()) ? "BSE" : "NSE";
     const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
     return ticks.get(canonical);
   };
@@ -422,13 +422,9 @@ export default function SpreadBuilderScreen() {
   const quoteOf = (leg: Leg, side: "BUY" | "SELL") => {
     const liveTick = tickForLeg(leg);
     if (liveTick && liveTick.fresh && liveTick.price > 0) {
-      if (side === "BUY") {
-        if (typeof liveTick.ask === "number" && liveTick.ask > 0) return { price: liveTick.ask, from: "ask" as const };
-        return { price: liveTick.price, from: "ltp" as const };
-      } else {
-        if (typeof liveTick.bid === "number" && liveTick.bid > 0) return { price: liveTick.bid, from: "bid" as const };
-        return { price: liveTick.price, from: "ltp" as const };
-      }
+      // Live touch only; without it the leg keeps the chain's own book rather than the last trade.
+      if (side === "BUY" && typeof liveTick.ask === "number" && liveTick.ask > 0) return { price: liveTick.ask, from: "ask" as const };
+      if (side === "SELL" && typeof liveTick.bid === "number" && liveTick.bid > 0) return { price: liveTick.bid, from: "bid" as const };
     }
     const read = chainOf.get(leg.expiry);
     return read ? legQuote(read, leg.strike, leg.right, side) : null;

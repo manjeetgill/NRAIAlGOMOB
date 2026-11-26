@@ -203,6 +203,7 @@ export {
   withBookMarks,
   withStreamMarks,
   basketStreamIds,
+  canonicalLegInstrumentId,
   expiryKey,
   payoffExpiries,
   ladderUnderlying,
