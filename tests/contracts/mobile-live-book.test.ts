@@ -216,12 +216,31 @@ it("re-measures the day figure off a tick's own close when the stream carries on
   expect(marked.todayPnl).toBeCloseTo((130 - 125) * 65, 2);
 });
 
+it("keeps the day figure when a later frame carries only a price", () => {
+  const [row] = iciciOpenPositions(book([closedRow], []));
+  // Delta frames name the print alone, so the tick arrives with no close: the row's own reference still stands.
+  const [marked] = markPositions([row], [tick(optionId, 130)], { NIFTY26NOV25000CE: "NIFTY" });
+  expect(marked.todayPnl).toBeCloseTo((130 - 110) * 65, 2);
+});
+
+it("carries a session close forward across frames instead of forgetting it on the next tick", () => {
+  const feed = readFileSync(resolve("packages/shared/src/api/websocket.ts"), "utf8");
+  expect(feed).toContain("if (tick.previousClose === null && (seen?.previousClose ?? null) !== null)");
+});
+
+it("says so when nothing carries a figure, rather than summing an empty list to zero", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
+  expect(screen).toContain('"Not available"');
+  expect(screen).toContain("no previous close has arrived for them");
+});
+
 it("sums the book at the top of both tabs, with the row counts that built each figure", () => {
   const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
   expect(screen).toContain("{copyLine(positionCopy)}\n        {totalsCard(positionTotals)}");
   expect(screen).toContain("{copyLine(holdingCopy)}\n        {totalsCard(holdingTotals)}");
-  expect(screen).toContain("rows carry a P&L");
-  expect(screen).toContain("rows carry a day figure");
+  expect(screen).toContain('noun: "P&L"');
+  expect(screen).toContain('noun: "day figure"');
+  expect(screen).toContain("rows carry a {figure.noun}");
   // Below the last row, a total scrolled past the book read as the account's own figure whether or not
   // every row carried one. Both are gone: nothing is summed below the rows now.
   expect(screen).not.toContain("Total Unrealized P&L");
