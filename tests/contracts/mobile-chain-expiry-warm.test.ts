@@ -104,7 +104,7 @@ describe("a painted frame says so", () => {
   });
 
   it("prints the age of the frame the server kept, and whether a read is still coming", () => {
-    expect(screen).toContain("chain.displaySnapshot ?");
+    expect(screen).toContain("chain.displaySnapshot && chain.marketOpen ?");
     expect(screen).toContain("frameAge(chain)");
     expect(screen).toContain('"live chain still loading"');
     expect(screen).toContain('"the live read is not answering"');

@@ -758,8 +758,9 @@ export default function OptionChainScreen() {
 
         {/* The server answers a cold read with the last frame it kept so the ladder appears at once, and while
             that frame is on the screen the session dot beside it says live — so the frame says its own age,
-            and whether a fresh read is still coming underneath it. */}
-        {chain.displaySnapshot ? (
+            and whether a fresh read is still coming underneath it. After the close the server also serves a
+            saved frame, but there nothing is failing and the closed dot already says so, so the note stays off. */}
+        {chain.displaySnapshot && chain.marketOpen ? (
           <Text style={[styles.note, styles.noteWarn]} numberOfLines={2}>
             {`Prices ${frameAge(chain)} · ${chain.refreshing ? "live chain still loading" : "the live read is not answering"}`}
           </Text>
