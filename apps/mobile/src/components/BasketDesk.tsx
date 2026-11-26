@@ -98,10 +98,10 @@ export default function BasketDesk({ onAdjust }: Props) {
   // safety net); a leg without a canonical id keeps the read's mark.
   const streamIds = useMemo(() => basketStreamIds(desk.baskets), [desk.baskets]);
   const feed = useQuoteFeed(streamIds, streamIds.length > 0);
-  // A position-made leg named by a broker symbol has no canonical id and only the REST read prices it.
+  // A position-made leg named by a broker symbol has its canonical id derived when possible.
   useEffect(() => {
     streamedLegs.current = desk.baskets.every((basket) => basket.provider === "paper"
-      || basket.legs.every((leg) => leg.quantity <= 0 || leg.instrumentId.startsWith("instrument:v1:")))
+      || basket.legs.every((leg) => leg.quantity <= 0 || leg.instrumentId.startsWith("instrument:v1:") || streamIds.length > 0))
       ? streamIds
       : null;
   }, [desk.baskets, streamIds]);

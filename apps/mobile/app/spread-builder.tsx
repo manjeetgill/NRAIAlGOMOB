@@ -27,8 +27,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt } from "@nraialgo/shared/api";
-import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument } from "@nraialgo/shared/api";
+import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
@@ -370,8 +370,63 @@ export default function SpreadBuilderScreen() {
   const atTheMoney = useMemo(() => (chain?.rows ?? []).find(row => row.isAtTheMoney)?.strike ?? "", [chain]);
   const lotSize = chain?.lotSize ?? 0;
 
-  /** What one leg would leave at, read off its own date's book. */
+  // Derive streamIds for all staged legs plus spot
+  const legStreamIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (underlying) {
+      const spotId = streamId(underlying);
+      if (spotId) ids.add(spotId);
+    }
+    for (const leg of legs) {
+      const read = chainOf.get(leg.expiry);
+      const row = read?.rows.find(r => r.strike === leg.strike);
+      const quote = leg.right === "CE" ? row?.call : row?.put;
+      if (quote?.instrumentId && quote.instrumentId.startsWith("instrument:v1:")) {
+        ids.add(quote.instrumentId);
+      } else {
+        const venue = "NSE";
+        const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
+        ids.add(canonical);
+      }
+    }
+    return [...ids].sort();
+  }, [legs, chainOf, underlying]);
+
+  const feed = useQuoteFeed(legStreamIds, legStreamIds.length > 0);
+  const [ticks, setTicks] = useState<Map<string, QuoteTick>>(() => new Map());
+  useEffect(() => {
+    if (feed.quotes.length > 0) {
+      setTicks(current => tickByInstrument(feed.quotes, current));
+    }
+  }, [feed.quotes]);
+
+  /** Helper to find a live tick for a given leg */
+  const tickForLeg = (leg: Leg): QuoteTick | undefined => {
+    if (!feed.connected) return undefined;
+    const read = chainOf.get(leg.expiry);
+    const row = read?.rows.find(r => r.strike === leg.strike);
+    const quote = leg.right === "CE" ? row?.call : row?.put;
+    if (quote?.instrumentId) {
+      const t = ticks.get(quote.instrumentId);
+      if (t) return t;
+    }
+    const venue = "NSE";
+    const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
+    return ticks.get(canonical);
+  };
+
+  /** What one leg would leave at, read off its own date's book or live tick. */
   const quoteOf = (leg: Leg, side: "BUY" | "SELL") => {
+    const liveTick = tickForLeg(leg);
+    if (liveTick && liveTick.fresh && liveTick.price > 0) {
+      if (side === "BUY") {
+        if (typeof liveTick.ask === "number" && liveTick.ask > 0) return { price: liveTick.ask, from: "ask" as const };
+        return { price: liveTick.price, from: "ltp" as const };
+      } else {
+        if (typeof liveTick.bid === "number" && liveTick.bid > 0) return { price: liveTick.bid, from: "bid" as const };
+        return { price: liveTick.price, from: "ltp" as const };
+      }
+    }
     const read = chainOf.get(leg.expiry);
     return read ? legQuote(read, leg.strike, leg.right, side) : null;
   };
@@ -550,7 +605,10 @@ export default function SpreadBuilderScreen() {
   // never disagree. No legs is a true flat line at zero; an unpriced leg is an unknown, and the curve
   // stops rather than drawing the payoff of a basket the trader did not stage.
   const unpricedLeg = priced.find(item => item.premium === null)?.leg ?? null;
-  const spotNow = chain ? amount(chain.spot.price) : null;
+  const spotTick = underlying ? ticks.get(streamId(underlying) ?? "") : undefined;
+  const spotNow = (spotTick && spotTick.fresh && spotTick.price > 0)
+    ? spotTick.price
+    : chain ? amount(chain.spot.price) : null;
   // A leg with no lot size has no quantity, and a zero-quantity wing draws a payoff the trader does not
   // have - the curve stops and says which leg instead.
   const sizeless = priced.find(item => item.qty <= 0)?.leg ?? null;
@@ -1020,7 +1078,13 @@ export default function SpreadBuilderScreen() {
         const left = heldLots - going;
         const size = sizeOf(leg);
         const read = chainOf.get(leg.expiry);
-        const twoSided = bookOf(read, leg.strike, leg.right);
+        const liveTick = tickForLeg(leg);
+        const staticBook = bookOf(read, leg.strike, leg.right);
+        const twoSided = {
+          bid: (liveTick && typeof liveTick.bid === "number" && liveTick.bid > 0) ? liveTick.bid : staticBook.bid,
+          ask: (liveTick && typeof liveTick.ask === "number" && liveTick.ask > 0) ? liveTick.ask : staticBook.ask,
+          listed: staticBook.listed || !!liveTick,
+        };
         const price = (value: number | null) => (value === null ? "none" : formatNumber(value, 2));
         return (
           <View key={leg.id} style={[styles.leg, leg.held && { borderColor: closingNow ? colors.warn : colors.brand }]}>
