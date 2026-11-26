@@ -66,7 +66,8 @@ export default function StockScreen() {
       ltp,
       change,
       changePct,
-      quality: "live",
+      // Live only when the tick itself priced the row; otherwise it is the REST quote under a live book.
+      quality: liveTick.price > 0 ? "live" : rawQuote.quality,
       bid: hasLiveBidAsk ? liveTick.bid ?? rawQuote.bid : rawQuote.bid,
       ask: hasLiveBidAsk ? liveTick.ask ?? rawQuote.ask : rawQuote.ask,
       bidQuantity: hasLiveBidAsk ? liveTick.bidQty ?? rawQuote.bidQuantity : rawQuote.bidQuantity,

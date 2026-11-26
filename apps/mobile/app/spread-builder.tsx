@@ -27,7 +27,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, ladderUnderlying, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -373,6 +373,9 @@ export default function SpreadBuilderScreen() {
   const atTheMoney = useMemo(() => (chain?.rows ?? []).find(row => row.isAtTheMoney)?.strike ?? "", [chain]);
   const lotSize = chain?.lotSize ?? 0;
 
+  // A leg the chain gave no id: built through the shared normalisers, or not subscribed at all.
+  const derivedLegId = (leg: Leg) => optionStreamId(["SENSEX", "BANKEX"].includes(underlying.toUpperCase()) ? "BSE" : "NSE",
+    underlying, leg.expiry, leg.strike, leg.right);
   // Derive streamIds for all staged legs plus spot
   const legStreamIds = useMemo(() => {
     const ids = new Set<string>();
@@ -387,9 +390,8 @@ export default function SpreadBuilderScreen() {
       if (quote?.instrumentId && quote.instrumentId.startsWith("instrument:v1:")) {
         ids.add(quote.instrumentId);
       } else {
-        const venue = ["SENSEX", "BANKEX"].includes(underlying.toUpperCase()) ? "BSE" : "NSE";
-        const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
-        ids.add(canonical);
+        const canonical = derivedLegId(leg);
+        if (canonical) ids.add(canonical);
       }
     }
     return [...ids].sort();
@@ -413,9 +415,8 @@ export default function SpreadBuilderScreen() {
       const t = ticks.get(quote.instrumentId);
       if (t) return t;
     }
-    const venue = ["SENSEX", "BANKEX"].includes(underlying.toUpperCase()) ? "BSE" : "NSE";
-    const canonical = `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(leg.expiry)}:${encodeURIComponent(leg.strike)}:${leg.right}`;
-    return ticks.get(canonical);
+    const canonical = derivedLegId(leg);
+    return canonical ? ticks.get(canonical) : undefined;
   };
 
   /** What one leg would leave at, read off its own date's book or live tick. */
@@ -605,7 +606,8 @@ export default function SpreadBuilderScreen() {
   // stops rather than drawing the payoff of a basket the trader did not stage.
   const unpricedLeg = priced.find(item => item.premium === null)?.leg ?? null;
   const spotTick = underlying ? ticks.get(streamId(underlying) ?? "") : undefined;
-  const spotNow = (spotTick && spotTick.fresh && spotTick.price > 0)
+  // Same gate as tickForLeg: a tick kept from a dropped socket is not a live spot.
+  const spotNow = (feed.connected && spotTick && spotTick.fresh && spotTick.price > 0)
     ? spotTick.price
     : chain ? amount(chain.spot.price) : null;
   // A leg with no lot size has no quantity, and a zero-quantity wing draws a payoff the trader does not

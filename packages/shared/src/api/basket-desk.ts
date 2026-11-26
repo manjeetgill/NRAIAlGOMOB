@@ -11,6 +11,7 @@
 import { QUALITY_WORD, todayIST, type Basket, type BasketLeg, type MarginRequest, type MarginRequestLeg, type OpenPosition, type OptionChainData, type PayoffLeg, type StrategyAnalysisLeg, type StrategyAnalysisRequest } from "./hooks";
 import { formatISTDate, formatISTTime, isTodayIST } from "../utils";
 import type { QuoteTick } from "./websocket";
+import { optionStreamId } from "./account-quotes";
 
 /** Prod's money in rupees arrives as floats on legs and decimal strings on payoff legs and curves. */
 export function rupees(value: number | string | null | undefined, signed = false): string | null {
@@ -641,7 +642,7 @@ export function canonicalLegInstrumentId(leg: BasketLeg, basket?: Basket): strin
     const strike = parsed[3]!.replace("P", ".");
     const right = parsed[4]!;
     const venue = leg.exchange === "BSE" ? "BSE" : "NSE";
-    return `instrument:v1:${venue}:FO:${encodeURIComponent(underlying)}:OPT:${encodeURIComponent(isoDate)}:${encodeURIComponent(strike)}:${right}`;
+    return optionStreamId(venue, underlying, isoDate, strike, right);
   }
   return null;
 }

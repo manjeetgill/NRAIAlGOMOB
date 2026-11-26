@@ -102,6 +102,16 @@ export function streamIdFor(row: RowIdentity, underlying?: string | null): strin
   return `instrument:v1:${venue}:FO:${enc(symbol)}:OPT:${enc(expiry)}:${enc(strike)}:${right}`;
 }
 
+/**
+ * One option's stream id through the same normalisers as streamIdFor (strike via Decimal.normalize,
+ * expiry to an ISO day). The server closes the whole socket (1008) on an id that does not round-trip,
+ * so a hand-built id with "11000.50" or "25000.00" took every screen's prices down.
+ */
+export function optionStreamId(venue: string, underlying: string, expiry: string | null, strike: string | number | null,
+                               right: string | null): string | null {
+  return streamIdFor({ exchange: venue, symbol: underlying, product: "OPT", expiry, strike, right }, underlying);
+}
+
 /** The broker contract codes a book holds that only prod's master can name. */
 export function derivativeCodes(rows: readonly RowIdentity[]): string[] {
   return [...new Set(
