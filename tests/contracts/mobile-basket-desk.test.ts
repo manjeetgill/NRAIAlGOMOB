@@ -739,3 +739,13 @@ it("never borrows another leg's contract by substring when resolving a stream id
   expect(canonicalLegInstrumentId({ instrumentId: "NIFTY_20261201_25000_PE", exchange: "NSE" } as never, basket))
     .toBe("instrument:v1:NSE:FO:NIFTY:OPT:2026-12-01:25000:PE");
 });
+
+it("derives stream ids the server's grammar round-trips (normalised strike, ISO expiry)", async () => {
+  const { canonicalLegInstrumentId } = await import("../../packages/shared/src/api/basket-desk.ts");
+  const { optionStreamId } = await import("../../packages/shared/src/api/account-quotes.ts");
+  // 11000P50 is 11000.50; the server's Decimal.normalize() makes it 11000.5 and rejects any other text.
+  expect(canonicalLegInstrumentId({ instrumentId: "X_20261201_11000P50_CE", exchange: "NSE" } as never))
+    .toBe("instrument:v1:NSE:FO:X:OPT:2026-12-01:11000.5:CE");
+  expect(optionStreamId("NSE", "NIFTY", "2026-12-01", "25000.00", "CE")).toBe("instrument:v1:NSE:FO:NIFTY:OPT:2026-12-01:25000:CE");
+  expect(optionStreamId("NSE", "NIFTY", "", "25000", "CE")).toBeNull();
+});

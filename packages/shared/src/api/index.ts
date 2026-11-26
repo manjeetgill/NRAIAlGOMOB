@@ -185,6 +185,7 @@ export {
 
 export {
   streamIdFor,
+  optionStreamId,
   derivativeCodes,
   markPositions,
   markHoldings,
