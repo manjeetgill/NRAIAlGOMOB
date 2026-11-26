@@ -106,12 +106,13 @@ export function useOrderTicket() {
 
   // Sync changed fields only to avoid 10 redundant Zustand store updates per keystroke
   useEffect(() => {
+    const store = useTradingStore.getState().orderTicket;
     (Object.keys(localState) as Array<keyof OrderTicketState>).forEach((key) => {
-      if (storedTicket[key] !== localState[key]) {
+      if (store[key] !== localState[key]) {
         setOrderTicketField(key, localState[key]);
       }
     });
-  }, [localState, storedTicket, setOrderTicketField]);
+  }, [localState, setOrderTicketField]);
 
   // Open order ticket with config
   const open = useCallback((newConfig: OrderTicketConfig) => {
