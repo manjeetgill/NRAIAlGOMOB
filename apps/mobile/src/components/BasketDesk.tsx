@@ -7,6 +7,10 @@
  * honest source of the T+0 curve, the probability of profit and the greeks, because those need the
  * volatility the exchange prices imply, not a guess made on the phone.
  *
+ * A record the server still calls open, and the broker's own position book no longer holds at all, is a
+ * position that has been exited rather than a basket. It comes off this list - named at the bottom, so the
+ * card that left can be traced - which is the same rule the web desk applies to the same rows.
+ *
  * Nothing here sends an order. A live exit is a broker order, so the desk's job is to make the return and
  * the risk legible enough to decide on, and to hand the legs to the Builder when the trader decides to act.
  */
@@ -20,13 +24,16 @@ import {
   buildAnalysis,
   closedUnits,
   curves,
+  deskList,
   expiryKey,
   heldPayoff,
+  iciciAccountSection,
   ladderUnderlying,
   legValue,
   openLiveBaskets,
   payoffExpiries,
   payoffFigures,
+  queryKeys,
   rupees,
   valueAt,
   withBookMarks,
@@ -39,6 +46,7 @@ import {
 } from "@nraialgo/shared/api";
 import { formatISTTime, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { useTheme } from "@/components/ThemeProvider";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 
@@ -81,20 +89,35 @@ function calibration(analysis: StrategyAnalysis | null): string | null {
 }
 
 export default function BasketDesk({ onAdjust }: Props) {
-  const { useBaskets, useOpenPositions } = useApi();
+  const { useBaskets, useOpenPositions, useIciciAccount } = useApi();
   // The legs this desk ticks from the socket, set below; the /v1/baskets read slows down only while
   // every open live leg is one the socket carries and is ticking (see quoteStreamCarries).
   const streamedLegs = useRef<readonly string[] | null>(null);
   const { data, isLoading, isError, error, refetch, isFetching, dataUpdatedAt } = useBaskets(undefined, undefined, () => streamedLegs.current);
   // The same book the Positions tab shows, on the same query key so the two screens share one read.
   // /v1/baskets leaves an order or manual basket's legs unpriced and the web desk repairs that in the
-  // browser, so the phone joins the book for the whole list. It polls prod's cached account snapshot, not
-  // the broker, which is also what keeps these figures moving during the session.
-  const positions = useOpenPositions();
+  // browser, so the phone joins the book for the whole list.
+  //
+  // Two reads of the one cached account snapshot, exactly as the Positions tab does it: the rows come from
+  // the mapped open-positions cache, and the response behind them is read for its state, because only a
+  // position book that actually answered can prove a basket is flat. `useIciciAccount` refreshes the
+  // cached rows, so the positions query is told not to run the same poll a second time.
+  const positions = useOpenPositions({ refetchInterval: false });
+  // A hidden screen stops polling (see useScreenFocused); the account SSE keeps the cache current.
+  const focused = useScreenFocused();
+  const { data: account } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused, gcTime: Infinity });
   const [openId, setOpenId] = useState<string | null>(null);
   const { resolvedTheme } = useTheme();
 
-  const desk = useMemo(() => withBookMarks(openLiveBaskets(data?.baskets ?? []), positions.data ?? []), [data, positions.data]);
+  // What the desk lists, in the order the trader reads it: the rows the broker's book still backs, newest
+  // first, and the ones it does not - kept in `emptied` so a card that vanishes says so rather than
+  // silently leaving the list.
+  const desk = useMemo(() => {
+    const state = iciciAccountSection(account, "portfoliopositions");
+    const answered = state.kind === "ready" || state.kind === "stale" || state.kind === "degraded";
+    const { listed, emptied } = deskList(openLiveBaskets(data?.baskets ?? []), positions.data ?? [], answered);
+    return { ...withBookMarks(listed, positions.data ?? []), emptied };
+  }, [data, positions.data, account]);
   // Open legs tick from the live price socket between /v1/baskets reads (stream first, REST as the
   // safety net); a leg without a canonical id keeps the read's mark.
   const streamIds = useMemo(() => basketStreamIds(desk.baskets), [desk.baskets]);
@@ -113,6 +136,15 @@ export default function BasketDesk({ onAdjust }: Props) {
   const open = baskets.find(basket => basket.id === openId) ?? null;
 
   const styles = useMemo(() => sheet(resolvedTheme), [resolvedTheme]);
+
+  // Which cards left the list, named. A count alone would have the trader hunting for the basket that
+  // simply stopped being drawn; the names say exactly what the broker's book no longer holds.
+  const emptiedWord = useMemo(() => {
+    if (!desk.emptied.length) return "";
+    const names = desk.emptied.slice(0, 2).map(basket => basket.name || basket.underlying || "untitled").join(", ");
+    const rest = desk.emptied.length - Math.min(2, desk.emptied.length);
+    return `${names}${rest > 0 ? ` +${rest} more` : ""}`;
+  }, [desk.emptied]);
 
   if (isError) {
     return (
@@ -157,12 +189,18 @@ export default function BasketDesk({ onAdjust }: Props) {
         </TouchableOpacity>
       </View>
       <Aggregate baskets={baskets} marked={desk.marked} bookFailed={positions.isError ? positions.error.message : null} styles={styles} />
+      {emptiedWord ? (
+        <Text style={styles.basis}>
+          {`${desk.emptied.length} basket${desk.emptied.length === 1 ? "" : "s"} left this list because ICICI's open positions hold none of their legs any more: ${emptiedWord}.`}
+        </Text>
+      ) : null}
       {!baskets.length ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No live baskets</Text>
           <Text style={styles.emptyBody}>
-            A basket appears here once an order ticket carries a basket name, or a live algo run is holding
-            legs. Paper baskets are not listed on the phone.
+            {desk.emptied.length
+              ? "Every basket this app recorded has been exited at the broker, so the desk is empty. A basket appears here again once an order ticket carries a basket name or a live algo run is holding legs."
+              : "A basket appears here once an order ticket carries a basket name, or a live algo run is holding legs. Paper baskets are not listed on the phone."}
           </Text>
         </View>
       ) : null}
