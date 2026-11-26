@@ -105,7 +105,6 @@ const POSITION_COLUMNS: SortColumn<PositionRow>[] = [
   { key: "entry", label: "Entry ₹", width: 58, numeric: true, value: (row) => row.entryPrice },
   { key: "current", label: "Current price ₹", width: 62, numeric: true, value: (row) => row.markPrice },
   { key: "unrealized", label: "P&L ₹", width: 54, numeric: true, value: (row) => row.unrealizedPnl },
-  { key: "today", label: "Today ₹", width: 50, numeric: true, value: (row) => row.todayPnl },
   { key: "pnlPercent", label: "P&L %", width: 52, numeric: true, value: pnlPercent },
 ];
 
@@ -336,8 +335,6 @@ export default function PortfolioScreen() {
         };
       case "unrealized":
         return { text: item.unrealizedPnl === null ? "" : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
-      case "today":
-        return { text: item.todayPnl === null ? "" : sumText(item.todayPnl), style: pnlStyle(item.todayPnl) };
       case "pnlPercent": {
         const percent = pnlPercent(item);
         return { text: percent === null ? "" : formatPercent(percent), style: pnlStyle(percent) };
