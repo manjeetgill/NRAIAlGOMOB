@@ -16,6 +16,24 @@ import { KLINECHARTS_LIB } from "./klinecharts_lib";
 import type { Candle } from "@nraialgo/shared/api";
 import type { ChartMarker, ChartOverlay, ChartPane } from "@/utils/scan-chart";
 
+/**
+ * One study the trader switched on. `pane: "candle"` stacks it over the candles; any other value is
+ * used as the pane id, so each pane-bound study gets a lane of its own that can be dragged taller.
+ */
+export interface ChartStudy {
+  key: string;
+  /** A name the bundled library knows, or "ATR", which this file registers. */
+  name: string;
+  pane: "candle" | string;
+  calcParams?: number[];
+}
+
+/** A drawing tool armed from the screen. `nonce` lets the same tool be pressed twice in a row. */
+export interface ChartDraw {
+  name: string | null;
+  nonce: number;
+}
+
 interface KLineChartProps {
   data: Candle[];
   height?: number;
@@ -28,15 +46,17 @@ interface KLineChartProps {
   overlays?: ChartOverlay[];
   markers?: ChartMarker[];
   panes?: ChartPane[];
-  /** The scanner supplies its own volume pane, so it asks for the plain candle pane instead. */
-  defaultIndicators?: boolean;
+  /** The trader's indicators. An empty list is a plain candle chart, which is what the desk opens with. */
+  studies?: ChartStudy[];
+  /** `name: null` erases every line drawn from the screen. */
+  draw?: ChartDraw | null;
 }
 
 type ChartMessage =
   | { type: "ready" }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, defaultIndicators = true }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
@@ -100,7 +120,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
                   grid: { show: true, horizontal: { color: colors.grid }, vertical: { color: colors.grid } },
                   candle: {
                     tooltip: {
-                      title: { show: ${symbol ? "true" : "false"}, template: "{ticker}" },
+                      title: { show: false, template: "{ticker}" },
                     },
                     priceMark: { high: { color: colors.up }, low: { color: colors.down }, last: { color: colors.text } },
                     bar: { upColor: colors.up, downColor: colors.down, noChangeColor: colors.text },
@@ -113,16 +133,42 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
                 toolbar: { visible: 'always' },
               });
 
-              if (typeof chart.setSymbol === 'function' && ${JSON.stringify(symbol)}) {
-                chart.setSymbol({ ticker: ${JSON.stringify(symbol)} });
-              }
+              registerAtr();
+              paintSymbol();
+              if (pendingStudies) applyStudies(pendingStudies);
 
-              ${defaultIndicators ? `chart.createIndicator('MA', false, { id: 'candle_pane' });
-              chart.createIndicator('VOL', true, { id: 'indicator_pane' });` : ''}
-              
               window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
             } catch (e) {
               showError('Init error: ' + e.message);
+            }
+          }
+
+          // The ticker arrives as a message rather than as part of the page, because rebuilding the page means
+          // re-parsing the chart library — which is what made switching symbols take seconds. Switching means
+          // the old instrument's marks are gone: its drawn lines and its bars, not just its name.
+          let pendingSymbol = '';
+
+          function requestSymbol(ticker) {
+            pendingSymbol = ticker || '';
+            if (chart) paintSymbol();
+          }
+
+          function paintSymbol() {
+            if (!chart) return;
+            lastDataKey = null;
+            try { chart.removeOverlay({ groupId: 'user' }); } catch (e) {}
+            try {
+              if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
+                chart._chartStore._addData([], 'init');
+              }
+            } catch (e) {
+              console.error('Clear error:', e);
+            }
+            try {
+              if (typeof chart.setSymbol === 'function') chart.setSymbol({ ticker: pendingSymbol });
+              chart.setStyles({ candle: { tooltip: { title: { show: !!pendingSymbol } } } });
+            } catch (e) {
+              console.error('Symbol error:', e);
             }
           }
 
@@ -131,6 +177,104 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
             try { chart.removeOverlay({ groupId: 'scan' }); } catch (e) {}
             scanPanes.forEach(function (id) { try { chart.removeIndicator({ id: id }); } catch (e) {} });
             scanPanes = [];
+          }
+
+          // The bundled build has no ATR, so it is registered here as true range smoothed Wilder-style over
+          // the period, which is the ATR every desk prints.
+          let atrRegistered = false;
+          function registerAtr() {
+            if (atrRegistered || typeof klinecharts === 'undefined' || typeof klinecharts.registerIndicator !== 'function') return;
+            atrRegistered = true;
+            try {
+              klinecharts.registerIndicator({
+                name: 'ATR',
+                shortName: 'ATR',
+                series: 'price',
+                precision: 2,
+                calcParams: [14],
+                figures: [{ key: 'atr', title: 'ATR: ', type: 'line' }],
+                calc: function (list, indicator) {
+                  const period = Math.max(1, (indicator.calcParams && indicator.calcParams[0]) || 14);
+                  let seeded = 0;
+                  let previousATR = 0;
+                  let previousClose = null;
+                  return list.map(function (bar, index) {
+                    const row = {};
+                    let range = bar.high - bar.low;
+                    if (previousClose !== null) {
+                      const up = Math.abs(bar.high - previousClose);
+                      const down = Math.abs(bar.low - previousClose);
+                      if (up > range) range = up;
+                      if (down > range) range = down;
+                    }
+                    previousClose = bar.close;
+                    if (index < period - 1) { seeded += range; return row; }
+                    if (index === period - 1) {
+                      seeded += range;
+                      previousATR = seeded / period;
+                    } else {
+                      previousATR = (previousATR * (period - 1) + range) / period;
+                    }
+                    row.atr = previousATR;
+                    return row;
+                  });
+                }
+              });
+            } catch (e) {
+              console.error('ATR registration error:', e);
+            }
+          }
+
+          let studyIds = [];
+          let pendingStudies = null;
+
+          function clearStudies() {
+            studyIds.forEach(function (id) { try { chart.removeIndicator({ id: id }); } catch (e) {} });
+            studyIds = [];
+          }
+
+          // Rebuilt whole rather than diffed: the set is a handful of entries and the order the screen
+          // lists them in is the order the panes should stack.
+          function applyStudies(studies) {
+            pendingStudies = studies || [];
+            if (!chart) return;
+            clearStudies();
+            pendingStudies.forEach(function (study) {
+              try {
+                const paneId = study.pane === 'candle' ? 'candle_pane' : 'pane_' + study.key;
+                const spec = { name: study.name, id: 'ind_' + study.key, paneId: paneId };
+                if (study.calcParams && study.calcParams.length) spec.calcParams = study.calcParams;
+                const created = chart.createIndicator(spec, true);
+                if (created) {
+                  studyIds.push(created);
+                  if (paneId !== 'candle_pane') {
+                    try { chart.setPaneOptions({ id: paneId, height: 72, minHeight: 56, dragEnabled: true }); } catch (e) {}
+                  }
+                }
+              } catch (e) {
+                console.error('Study error:', e);
+              }
+            });
+          }
+
+          function applyDraw(request) {
+            if (!chart) return;
+            try {
+              // A tool picked while a line is still waiting for its next point would otherwise strand a
+              // half-drawn overlay nobody asked for.
+              (chart.getOverlays({ groupId: 'user' }) || []).forEach(function (overlay) {
+                if (typeof overlay.isDrawing === 'function' && overlay.isDrawing()) {
+                  try { chart.removeOverlay({ id: overlay.id }); } catch (e) {}
+                }
+              });
+            } catch (e) {}
+            if (!request || !request.name) {
+              try { chart.removeOverlay({ groupId: 'user' }); } catch (e) {}
+              return;
+            }
+            try { chart.createOverlay({ name: request.name, groupId: 'user' }); } catch (e) {
+              console.error('Draw error:', e);
+            }
           }
 
           // A WebView cannot be handed a calc function, so a scan's studies arrive as timestamp tables and
@@ -253,9 +397,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               const rawData = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
               const message = JSON.parse(rawData);
               if (message.type === 'init') initChart();
+              else if (message.type === 'symbol') requestSymbol(message.ticker);
               else if (message.type === 'update') updateData(message.data);
               else if (message.type === 'patch') patchBar(message.bar);
               else if (message.type === 'scan') applyScan(message.scan);
+              else if (message.type === 'studies') applyStudies(message.studies);
+              else if (message.type === 'draw') applyDraw(message);
             } catch (e) { 
               console.error('Message error:', e);
             }
@@ -274,9 +421,33 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
       </body>
       </html>
     `;
-  }, [resolvedTheme, symbol, defaultIndicators]);
+  }, [resolvedTheme]);
 
   const prevLastRef = useRef<{ timestamp: number; close: number; len: number } | null>(null);
+
+  // A theme change rebuilds the page, and the new page knows nothing the old one was sent. Forget what was
+  // posted and wait for its "ready", so the ticker, studies and scan are sent again instead of skipped. A drawing
+  // tool is not re-armed: the reload took its lines with it.
+  useEffect(() => {
+    isReady.current = false;
+    prevLastRef.current = null;
+    postedSymbolRef.current = null;
+    postedScanRef.current = null;
+    postedStudiesRef.current = null;
+  }, [chartHtml]);
+
+  // The ticker is a message, not part of the page: see the chart's own paintSymbol(). Once the canvas exists
+  // a switch costs a post, not a re-parse of the library.
+  const symbolPayload = useMemo(() => JSON.stringify({ type: "symbol", ticker: symbol }), [symbol]);
+  const postedSymbolRef = useRef<string | null>(null);
+  const postSymbol = useCallback(() => {
+    if (!isReady.current || !webViewRef.current || postedSymbolRef.current === symbolPayload) return;
+    postedSymbolRef.current = symbolPayload;
+    // The canvas is empty now, so the shortcut that sends one bar when only the forming close moved has to
+    // be dropped — otherwise the new instrument's candles would never be sent.
+    prevLastRef.current = null;
+    webViewRef.current.postMessage(symbolPayload);
+  }, [symbolPayload]);
 
   // One string per study set: an identical refetch of the same scan must not redraw every level.
   const scanPayload = useMemo(
@@ -290,6 +461,23 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     webViewRef.current.postMessage(scanPayload);
   }, [scanPayload]);
 
+  // Studies and drawings change on a tap, not on a poll, so each is posted once per distinct request.
+  const studiesPayload = useMemo(() => JSON.stringify({ type: "studies", studies: studies ?? [] }), [studies]);
+  const postedStudiesRef = useRef<string | null>(null);
+  const postStudies = useCallback(() => {
+    if (!isReady.current || !webViewRef.current || postedStudiesRef.current === studiesPayload) return;
+    postedStudiesRef.current = studiesPayload;
+    webViewRef.current.postMessage(studiesPayload);
+  }, [studiesPayload]);
+
+  const drawPayload = useMemo(() => (draw ? JSON.stringify({ type: "draw", name: draw.name, nonce: draw.nonce }) : null), [draw]);
+  const postedDrawRef = useRef<string | null>(null);
+  const postDraw = useCallback(() => {
+    if (!drawPayload || !isReady.current || !webViewRef.current || postedDrawRef.current === drawPayload) return;
+    postedDrawRef.current = drawPayload;
+    webViewRef.current.postMessage(drawPayload);
+  }, [drawPayload]);
+
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const message: ChartMessage = JSON.parse(event.nativeEvent.data);
@@ -297,6 +485,8 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
         isReady.current = true;
         setLoading(false);
         setError(null);
+        // Ticker first: it wipes the canvas, and the candles sent below are the ones meant to be on it.
+        postSymbol();
         // Send data to chart
         if (webViewRef.current && data.length > 0) {
           const last = data[data.length - 1];
@@ -304,6 +494,8 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
           webViewRef.current.postMessage(JSON.stringify({ type: "update", data }));
         }
         postScan();
+        postStudies();
+        postDraw();
       } else if (message.type === "error") {
         setError(message.message);
         setLoading(false);
@@ -311,7 +503,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     } catch (e) {
       console.error("Chart message error:", e);
     }
-  }, [data, postScan]);
+  }, [data, postSymbol, postScan, postStudies, postDraw]);
+
+  // Declared before the data effect so a switch that lands both in one commit clears the canvas first.
+  useEffect(() => {
+    postSymbol();
+  }, [postSymbol]);
 
   useEffect(() => {
     if (!isReady.current || !webViewRef.current || !data.length) return;
@@ -331,6 +528,14 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
   useEffect(() => {
     postScan();
   }, [postScan]);
+
+  useEffect(() => {
+    postStudies();
+  }, [postStudies]);
+
+  useEffect(() => {
+    postDraw();
+  }, [postDraw]);
 
   return (
     <View style={[styles.container, { height }]}>

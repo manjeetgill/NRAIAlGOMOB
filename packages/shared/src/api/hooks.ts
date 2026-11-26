@@ -182,7 +182,8 @@ export const queryKeys = {
 
   // Terminal
   terminal: {
-    chart: (symbol: string, interval: string) => ["terminal", "chart", symbol, interval] as const,
+    /** `day` is part of the key, so two sessions of one symbol are two caches rather than one chart that flips. */
+    chart: (symbol: string, interval: string, day: string | null = null) => ["terminal", "chart", symbol, interval, day] as const,
   },
 
   // History
@@ -246,11 +247,20 @@ export function chartInstrument(name: string): string {
  * Daily and weekly candles live on the history route; minutes and hours on the intraday route.
  * Asking either one for the other's interval is a 422, which is why a chart can fail without the
  * symbol being wrong.
+ *
+ * `day` picks one recorded session out of the intraday archive. Without it the route answers for the newest
+ * day it holds, which is how a chart that has past sessions on the server showed only today. Daily candles
+ * ignore it: the history route returns the whole stored series, so there is no session to choose.
  */
-export function chartRequest(instrument: string, interval: string): { path: string; params: { instrument: string; interval: string } } {
+export function chartRequest(
+  instrument: string,
+  interval: string,
+  day?: string | null,
+): { path: string; params: { instrument: string; interval: string; day?: string } } {
+  const daily = DAILY_INTERVALS.has(interval);
   return {
-    path: DAILY_INTERVALS.has(interval) ? "/v1/charts/history" : "/v1/charts/intraday",
-    params: { instrument, interval },
+    path: daily ? "/v1/charts/history" : "/v1/charts/intraday",
+    params: { instrument, interval, ...(day && !daily ? { day } : {}) },
   };
 }
 
@@ -1168,12 +1178,20 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   // ===== TERMINAL =====
-  /** Candles for one chart key at one interval. `name` may be a bare symbol; it is prefixed for the route. */
-  const useTerminalChart = (name: string, interval: string, options?: Omit<UseQueryOptions<ChartData, ApiError>, "queryKey" | "queryFn">) => {
+  /**
+   * Candles for one chart key at one interval. `name` may be a bare symbol; it is prefixed for the route.
+   * `day` is a recorded session of the intraday route — see chartRequest.
+   */
+  const useTerminalChart = (
+    name: string,
+    interval: string,
+    options?: Omit<UseQueryOptions<ChartData, ApiError>, "queryKey" | "queryFn">,
+    day?: string | null,
+  ) => {
     const instrument = chartInstrument(name);
-    const request = chartRequest(instrument, interval);
+    const request = chartRequest(instrument, interval, day);
     return useQuery({
-      queryKey: queryKeys.terminal.chart(instrument, interval),
+      queryKey: queryKeys.terminal.chart(instrument, interval, day ?? null),
       queryFn: () => client.get<ChartData>(request.path, { params: request.params }),
       enabled: !!instrument && !!interval,
       staleTime: DAILY_INTERVALS.has(interval) ? 10 * 60 * 1000 : 30 * 1000,
@@ -2516,6 +2534,10 @@ export interface ChartData {
   /** True when the record came from the live session rather than a stored archive. */
   live?: boolean;
   asOf?: string | null;
+  /** The session the intraday route read. A past day is served from the recorded archive, not the broker. */
+  day?: string | null;
+  /** Every session the server holds candles for, newest first. The intraday route's own list. */
+  availableDays?: string[];
 }
 
 export interface Candle {

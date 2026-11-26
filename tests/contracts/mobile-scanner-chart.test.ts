@@ -190,8 +190,9 @@ it("draws the evidence it was served and says what it was not served", () => {
   expect(chart).toContain("scanOverlays(evidence, focusKind || undefined)");
   expect(chart).toContain("scanPanes(evidence, focusKind || undefined)");
   expect(chart).toContain("scanMarkers(evidence)");
-  /** The generic MA/VOL pair belongs to the terminal, not to a chart that names its own studies. */
-  expect(chart).toContain("defaultIndicators={false}");
+  /** Every study on a saved-scan chart is the scan's own: it asks for no switchable set and no drawing tool. */
+  expect(chart).not.toContain("studies={");
+  expect(chart).not.toContain("draw={");
   expect(chart).toContain('"The server holds no candle history for this saved scan, so there is nothing to chart."');
   expect(chart).toContain("The saved scan filed no candles, so the chart has nothing to draw.");
   expect(chart).toContain("the server files only for its owner");
@@ -209,10 +210,41 @@ it("paints a scan's studies over live candles without losing them to the next ti
   expect(webView).toContain("postedScanRef.current === scanPayload");
 });
 
-it("keeps the terminal chart's own default studies working", () => {
-  expect(webView).toContain("defaultIndicators = true");
-  expect(webView).toContain("chart.createIndicator('MA', false, { id: 'candle_pane' })");
+it("starts as plain candles and draws only what the trader switches on", () => {
+  /** Nothing is created at init any more: a chart the trader never configured shows price and nothing else. */
+  expect(webView).not.toContain("chart.createIndicator('MA'");
+  expect(webView).not.toContain("chart.createIndicator('VOL'");
+  expect(webView).toContain("else if (message.type === 'studies') applyStudies(message.studies);");
+  expect(webView).toContain("else if (message.type === 'draw') applyDraw(message);");
+  /** The screen chooses the lane: over the candles, or a pane the study has to itself. */
+  expect(webView).toContain("study.pane === 'candle' ? 'candle_pane' : 'pane_' + study.key");
+  expect(webView).toContain("clearStudies();");
+  /** ATR is not in the bundled library, so it is registered there before anything can ask for it. */
+  expect(webView).toContain("klinecharts.registerIndicator({");
+  expect(webView).toContain("name: 'ATR',");
+  expect(webView).toContain("registerAtr();");
+  /** A line belongs to its own group, and a tool picked mid-line abandons the unfinished one. */
+  expect(webView).toContain("chart.createOverlay({ name: request.name, groupId: 'user' })");
+  expect(webView).toContain("chart.removeOverlay({ groupId: 'user' })");
+  expect(webView).toContain("overlay.isDrawing()");
+  /** Re-arming the same tool is a fresh request, so only a changed set or number is posted. */
+  expect(webView).toContain("postedStudiesRef.current === studiesPayload");
+  expect(webView).toContain("postedDrawRef.current === drawPayload");
+});
+
+it("gives the terminal chart a switchable study set that opens empty", () => {
   const terminal = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
   expect(terminal).toContain("<KLineChart");
-  expect(terminal).not.toContain("defaultIndicators={false}");
+  expect(terminal).toContain('studies={studies} draw={draw}');
+  /** The screen's idea of what it offers starts with no study selected. */
+  expect(terminal).toContain("useState<string[]>([])");
+  expect(terminal).toContain("key: \"ma\"");
+  expect(terminal).toContain("key: \"vol\"");
+  expect(terminal).toContain("key: \"atr\"");
+  /** A trader's set is remembered for the symbol they set it on. */
+  expect(terminal).toContain('const STUDY_STORAGE = "terminal-chart-studies"');
+  expect(terminal).toContain("AsyncStorage.setItem(STUDY_STORAGE");
+  /** Past three panes the candles are unreadable, and the sheet says so rather than silently dropping it. */
+  expect(terminal).toContain("const MAX_PANES = 3");
+  expect(terminal).toContain("panesInUse >= MAX_PANES");
 });

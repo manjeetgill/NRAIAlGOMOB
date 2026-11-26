@@ -32,6 +32,19 @@ it("names the parameter the route declares, never the one the screen holds", () 
   expect(request.params).not.toHaveProperty("symbol");
 });
 
+// The intraday route answers for a session the caller names, and the archive of past NIFTY/BANKNIFTY
+// sessions is only ever read when one is asked for. Without this the screen could never show a day that
+// the server already held.
+it("sends a recorded session to the intraday route and never to the history route", () => {
+  expect(chartRequest("NSE:NIFTY", "5m", "2026-11-20")).toEqual({
+    path: "/v1/charts/intraday",
+    params: { instrument: "NSE:NIFTY", interval: "5m", day: "2026-11-20" },
+  });
+  expect(chartRequest("NSE:NIFTY", "1d", "2026-11-20").params).not.toHaveProperty("day");
+  expect(chartRequest("NSE:NIFTY", "5m", null).params).not.toHaveProperty("day");
+  expect(chartRequest("NSE:NIFTY", "5m").params).not.toHaveProperty("day");
+});
+
 it("prefixes a bare symbol with the exchange that actually lists it", () => {
   expect(chartInstrument("NIFTY")).toBe("NSE:NIFTY");
   expect(chartInstrument("reliance")).toBe("NSE:RELIANCE");
@@ -124,4 +137,38 @@ it("commodity names never appear because the master only lists NSE and BSE deriv
 it("wires the screen through the shared sectioning", () => {
   const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
   expect(screen).toContain("chartPickerSections(allUnderlyings, search)");
+});
+
+// Switching charts used to rebuild the WebView, which re-parses the bundled chart library and is the single
+// slowest thing on this screen. The ticker now travels as a message and the canvas is kept, so a switch is a
+// post plus new bars — and the bars of the chart being replaced are wiped rather than relabelled.
+it("switches charts by message instead of rebuilding the canvas", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  expect(chart).toContain('{ type: "symbol", ticker: symbol }');
+  expect(chart).toContain("else if (message.type === 'symbol') requestSymbol(message.ticker);");
+  expect(chart).toContain("chart._chartStore._addData([], 'init');");
+  expect(chart).toContain("chart.removeOverlay({ groupId: 'user' });");
+  expect(chart).toContain("prevLastRef.current = null;");
+  // The page itself must stop depending on the symbol, or every switch re-parses the library again.
+  expect(chart).not.toContain("${JSON.stringify(symbol)}");
+  expect(chart).toContain("}, [resolvedTheme]);");
+  expect(screen).not.toContain("chartKey");
+  expect(screen).toContain("const [canvasUp, setCanvasUp] = useState(false);");
+  expect(screen).toContain("if (canvasUp) body = chartNode;");
+  expect(screen).toContain("<KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol}");
+});
+
+// A stored session is a different thing from today's chart: the ticks are of another day, and the server's
+// own list is the only honest source of which sessions exist.
+it("charts a recorded session and leaves it alone once chosen", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  expect(screen).toContain('const [day, setDay] = useState<string | null>(null);');
+  expect(screen).toContain("const sessionDay = chartData?.day ?? day;");
+  expect(screen).toContain("key?.[4] === (day ?? null)");
+  expect(screen).toContain("refetchInterval: isDaily || pastPick ? false : 30_000");
+  expect(screen).toContain("focused && !lookingBack");
+  expect(screen).toContain("const availableDays = chartData?.availableDays;");
+  expect(screen).toContain("onPress={() => chooseDay(entry)}");
+  expect(screen).toContain("Today's prices are not drawn on an earlier day.");
 });
