@@ -425,6 +425,17 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
 
   const prevLastRef = useRef<{ timestamp: number; close: number; len: number } | null>(null);
 
+  // A theme change rebuilds the page, and the new page knows nothing the old one was sent. Forget what was
+  // posted and wait for its "ready", so the ticker, studies and scan are sent again instead of skipped. A drawing
+  // tool is not re-armed: the reload took its lines with it.
+  useEffect(() => {
+    isReady.current = false;
+    prevLastRef.current = null;
+    postedSymbolRef.current = null;
+    postedScanRef.current = null;
+    postedStudiesRef.current = null;
+  }, [chartHtml]);
+
   // The ticker is a message, not part of the page: see the chart's own paintSymbol(). Once the canvas exists
   // a switch costs a post, not a re-parse of the library.
   const symbolPayload = useMemo(() => JSON.stringify({ type: "symbol", ticker: symbol }), [symbol]);
