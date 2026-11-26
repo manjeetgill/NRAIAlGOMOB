@@ -132,23 +132,63 @@ export interface Marked {
   live: boolean;
 }
 
-/** Positions with the stream's prices marked in; P&L is recomputed only where a broker cost exists to mark against. */
-export function markPositions<T extends RowIdentity & { side: string; quantity: number; entryPrice: number | null; markPrice: number | null; unrealizedPnl: number | null }>(
+/**
+ * The P&L one price implies against another, signed by the side the broker reported.
+ *
+ * Prod marks a position the same way - `services/account_valuation.py` `mark_icici_position`, and the web desk's
+ * `calculateDailyMtm` - because the broker reports no P&L on most position rows: all 29 rows of the live book on
+ * 2026-11-26 arrived with `marked_pnl_paise` absent. Either price missing or zero leaves the row unmarked rather
+ * than guessed, and a side the broker did not call a buy or a sell has no direction to sign it with.
+ */
+function pnlBetween(row: { side: string; quantity: number }, from: number | null | undefined, to: number | null): number | null {
+  const direction = row.side === "BUY" ? 1 : row.side === "SELL" ? -1 : null;
+  if (direction === null || typeof from !== "number" || from <= 0 || typeof to !== "number" || to <= 0) return null;
+  return Math.round((to - from) * row.quantity * direction * 100) / 100;
+}
+
+/** A position row with both figures the book is read for. */
+export interface MarkedPosition extends Marked {
+  /**
+   * The move from the session's previous close to the price on screen.
+   *
+   * This endpoint lists no intraday quantity, so unlike the web desk a mobile row cannot be split into the part
+   * opened today at its own average and the part that predates the session. Every day figure here is the whole
+   * position measured from the previous close, so a contract bought today reads as if it had been held since
+   * yesterday.
+   */
+  todayPnl: number | null;
+}
+
+/**
+ * Positions with the stream's prices marked in.
+ *
+ * A row that has not ticked keeps the broker's own mark and is still drawn as not live, but it is no longer left
+ * without a figure: the screen's totals add only rows that carry one, so a blank dropped that position from the
+ * account's own total.
+ */
+export function markPositions<T extends RowIdentity & { side: string; quantity: number; entryPrice: number | null; markPrice: number | null; unrealizedPnl: number | null; previousClose?: number | null }>(
   rows: readonly T[],
   quotes: readonly QuoteTick[],
   underlyings: Readonly<Record<string, string>> = {},
-): (T & Marked)[] {
+): (T & MarkedPosition)[] {
   const ticks = byId(quotes);
   return rows.map((row) => {
     const id = streamIdFor(row, underlyings[row.symbol.trim().toUpperCase()] ?? null);
-    const price = id ? usable(ticks.get(id)) : null;
-    if (price === null) return { ...row, live: false };
+    const hit = id ? ticks.get(id) : undefined;
+    const price = id ? usable(hit) : null;
+    if (price === null) {
+      return {
+        ...row,
+        live: false,
+        unrealizedPnl: row.unrealizedPnl ?? pnlBetween(row, row.entryPrice, row.markPrice),
+        todayPnl: pnlBetween(row, row.previousClose, row.markPrice),
+      };
+    }
     return {
       ...row,
       markPrice: price,
-      unrealizedPnl: typeof row.entryPrice === "number"
-        ? (price - row.entryPrice) * row.quantity * (row.side === "BUY" ? 1 : -1)
-        : row.unrealizedPnl,
+      unrealizedPnl: pnlBetween(row, row.entryPrice, price) ?? row.unrealizedPnl,
+      todayPnl: pnlBetween(row, hit?.previousClose ?? row.previousClose, price),
       live: true,
     };
   });

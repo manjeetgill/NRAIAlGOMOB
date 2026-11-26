@@ -1460,6 +1460,9 @@ export interface OpenPosition {
   entryPrice: number | null;
   markPrice: number | null;
   unrealizedPnl: number | null;
+  // The session's opening reference, sent beside the mark. A day figure is only ever measured from it, so a row
+  // without one has no day figure rather than one measured from the entry price.
+  previousClose: number | null;
   broker: string;
   account: string;
   product: string;
@@ -1483,6 +1486,8 @@ interface IciciPositionRow {
   average_price?: string | number | null;
   ltp?: string | number | null;
   marked_pnl_paise?: string | number | null;
+  previous_close?: string | number | null;
+  pnl?: string | number | null;
 }
 
 /** One section of the account response. Prod names its own state and its own reason, so a screen
@@ -1595,7 +1600,10 @@ export function iciciOpenPositions(payload: IciciAccountPayload): OpenPosition[]
         quantity,
         entryPrice: iciciPrice(row.average_price),
         markPrice: iciciPrice(row.ltp),
-        unrealizedPnl: markedPaise === null ? null : markedPaise / 100,
+        // Prod's mark wins when it wrote one; otherwise the broker's own rupee figure is the reported P&L, which
+        // is what the web desk reads (overview/icici-model.ts) and this screen used to drop.
+        unrealizedPnl: markedPaise === null ? toNumber(row.pnl) : markedPaise / 100,
+        previousClose: iciciPrice(row.previous_close),
         broker: "icici",
         account,
         product: String(row.product_type ?? "Unavailable"),

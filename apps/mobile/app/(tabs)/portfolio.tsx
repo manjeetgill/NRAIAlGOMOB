@@ -9,6 +9,10 @@
  * book has dozens. Every figure the cards carried is still on the row - the account it belongs to and
  * the day's percentage moved into the line under the numbers they describe - and a tap on a column
  * heading puts the largest or the worst of that figure at the top.
+ *
+ * The sums of the book sit above the rows rather than below them, so the trader reads the account's
+ * P&L before scrolling. Both are followed by the row counts that produced them: a figure that adds
+ * only the rows carrying one would otherwise read as the whole book.
  */
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -19,7 +23,7 @@ import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
 import { SortableTable } from "@/components/SortableTable";
-import { formatRupees, formatPercent, formatNumber } from "@nraialgo/shared/utils";
+import { formatPercent, formatNumber } from "@nraialgo/shared/utils";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { useLastKnown } from "@/hooks/useLastKnown";
@@ -40,6 +44,7 @@ import {
   useQuoteFeed,
   type Holding,
   type Marked,
+  type MarkedPosition,
   type OpenPosition,
   type QuoteEntry,
   type SortColumn,
@@ -52,8 +57,9 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
-type PositionRow = OpenPosition & Marked;
+type PositionRow = OpenPosition & MarkedPosition;
 type HoldingRow = Holding & Marked;
+type BookRow = { unrealizedPnl: number | null; todayPnl: number | null };
 
 /** A price keeps its paise while it is small enough to need them, and drops them once it is a contract's index value. */
 function priceText(value: number): string {
@@ -69,6 +75,24 @@ function sumText(value: number): string {
   return `${sign}${formatNumber(magnitude, magnitude >= 1000 ? 0 : 2)}`;
 }
 
+/**
+ * The two sums the book is read for, with the row counts that produced them.
+ *
+ * A row whose figure the broker never named is skipped instead of counted as zero, so the counts are printed
+ * beside the numbers: a total built from 24 rows is a different claim than one that reads as the whole book.
+ */
+function totals(rows: readonly BookRow[]) {
+  const priced = rows.filter((row) => row.unrealizedPnl !== null);
+  const daily = rows.filter((row) => row.todayPnl !== null);
+  return {
+    pnl: priced.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0),
+    day: daily.reduce((sum, row) => sum + (row.todayPnl ?? 0), 0),
+    pnlRows: priced.length,
+    dayRows: daily.length,
+    rows: rows.length,
+  };
+}
+
 const pnlPercent = (row: PositionRow): number | null =>
   row.unrealizedPnl === null || row.entryPrice === null || row.quantity === 0
     ? null
@@ -81,6 +105,7 @@ const POSITION_COLUMNS: SortColumn<PositionRow>[] = [
   { key: "entry", label: "Entry ₹", width: 58, numeric: true, value: (row) => row.entryPrice },
   { key: "current", label: "Current price ₹", width: 62, numeric: true, value: (row) => row.markPrice },
   { key: "unrealized", label: "P&L ₹", width: 54, numeric: true, value: (row) => row.unrealizedPnl },
+  { key: "today", label: "Today ₹", width: 50, numeric: true, value: (row) => row.todayPnl },
   { key: "pnlPercent", label: "P&L %", width: 52, numeric: true, value: pnlPercent },
 ];
 
@@ -210,7 +235,14 @@ export default function PortfolioScreen() {
     emptyText: { fontSize: 16, color: colors.muted, textAlign: "center" },
     savedLine: { paddingHorizontal: 14, paddingTop: 10, fontSize: 12, fontWeight: "600", color: colors.accent },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
-    totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
+    totals: { flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingTop: 10 },
+    totalsFigure: {
+      flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+      borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8,
+    },
+    totalsLabel: { fontSize: 11, fontWeight: "600", color: colors.muted },
+    totalsValue: { fontSize: 17, fontWeight: "700", marginTop: 2 },
+    totalsCoverage: { fontSize: 10, color: colors.muted, marginTop: 2 },
     retry: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent },
     retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
     fab: { position: "absolute", bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brand?.["600"] || "#0284c7", alignItems: "center", justifyContent: "center", elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
@@ -219,11 +251,28 @@ export default function PortfolioScreen() {
   const pnlStyle = (value: number | null) =>
     value === null ? styles.dimValue : value >= 0 ? styles.pnlPositive : styles.pnlNegative;
 
-  const priced = positions.filter(p => p.unrealizedPnl !== null);
-  const totalUnrealized = priced.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
+  const positionTotals = totals(positions);
+  const holdingTotals = totals(holdings);
 
-  const pnlHoldings = holdings.filter(holding => holding.unrealizedPnl !== null);
-  const totalHoldingPnl = pnlHoldings.reduce((sum, holding) => sum + (holding.unrealizedPnl ?? 0), 0);
+  /** The book's two sums, above the rows that make them up. Each names the rows it actually added. */
+  const totalsCard = (summary: ReturnType<typeof totals>) => (
+    <View style={styles.totals}>
+      <View style={styles.totalsFigure}>
+        <Text style={styles.totalsLabel}>Total P&L</Text>
+        <Text style={[styles.totalsValue, summary.pnl >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
+          {sumText(summary.pnl)}
+        </Text>
+        <Text style={styles.totalsCoverage}>{summary.pnlRows} of {summary.rows} rows carry a P&L</Text>
+      </View>
+      <View style={styles.totalsFigure}>
+        <Text style={styles.totalsLabel}>Today P&L</Text>
+        <Text style={[styles.totalsValue, summary.day >= 0 ? styles.pnlPositive : styles.pnlNegative]}>
+          {sumText(summary.day)}
+        </Text>
+        <Text style={styles.totalsCoverage}>{summary.dayRows} of {summary.rows} rows carry a day figure</Text>
+      </View>
+    </View>
+  );
 
 
   // Prod's own words still label a list that has nothing in it, and the phone's own copy still has to say
@@ -279,6 +328,8 @@ export default function PortfolioScreen() {
         };
       case "unrealized":
         return { text: item.unrealizedPnl === null ? "" : sumText(item.unrealizedPnl), style: pnlStyle(item.unrealizedPnl) };
+      case "today":
+        return { text: item.todayPnl === null ? "" : sumText(item.todayPnl), style: pnlStyle(item.todayPnl) };
       case "pnlPercent": {
         const percent = pnlPercent(item);
         return { text: percent === null ? "" : formatPercent(percent), style: pnlStyle(percent) };
@@ -356,6 +407,7 @@ export default function PortfolioScreen() {
     return (
       <>
         {copyLine(positionCopy)}
+        {totalsCard(positionTotals)}
         <SortableTable
           rows={positionRows}
           columns={POSITION_COLUMNS}
@@ -367,14 +419,6 @@ export default function PortfolioScreen() {
           theme={theme}
           refreshControl={
             <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
-          }
-          footer={
-            <View style={styles.totalRow}>
-              <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>Total Unrealized P&L</Text>
-              <Text style={{ fontSize: 14, fontWeight: "600", color: totalUnrealized >= 0 ? "#22c55e" : "#ef4444" }}>
-                {formatRupees(totalUnrealized, { signed: true })}
-              </Text>
-            </View>
           }
         />
       </>
@@ -411,6 +455,7 @@ export default function PortfolioScreen() {
     return (
       <>
         {copyLine(holdingCopy)}
+        {totalsCard(holdingTotals)}
         <SortableTable
           rows={holdingRows}
           columns={HOLDING_COLUMNS}
@@ -422,14 +467,6 @@ export default function PortfolioScreen() {
           theme={theme}
           refreshControl={
             <RefreshControl refreshing={false} onRefresh={() => { refetch(); refetchAccount(); }} colors={[resolvedTheme === "dark" ? "#38bdf8" : "#0284c7"]} />
-          }
-          footer={
-            <View style={styles.totalRow}>
-              <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>Total Unrealized P&L</Text>
-              <Text style={{ fontSize: 14, fontWeight: "600", color: totalHoldingPnl >= 0 ? "#22c55e" : "#ef4444" }}>
-                {formatRupees(totalHoldingPnl, { signed: true })}
-              </Text>
-            </View>
           }
         />
       </>
