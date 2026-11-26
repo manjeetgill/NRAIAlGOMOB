@@ -377,11 +377,14 @@ export default function OptionChainScreen() {
   useEffect(() => {
     streamedStrikes.current = ids;
   }, [ids]);
-  const [ticks, setTicks] = useState<Map<string, QuoteTick>>(() => new Map());
-  useEffect(() => setTicks(current => tickByInstrument(feed.quotes, current)), [feed]);
+  // Each socket frame carries a newer `at`, so the map keyed by instrument is rebuilt on every frame. It is
+  // a plain read of the feed, so it happens here in render: holding it in state made every commit schedule
+  // one more update, and the screen never reached a quiet commit — the ladder repaints forever.
+  const ticksRef = useRef<Map<string, QuoteTick>>(new Map());
+  ticksRef.current = tickByInstrument(feed.quotes, ticksRef.current);
   // A dropped socket stops carrying prices; keeping its last tick on screen would leave an old number
   // looking live while the chain read goes on refreshing underneath it.
-  const live = feed.connected ? ticks : NO_TICKS;
+  const live = feed.connected ? ticksRef.current : NO_TICKS;
 
   // What the stream and the ladder reads have priced goes into the phone's own quote memory, so a strike the
   // exchange has gone quiet on — or a ladder prod answers without premiums — still shows the number this
