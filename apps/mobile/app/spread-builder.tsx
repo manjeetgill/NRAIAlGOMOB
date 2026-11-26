@@ -12,6 +12,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   Modal,
   PanResponder,
   ScrollView,
@@ -756,6 +757,7 @@ export default function SpreadBuilderScreen() {
     symbolBody: { flex: 1 },
     sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: "80%" },
     sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+    sheetClose: { width: 48, height: 48, marginRight: -14, alignItems: "center", justifyContent: "center" },
     search: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg, marginBottom: 8 },
     sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, color: colors.muted, textTransform: "uppercase", paddingTop: 10, paddingBottom: 4 },
     row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.border },
@@ -873,7 +875,7 @@ export default function SpreadBuilderScreen() {
             <Text style={styles.title}>Build a spread on</Text>
             <TouchableOpacity
               onPress={closePicker}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.sheetClose}
               accessibilityRole="button"
               accessibilityLabel="Close the symbol list"
             >
@@ -966,7 +968,7 @@ export default function SpreadBuilderScreen() {
             <Text style={styles.title}>Expiry of this leg</Text>
             <TouchableOpacity
               onPress={() => setExpiryFor(null)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.sheetClose}
               accessibilityRole="button"
               accessibilityLabel="Close the expiry list"
             >
@@ -991,15 +993,22 @@ export default function SpreadBuilderScreen() {
 
   // The press names the basket before prod is asked: the name is what the desk files the sent orders under,
   // so it travels with the instruction instead of being left blank and arriving as an anonymous intent.
+  // One press must be enough: with the keyboard up the sheet rides the window resize, so the tap that
+  // only dismissed the IME left the name sheet on screen and looked like a dead button.
+  const closeNameSheet = () => {
+    Keyboard.dismiss();
+    setSendSheet(false);
+  };
+
   const nameSheet = (
-    <Modal visible={sendSheet} animationType="slide" onRequestClose={() => setSendSheet(false)}>
+    <Modal visible={sendSheet} animationType="slide" onRequestClose={closeNameSheet}>
       <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-        <View style={styles.sheet}>
+        <ScrollView style={styles.sheet} keyboardShouldPersistTaps="handled">
           <View style={styles.sheetHead}>
             <Text style={styles.title}>Name this basket</Text>
             <TouchableOpacity
-              onPress={() => setSendSheet(false)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              onPress={closeNameSheet}
+              style={styles.sheetClose}
               accessibilityRole="button"
               accessibilityLabel="Cancel without sending"
             >
@@ -1024,10 +1033,10 @@ export default function SpreadBuilderScreen() {
           <TouchableOpacity style={styles.execute} onPress={send} disabled={sending} accessibilityRole="button" accessibilityLabel="Send this basket to the broker">
             <Text style={styles.executeText}>{sending ? "Sending" : "Send"}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.cancel} onPress={() => setSendSheet(false)} accessibilityRole="button" accessibilityLabel="Cancel and stay on the builder">
+          <TouchableOpacity style={styles.cancel} onPress={closeNameSheet} accessibilityRole="button" accessibilityLabel="Cancel and stay on the builder">
             <Text style={styles.cancelText}>Cancel</Text>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
       </View>
     </Modal>
   );
