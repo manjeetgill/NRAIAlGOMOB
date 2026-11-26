@@ -1,15 +1,19 @@
 /**
  * Terminal Charts - candles for any listed index or F&O underlying, moving tick by tick in the live market.
- * Minutes and hours come from the broker's intraday candles and daily and weekly candles from the stored NSE
+ * Minutes and hours come from the sessions the server has stored, daily and weekly candles from the stored NSE
  * end-of-day archive; that record only has to cover the completed bars. The bar being watched is then extended
  * by prod's quote stream, the same stream the web desk uses, so the candle on this screen is the current price
- * rather than the last poll.
+ * rather than the last poll. A session older than today is read from the archive and is not extended.
+ *
+ * The chart opens as candles and nothing else. Indicators are the trader's to switch on, and each symbol
+ * remembers the set it was last shown with.
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from "react";
+import React, { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
   Modal,
+  ScrollView,
   SectionList,
   StyleSheet,
   Text,
@@ -17,6 +21,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "@/components/ThemeProvider";
@@ -32,7 +37,7 @@ import {
   type ChartBucket,
 } from "@nraialgo/shared/api";
 import { formatRupees } from "@nraialgo/shared/utils";
-import KLineChart from "@/components/KLineChart";
+import KLineChart, { type ChartDraw, type ChartStudy } from "@/components/KLineChart";
 
 const INTERVALS = [
   { id: "1m", label: "1m" },
@@ -53,6 +58,92 @@ const DEFAULT_SYMBOL = "NIFTY";
 const DEFAULT_INTERVAL: IntervalId = "1d";
 const DAILY_CANDLES_SHOWN = 120;
 const INTRADAY_CANDLES_SHOWN = 375;
+const STUDY_STORAGE = "terminal-chart-studies";
+/** Past three, the panes squeeze the candles into a strip nobody can read a trend in. */
+const MAX_PANES = 3;
+
+/**
+ * Every entry is a study the bundled chart library really has: `pane: "candle"` draws over the candles,
+ * any other value names the entry's own pane. The numbers are the library's defaults, printed so a switch
+ * is made on a known setting rather than a guess. ATR is the one exception — it is not bundled, and
+ * KLineChart registers it before the first use.
+ */
+interface StudyOption {
+  key: string;
+  name: string;
+  label: string;
+  params: string;
+  pane: "candle" | string;
+  calcParams?: number[];
+}
+
+const STUDY_GROUPS: { title: string; note: string; options: StudyOption[] }[] = [
+  {
+    title: "Over the candles",
+    note: "Drawn on the price pane",
+    options: [
+      { key: "ma", name: "MA", label: "Moving average", params: "5, 10, 20, 60", pane: "candle", calcParams: [5, 10, 20, 60] },
+      { key: "ema", name: "EMA", label: "Exponential MA", params: "6, 12, 20", pane: "candle" },
+      { key: "boll", name: "BOLL", label: "Bollinger bands", params: "20, 2", pane: "candle" },
+      { key: "sar", name: "SAR", label: "Parabolic SAR", params: "2, 2, 20", pane: "candle" },
+    ],
+  },
+  {
+    title: "In their own pane",
+    note: `Up to ${MAX_PANES} at a time`,
+    options: [
+      { key: "vol", name: "VOL", label: "Volume", params: "5, 10, 20", pane: "vol" },
+      { key: "atr", name: "ATR", label: "ATR", params: "14, Wilder", pane: "atr" },
+      { key: "rsi", name: "RSI", label: "RSI", params: "6, 12, 24", pane: "rsi" },
+      { key: "macd", name: "MACD", label: "MACD", params: "12, 26, 9", pane: "macd" },
+      { key: "kdj", name: "KDJ", label: "Stochastic", params: "9, 3, 3", pane: "kdj" },
+    ],
+  },
+  {
+    title: "More",
+    note: "Also drawn in a pane of their own",
+    options: [
+      { key: "cci", name: "CCI", label: "CCI", params: "20", pane: "cci" },
+      { key: "dmi", name: "DMI", label: "DMI / ADX", params: "14, 6", pane: "dmi" },
+      { key: "obv", name: "OBV", label: "On-balance volume", params: "30", pane: "obv" },
+      { key: "roc", name: "ROC", label: "Rate of change", params: "12, 6", pane: "roc" },
+      { key: "wr", name: "WR", label: "Williams %R", params: "6, 10, 14", pane: "wr" },
+      { key: "bbi", name: "BBI", label: "Bull bear index", params: "3, 6, 12, 24", pane: "bbi" },
+    ],
+  },
+];
+
+const STUDY_OPTIONS = new Map(STUDY_GROUPS.flatMap((group) => group.options).map((option) => [option.key, option]));
+
+/**
+ * Names the bundled library registers as overlays. A tool waits for its taps on the chart, so the count
+ * is printed with it — a line no one finished drawing is the one thing that would otherwise pile up.
+ */
+const DRAW_TOOLS = [
+  { name: "segment", label: "Trend line", taps: "tap two points" },
+  { name: "horizontalStraightLine", label: "Horizontal line", taps: "tap a price" },
+  { name: "straightLine", label: "Extended line", taps: "tap two points, it runs past both" },
+  { name: "rayLine", label: "Ray", taps: "tap a start, then a direction" },
+  { name: "verticalStraightLine", label: "Vertical line", taps: "tap a moment in time" },
+  { name: "parallelStraightLine", label: "Parallel channel", taps: "tap three points" },
+  { name: "priceChannelLine", label: "Price channel", taps: "tap three points" },
+  { name: "fibonacciLine", label: "Fibonacci", taps: "tap the swing low, then the high" },
+];
+
+const HINT_VISIBLE_MS = 6000;
+
+const IST_OFFSET_MS = 19_800_000;
+
+/** Today in the exchange's calendar, which is not the phone's when the device is set elsewhere. */
+function istToday(): string {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** "2026-11-20" read as a calendar day, not as midnight UTC. */
+function formatSession(day: string): string {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date).toLocaleDateString([], { day: "2-digit", month: "short" });
+}
 
 function axisLabel(timestamp: number, daily: boolean): string {
   const date = new Date(timestamp);
@@ -78,9 +169,29 @@ export default function TerminalChartsScreen() {
   const [interval, setInterval] = useState<IntervalId>(DEFAULT_INTERVAL);
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");
-  const [chartKey, setChartKey] = useState(0);
   const [chartHeight, setChartHeight] = useState(500);
   const [isReady, setIsReady] = useState(false);
+  const [studyKeys, setStudyKeys] = useState<string[]>([]);
+  const [showStudyPicker, setShowStudyPicker] = useState(false);
+  const [showDrawPicker, setShowDrawPicker] = useState(false);
+  const [draw, setDraw] = useState<ChartDraw | null>(null);
+  const [hint, setHint] = useState<{ text: string; at: number } | null>(null);
+  /** The session to chart, or null for whatever the route answers for. Only intraday intervals take it. */
+  const [day, setDay] = useState<string | null>(null);
+  const [showDayPicker, setShowDayPicker] = useState(false);
+  // Kept across a fetch so the picker still has rows while the next session loads.
+  const [dayList, setDayList] = useState<string[]>([]);
+  // Whether this screen has built its chart canvas. The WebView parses the whole chart library when it is
+  // created, so it is built once and then kept: a load or a failure shows over it instead of replacing it.
+  const [canvasUp, setCanvasUp] = useState(false);
+  // A repeated press of the same tool is a new request, so each arming carries its own number.
+  const drawNonce = useRef(0);
+  // Whether the chart currently holds a line the trader drew, so a timeframe change says so only when it does.
+  const drewLines = useRef(false);
+  // The symbol the stored study sets were read for, so a save never writes the previous chart's set.
+  const studyPrefs = useRef<{ symbol: string; map: Record<string, string[]> } | null>(null);
+
+  const say = useCallback((text: string) => setHint({ text, at: Date.now() }), []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -89,27 +200,148 @@ export default function TerminalChartsScreen() {
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    if (!hint) return;
+    const timer = setTimeout(() => setHint(null), HINT_VISIBLE_MS);
+    return () => clearTimeout(timer);
+  }, [hint]);
+
+  // One stored map for every symbol, read once per chart the trader opens.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let map: Record<string, string[]> = {};
+      try {
+        const raw = await AsyncStorage.getItem(STUDY_STORAGE);
+        const parsed: unknown = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === "object") map = parsed as Record<string, string[]>;
+      } catch {
+        // A preference that cannot be read is no reason to show an empty chart or an error.
+      }
+      if (cancelled) return;
+      studyPrefs.current = { symbol, map };
+      const stored = map[symbol];
+      setStudyKeys(Array.isArray(stored) ? stored.filter((key) => STUDY_OPTIONS.has(key)) : []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    const stored = studyPrefs.current;
+    if (!stored || stored.symbol !== symbol) return;
+    stored.map = { ...stored.map, [symbol]: studyKeys };
+    AsyncStorage.setItem(STUDY_STORAGE, JSON.stringify(stored.map)).catch(() => {});
+  }, [symbol, studyKeys]);
+
+  const toggleStudy = useCallback(
+    (key: string) => {
+      const option = STUDY_OPTIONS.get(key);
+      if (!option) return;
+      if (studyKeys.includes(key)) {
+        setStudyKeys(studyKeys.filter((entry) => entry !== key));
+        return;
+      }
+      const panesInUse = studyKeys.filter((entry) => STUDY_OPTIONS.get(entry)?.pane !== "candle").length;
+      if (option.pane !== "candle" && panesInUse >= MAX_PANES) {
+        say(`${MAX_PANES} panes is all the chart keeps readable — switch one off to add ${option.label}.`);
+        return;
+      }
+      setStudyKeys([...studyKeys, key]);
+    },
+    [studyKeys, say],
+  );
+
+  const armDraw = useCallback(
+    (name: string) => {
+      drawNonce.current += 1;
+      drewLines.current = true;
+      setDraw({ name, nonce: drawNonce.current });
+      setShowDrawPicker(false);
+      const tool = DRAW_TOOLS.find((entry) => entry.name === name);
+      say(tool ? `${tool.label} — ${tool.taps}.` : "Line armed — tap the chart.");
+    },
+    [say],
+  );
+
+  const clearDrawings = useCallback(() => {
+    drawNonce.current += 1;
+    drewLines.current = false;
+    setDraw({ name: null, nonce: drawNonce.current });
+    setShowDrawPicker(false);
+    say("Every line drawn on this chart is gone.");
+  }, [say]);
+
+  const studies = useMemo<ChartStudy[]>(
+    () =>
+      studyKeys.flatMap((key) => {
+        const option = STUDY_OPTIONS.get(key);
+        if (!option) return [];
+        return [{ key: option.key, name: option.name, pane: option.pane, ...(option.calcParams ? { calcParams: option.calcParams } : {}) }];
+      }),
+    [studyKeys],
+  );
+
   const handleSymbolChange = useCallback((newSymbol: string) => {
     setSymbol(newSymbol);
-    setChartKey((k) => k + 1);
+    // The next symbol opens plain, then shows the set stored for it: leaving the previous chart's studies
+    // on screen would paint them over candles they were never chosen for. The session goes with the symbol,
+    // because the one just listed belongs to the instrument that was on screen.
+    setStudyKeys([]);
+    setDay(null);
+    setDayList([]);
+    drewLines.current = false;
+    setDraw(null);
   }, []);
 
-  const handleIntervalChange = useCallback((newInterval: IntervalId) => {
-    setInterval(newInterval);
-    // Do not increment chartKey on interval change: let KLineChart update data smoothly via postMessage
-  }, []);
+  const handleIntervalChange = useCallback(
+    (newInterval: IntervalId) => {
+      setInterval(newInterval);
+      // A line is placed against bars of one timeframe, so it is not carried onto another.
+      if (drewLines.current) {
+        drawNonce.current += 1;
+        drewLines.current = false;
+        setDraw({ name: null, nonce: drawNonce.current });
+        say(`Lines were drawn on the previous timeframe, so they are cleared for ${newInterval}.`);
+      }
+    },
+    [say],
+  );
+
+  const chooseDay = useCallback(
+    (next: string | null) => {
+      setDay(next);
+      setShowDayPicker(false);
+      // Bars of one session carry lines drawn against them; the next session gets a clean canvas.
+      if (drewLines.current) {
+        drawNonce.current += 1;
+        drewLines.current = false;
+        setDraw({ name: null, nonce: drawNonce.current });
+      }
+      say(next === null ? "Showing the newest session the chart route answers for." : `Charting the ${formatSession(next)} session, as recorded.`);
+    },
+    [say],
+  );
 
   const isDaily = DAILY_INTERVALS.has(interval);
+  const today = istToday();
+  // A session chosen that is not today's is served from the recorded archive, so nothing about it changes
+  // between one poll and the next.
+  const pastPick = !isDaily && day !== null && day !== today;
   const { data: chartData, isLoading, isError, error, refetch } = useTerminalChart(symbol, interval, {
     // The stream paints the forming candle, so the record only has to reconcile the completed bars.
-    refetchInterval: isDaily ? false : 30_000,
+    refetchInterval: isDaily || pastPick ? false : 30_000,
     gcTime: 30 * 60 * 1000,
     staleTime: isDaily ? 5 * 60 * 1000 : 15_000,
-    // Keep the last interval's candles on screen while a new interval of the SAME symbol loads, so the chart
-    // is not swapped for a spinner. Another symbol's candles are never shown under this one's name.
-    placeholderData: (previous, previousQuery) =>
-      (previousQuery?.queryKey as readonly unknown[] | undefined)?.[2] === chartInstrument(symbol) ? previous : undefined,
-  });
+    // Keep the last candles on screen while a new interval or session of the SAME symbol loads, so the chart
+    // is not swapped for a spinner. Another symbol's candles are never shown under this one's name, and
+    // another session's would be drawn under a date that is not theirs.
+    placeholderData: (previous, previousQuery) => {
+      const key = previousQuery?.queryKey as readonly unknown[] | undefined;
+      return key?.[2] === chartInstrument(symbol) && key?.[4] === (day ?? null) ? previous : undefined;
+    },
+  }, day);
 
   const session = useTerminalChart(symbol, "5m", { enabled: interval === "1d", refetchInterval: 60_000, gcTime: 30 * 60 * 1000, staleTime: 30_000 });
   const underlyings = useChainUnderlyings();
@@ -118,6 +350,10 @@ export default function TerminalChartsScreen() {
   const sections = useMemo(() => chartPickerSections(allUnderlyings, search), [allUnderlyings, search]);
 
   const candles = chartData?.candles ?? [];
+  // The route names the session it read; without that the chip would have to guess between today and the
+  // newest record it fell back to.
+  const sessionDay = chartData?.day ?? day;
+  const lookingBack = !isDaily && !!sessionDay && sessionDay !== today;
   const baseCandles = useMemo(
     () => withForming(candles, chartData?.forming, isDaily ? DAILY_CANDLES_SHOWN : INTRADAY_CANDLES_SHOWN),
     [candles, chartData?.forming, isDaily],
@@ -127,7 +363,9 @@ export default function TerminalChartsScreen() {
     [interval, session.data],
   );
   const focused = useScreenFocused();
-  const live = useLiveCandles(symbol, interval as ChartBucket, baseCandles, sessionCandles, focused);
+  // A stored session is exactly that: today's ticks belong to today's chart, not to the bars the recorder
+  // kept for an earlier day, so the stream is left off while one is on screen.
+  const live = useLiveCandles(symbol, interval as ChartBucket, baseCandles, sessionCandles, focused && !lookingBack);
 
   const chartDataPoints = useMemo(
     () => live.points.map((c) => ({
@@ -141,14 +379,34 @@ export default function TerminalChartsScreen() {
     [live.points],
   );
 
+  const availableDays = chartData?.availableDays;
+
+  // Read when the sheet opens rather than kept in step with every fetch: the list belongs to the picker and
+  // must not re-render the chart underneath it.
+  const openDayPicker = useCallback(() => {
+    if (availableDays?.length) setDayList([...availableDays]);
+    setShowDayPicker(true);
+  }, [availableDays]);
+
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", up: "#22c55e", down: "#ef4444" }
     : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", up: "#16a34a", down: "#dc2626" }, [resolvedTheme]);
 
-  // What the stream itself says about the price behind the newest bar, in the server's own words.
-  const liveText = live.unavailable ?? tickLabel(live.tick, live.connected, live.reason);
-  const liveAt = live.at === null ? null : new Date(live.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const liveColor = live.tick?.fresh ? colors.up : live.reason || live.tick ? colors.down : colors.muted;
+  // What the stream itself says about the price behind the newest bar, in the server's own words. A stored
+  // session has no live price to report, and saying so beats showing a stale tick label under it.
+  const liveText = lookingBack
+    ? `Stored session ${sessionDay}: the candles the recorder kept. Today's prices are not drawn on an earlier day.`
+    : live.unavailable ?? tickLabel(live.tick, live.connected, live.reason);
+  const liveAt = lookingBack || live.at === null ? null : new Date(live.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const liveColor = lookingBack ? colors.muted : live.tick?.fresh ? colors.up : live.reason || live.tick ? colors.down : colors.muted;
+
+  const sessionCount = candles.length ? ` · ${candles.length} bars of ${interval}` : "";
+  const sourceLine = isDaily
+    ? `${chartData?.source ?? "Stored daily history"}${chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}`
+    : `${chartData?.source ?? "Recorded session"} · ${sessionDay ?? today}${sessionCount}`;
+
+  // What the session control is worth showing: the trader should see which day is on screen, not assume it.
+  const sessionLabel = !sessionDay ? "Session" : sessionDay === today ? "Today" : formatSession(sessionDay);
 
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -158,9 +416,11 @@ export default function TerminalChartsScreen() {
     setSearch("");
   };
 
-  let body: React.ReactNode;
+  // What to say when the candles are not on screen. Before the canvas exists this is the whole screen; after
+  // it, the same message goes over the chart, because replacing the canvas means rebuilding it.
+  let state: React.ReactNode = null;
   if (isLoading && !chartDataPoints.length) {
-    body = (
+    state = (
       <View style={styles.stateBox}>
         <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.stateBody}>Loading {interval} candles for {symbol}...</Text>
@@ -171,13 +431,13 @@ export default function TerminalChartsScreen() {
     const isIntraday = !isDaily;
 
     // A live tick is a better answer than a failed history read: the stream paints the bar it has a price for.
-    body = (
+    state = (
       <View style={styles.stateBox}>
         <Ionicons name="alert-circle-outline" size={48} color={colors.down} />
         <Text style={styles.stateTitle}>No {interval} chart for {symbol}</Text>
         <Text style={styles.stateBody}>
           {isIntraday && isStock
-            ? `Intraday bars for ${chartInstrument(symbol)} are available during live market hours (09:15–15:30 IST). Switch to Daily (1d) to view historical candles, or view NIFTY / BANKNIFTY for 1-second stored intraday charts.`
+            ? `Intraday bars for ${chartInstrument(symbol)} are read from the sessions this account streamed; the broker's own history covers only the live window (09:15–15:30 IST). Switch to Daily (1d) for stored history, or pick another session.`
             : chartFailureReason(error)}
         </Text>
         <View style={{ flexDirection: "row", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "center" }}>
@@ -222,13 +482,13 @@ export default function TerminalChartsScreen() {
     const isStock = !["NIFTY", "BANKNIFTY"].includes(symbol.toUpperCase());
     const isIntraday = !isDaily;
 
-    body = (
+    state = (
       <View style={styles.stateBox}>
         <Ionicons name="bar-chart-outline" size={48} color={colors.muted} />
         <Text style={styles.stateTitle}>No candles returned</Text>
         <Text style={styles.stateBody}>
           {isIntraday && isStock
-            ? `Intraday bars for ${chartInstrument(symbol)} are streamed during live market hours (09:15–15:30 IST). Switch to Daily (1d) to view historical data, or view NIFTY / BANKNIFTY for 1-second stored intraday charts.`
+            ? `Intraday bars for ${chartInstrument(symbol)} are recorded from the first tick the server saw for that symbol, so a session before that has none. Switch to Daily (1d) for stored history, or pick another session.`
             : chartData?.source
               ? `${chartData.source} returned no ${interval} bars for ${chartInstrument(symbol)}.`
               : `No ${interval} bars came back for ${chartInstrument(symbol)}.`}
@@ -272,26 +532,36 @@ export default function TerminalChartsScreen() {
       </View>
     );
   } else if (!isReady) {
-    body = (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+    state = (
+      <View style={styles.stateBox}>
         <ActivityIndicator size="large" color={colors.accent} />
-        <Text style={{ marginTop: 12, color: colors.muted, fontSize: 13 }}>Initializing chart canvas...</Text>
-      </View>
-    );
-  } else {
-    body = (
-      <View
-        style={{ flex: 1 }}
-        key={chartKey}
-        onLayout={(e) => {
-          const h = Math.round(e.nativeEvent.layout.height);
-          if (h > 100 && h !== chartHeight) setChartHeight(h);
-        }}
-      >
-        <KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol} />
+        <Text style={styles.stateBody}>Initializing chart canvas...</Text>
       </View>
     );
   }
+
+  const chartNode = (
+    <View
+      style={{ flex: 1 }}
+      onLayout={(e) => {
+        const h = Math.round(e.nativeEvent.layout.height);
+        if (h > 100 && h !== chartHeight) setChartHeight(h);
+        // The canvas has been laid out with candles on it. From here on a switch keeps it, because tearing
+        // the WebView down and building it again is what a switch used to cost.
+        if (!canvasUp) setCanvasUp(true);
+      }}
+    >
+      <KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol} studies={studies} draw={draw} />
+      {state && <View style={styles.stateScrim}>{state}</View>}
+    </View>
+  );
+
+  // The canvas is built once. Until it exists there is nothing to lay a message over, so the message itself
+  // is the screen; after that a load, a failure or an empty answer shows on top of it.
+  let body: React.ReactNode;
+  if (canvasUp) body = chartNode;
+  else if (state) body = state;
+  else body = chartNode;
 
   return (
     <View style={styles.container}>
@@ -323,20 +593,50 @@ export default function TerminalChartsScreen() {
         ))}
       </View>
 
+      <ScrollView style={styles.studyRow} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.studyRowContent}>
+        <TouchableOpacity style={styles.studyChip} onPress={() => setShowStudyPicker(true)} accessibilityRole="button" accessibilityLabel="Add an indicator">
+          <Ionicons name="add-circle-outline" size={14} color={colors.accent} />
+          <Text style={[styles.studyChipText, { color: colors.accent }]}>{studyKeys.length ? `Indicators (${studyKeys.length})` : "Indicators"}</Text>
+        </TouchableOpacity>
+        {studyKeys.map((key) => (
+          <TouchableOpacity
+            key={key}
+            style={styles.studyChipActive}
+            onPress={() => toggleStudy(key)}
+            accessibilityRole="button"
+            accessibilityLabel={`Switch off ${STUDY_OPTIONS.get(key)?.label ?? key}`}
+          >
+            <Text style={styles.studyChipActiveText}>{STUDY_OPTIONS.get(key)?.name ?? key}</Text>
+            <Ionicons name="close" size={12} color={colors.muted} />
+          </TouchableOpacity>
+        ))}
+        <TouchableOpacity style={styles.studyChip} onPress={() => setShowDrawPicker(true)} accessibilityRole="button" accessibilityLabel="Draw a line on the chart">
+          <Ionicons name="create-outline" size={14} color={colors.accent} />
+          <Text style={[styles.studyChipText, { color: colors.accent }]}>Draw</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
       <View style={styles.liveRow}>
         <View style={[styles.liveDot, { backgroundColor: liveColor }]} />
         <Text style={[styles.liveText, { color: liveColor }]} numberOfLines={2}>{liveText}</Text>
         {liveAt !== null && <Text style={styles.liveTime}>{liveAt}</Text>}
       </View>
 
-      {isDaily && candles.length > 0 && (
-        <View style={styles.sourceRow}>
-          <Text style={styles.sourceText} numberOfLines={2}>
-            {chartData?.source ?? "Stored daily history"}
-            {chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}
-          </Text>
-        </View>
-      )}
+      <View style={styles.sourceRow}>
+        <Text style={styles.sourceText} numberOfLines={2}>{hint ? hint.text : sourceLine}</Text>
+        {!isDaily && (
+          <TouchableOpacity
+            style={styles.sessionButton}
+            onPress={openDayPicker}
+            accessibilityRole="button"
+            accessibilityLabel="Choose which trading session to chart"
+          >
+            <Ionicons name="calendar-outline" size={13} color={colors.accent} />
+            <Text style={styles.sessionText}>{sessionLabel}</Text>
+            <Ionicons name="chevron-down-outline" size={12} color={colors.muted} />
+          </TouchableOpacity>
+        )}
+      </View>
 
       <View style={styles.chartContainer}>{body}</View>
 
@@ -391,6 +691,121 @@ export default function TerminalChartsScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={showStudyPicker} animationType="slide" onRequestClose={() => setShowStudyPicker(false)}>
+        <View style={styles.sheetScrim}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Indicators</Text>
+              <TouchableOpacity onPress={() => setShowStudyPicker(false)} accessibilityRole="button" accessibilityLabel="Close indicators">
+                <Text style={styles.sheetDone}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.groupNote}>Off by default. The chart opens as candles only, and each symbol keeps the set it was last shown with.</Text>
+            <ScrollView style={styles.sheetScroll} keyboardShouldPersistTaps="handled">
+              {STUDY_GROUPS.map((group) => (
+                <View key={group.title} style={styles.sheetGroup}>
+                  <Text style={styles.sectionTitle}>{group.title}</Text>
+                  <Text style={styles.groupNote}>{group.note}</Text>
+                  {group.options.map((option) => {
+                    const on = studyKeys.includes(option.key);
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={styles.row}
+                        onPress={() => toggleStudy(option.key)}
+                        accessibilityRole="switch"
+                        accessibilityState={{ checked: on }}
+                        accessibilityLabel={`${option.label}, ${option.name} ${option.params}`}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.rowName}>{option.label}</Text>
+                          <Text style={styles.rowMeta}>{`${option.name} · ${option.params}`}</Text>
+                        </View>
+                        <Ionicons name={on ? "checkbox-outline" : "square-outline"} size={22} color={on ? colors.accent : colors.muted} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showDrawPicker} animationType="slide" onRequestClose={() => setShowDrawPicker(false)}>
+        <View style={styles.sheetScrim}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Draw</Text>
+              <TouchableOpacity onPress={() => setShowDrawPicker(false)} accessibilityRole="button" accessibilityLabel="Close draw tools">
+                <Text style={styles.sheetDone}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.groupNote}>Pick a tool, then tap the chart the number of times it asks for. Drag a line to move it.</Text>
+            <ScrollView style={styles.sheetScroll} keyboardShouldPersistTaps="handled">
+              {DRAW_TOOLS.map((tool) => (
+                <TouchableOpacity key={tool.name} style={styles.row} onPress={() => armDraw(tool.name)} accessibilityRole="button" accessibilityLabel={`${tool.label}, ${tool.taps}`}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowName}>{tool.label}</Text>
+                    <Text style={styles.rowMeta}>{tool.taps}</Text>
+                  </View>
+                  <Ionicons name="create-outline" size={18} color={colors.muted} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.clearButton} onPress={clearDrawings} accessibilityRole="button" accessibilityLabel="Remove every line drawn on this chart">
+              <Ionicons name="trash-outline" size={16} color={colors.down} />
+              <Text style={styles.clearLabel}>Remove all lines on this chart</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showDayPicker} animationType="slide" onRequestClose={() => setShowDayPicker(false)}>
+        <View style={styles.sheetScrim}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Session</Text>
+              <TouchableOpacity onPress={() => setShowDayPicker(false)} accessibilityRole="button" accessibilityLabel="Close session picker">
+                <Text style={styles.sheetDone}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.groupNote}>
+              {`${chartInstrument(symbol)} · ${interval}: only the sessions listed here have candles stored. A day outside this list has nothing to draw.`}
+            </Text>
+            <ScrollView style={styles.sheetScroll} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity style={styles.row} onPress={() => chooseDay(null)} accessibilityRole="button" accessibilityLabel="Chart the latest session">
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName}>Latest session</Text>
+                  <Text style={styles.rowMeta}>
+                    {day === null && sessionDay ? `Currently showing ${sessionDay}.` : `Asks the chart route for its newest session (${today}).`}
+                  </Text>
+                </View>
+                <Ionicons name={day === null ? "checkmark-circle-outline" : "radio-button-off-outline"} size={22} color={day === null ? colors.accent : colors.muted} />
+              </TouchableOpacity>
+              {dayList.map((entry) => (
+                <TouchableOpacity
+                  key={entry}
+                  style={styles.row}
+                  onPress={() => chooseDay(entry)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Chart the ${entry} session`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowName}>{formatSession(entry)}</Text>
+                    <Text style={styles.rowMeta}>{entry === today ? `${entry} · today` : entry}</Text>
+                  </View>
+                  <Ionicons name={sessionDay === entry ? "checkmark-circle-outline" : "radio-button-off-outline"} size={22} color={sessionDay === entry ? colors.accent : colors.muted} />
+                </TouchableOpacity>
+              ))}
+              {!dayList.length && (
+                <Text style={styles.notice}>The chart has not listed its sessions yet. Let the {interval} candles finish loading, then open this again.</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -409,8 +824,17 @@ function createStyles(colors: { bg: string; card: string; text: string; muted: s
     intervalButtonActive: { backgroundColor: colors.accent, borderColor: colors.accent },
     intervalLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
     intervalLabelActive: { color: "#ffffff" },
-    sourceRow: { paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
-    sourceText: { fontSize: 10.5, color: colors.muted },
+    studyRow: { flexGrow: 0, borderBottomWidth: 1, borderBottomColor: colors.border },
+    studyRowContent: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8 },
+    studyChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: colors.bg, borderRadius: 999, borderWidth: 1, borderColor: colors.border },
+    studyChipActive: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: `${colors.accent}22`, borderRadius: 999, borderWidth: 1, borderColor: colors.accent },
+    studyChipText: { fontSize: 11.5, fontWeight: "600", color: colors.text },
+    studyChipActiveText: { fontSize: 11.5, fontWeight: "700", color: colors.accent },
+    sourceRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border, minHeight: 30 },
+    sourceText: { flex: 1, fontSize: 10.5, color: colors.muted },
+    sessionButton: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: colors.bg, borderRadius: 999, borderWidth: 1, borderColor: colors.border },
+    sessionText: { fontSize: 11, fontWeight: "600", color: colors.accent },
+    stateScrim: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: `${colors.card}F0`, justifyContent: "center", alignItems: "center" },
     liveRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: colors.border },
     liveDot: { width: 8, height: 8, borderRadius: 4 },
     liveText: { flex: 1, fontSize: 11, color: colors.muted },
@@ -426,6 +850,14 @@ function createStyles(colors: { bg: string; card: string; text: string; muted: s
     timeScale: { position: "absolute", bottom: 0, left: 0, right: 0, height: 30, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4 },
     timeScaleLabel: { fontSize: 9, color: colors.muted },
     sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: "80%" },
+    sheetScrim: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+    sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    sheetDone: { fontSize: 14, fontWeight: "700", color: colors.accent, paddingHorizontal: 6, paddingVertical: 4 },
+    sheetScroll: { flexShrink: 1 },
+    sheetGroup: { paddingBottom: 4 },
+    groupNote: { fontSize: 11.5, color: colors.muted, marginBottom: 6 },
+    clearButton: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border },
+    clearLabel: { fontSize: 13, fontWeight: "600", color: colors.down },
     sheetTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: 12 },
     search: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg, marginBottom: 8 },
     sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, color: colors.muted, textTransform: "uppercase", paddingTop: 10, paddingBottom: 4 },

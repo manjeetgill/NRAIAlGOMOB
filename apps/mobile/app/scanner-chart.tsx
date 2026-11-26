@@ -234,7 +234,6 @@ export default function ScannerChartScreen() {
                 overlays={overlays}
                 markers={markers}
                 panes={panes}
-                defaultIndicators={false}
               />
               {levelLines ? (
                 <View style={styles.legend}>
