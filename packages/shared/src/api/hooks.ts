@@ -795,7 +795,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
    * A POST, because the leg set travels in the body, and re-read on a timer rather than on every tick -
    * one call prices the whole basket, and the desk is already pacing the chain read underneath it.
    */
-  const useStrategyAnalysis = (body: StrategyAnalysisRequest | null, options?: UseQueryOptions<StrategyAnalysis, ApiError>) => {
+  const useStrategyAnalysis = (body: StrategyAnalysisRequest | null, options?: Omit<UseQueryOptions<StrategyAnalysis, ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
       queryKey: queryKeys.optionChain.analysis(body as StrategyAnalysisRequest),
       queryFn: () => client.post<StrategyAnalysis>("/v1/strategy-analysis", body),
@@ -1018,7 +1018,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   // ===== TECHNICAL EVENTS (SCANNER) =====
-  const useTechnicalEvents = (options?: UseQueryOptions<TechnicalEventsResponse, ApiError>) => {
+  const useTechnicalEvents = (options?: Omit<UseQueryOptions<TechnicalEventsResponse, ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
       queryKey: queryKeys.scanner.technicalEvents(),
       queryFn: () => client.get<TechnicalEventsResponse>("/v1/technical-events"),

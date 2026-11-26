@@ -8,6 +8,8 @@
  *
  * One ladder read costs the broker seconds, so the strikes on screen also go on the price stream the app
  * already holds, and their premiums paint from the ticks that arrive between reads - see api/chain-ticks.ts.
+ * A strike neither of them has priced falls back to the premium this phone last saw for that same instrument
+ * id, with the minute it saw it beside the number - see api/quote-memory.ts.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,14 +27,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
 import {
+  legEntries,
   liveSide,
   nearestMonthlyExpiry,
   QUALITY_WORD,
   queryKeys,
+  rememberedSide,
   strikeIds,
   streamId,
   tickBeats,
   tickByInstrument,
+  tickEntries,
   tickWord,
   todayIST,
   useQuoteFeed,
@@ -42,6 +47,7 @@ import {
   type Band,
   type OptionRow,
   type QuoteTick,
+  type RememberedQuote,
   type UnderlyingInfo,
 } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
@@ -50,6 +56,7 @@ import { formatNumber } from "@nraialgo/shared/utils";
 import { useTheme } from "@/components/ThemeProvider";
 import { BuySheet } from "@/components/BuySheet";
 import { useApi } from "@/hooks/useApi";
+import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 import { readChainSelection, rememberChainSelection } from "@/utils/chainSelection";
 
 /** Prod sends prices as decimal strings so nothing rounds on the way here; the ticket takes numbers. */
@@ -108,6 +115,10 @@ interface OptionRowItemProps {
   styles: Record<string, any>;
   liveCall?: QuoteTick;
   livePut?: QuoteTick;
+  /** What this phone last saw for each leg, asked for at render so a row that redraws for any reason picks
+   *  up the newest saved number without the whole ladder redrawing for it. */
+  savedCall?: RememberedQuote | null;
+  savedPut?: RememberedQuote | null;
   onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
 }
 
@@ -118,12 +129,14 @@ const OptionRowItem = React.memo(
     styles,
     liveCall,
     livePut,
+    savedCall,
+    savedPut,
     onTrade,
   }: OptionRowItemProps) {
     const callQuote = row.call;
     const putQuote = row.put;
-    const callPrice = callQuote ? liveSide(callQuote, liveCall) : null;
-    const putPrice = putQuote ? liveSide(putQuote, livePut) : null;
+    const callPrice = callQuote ? (liveSide(callQuote, liveCall) ?? rememberedSide(savedCall)) : null;
+    const putPrice = putQuote ? (liveSide(putQuote, livePut) ?? rememberedSide(savedPut)) : null;
     const callOiChange = callQuote?.oiChangePct;
     const putOiChange = putQuote?.oiChangePct;
 
@@ -201,7 +214,9 @@ const OptionRowItem = React.memo(
     prev.styles === next.styles &&
     prev.onTrade === next.onTrade &&
     prev.liveCall === next.liveCall &&
-    prev.livePut === next.livePut
+    prev.livePut === next.livePut &&
+    prev.savedCall === next.savedCall &&
+    prev.savedPut === next.savedPut
 );
 
 export default function OptionChainScreen() {
@@ -367,6 +382,16 @@ export default function OptionChainScreen() {
   // A dropped socket stops carrying prices; keeping its last tick on screen would leave an old number
   // looking live while the chain read goes on refreshing underneath it.
   const live = feed.connected ? ticks : NO_TICKS;
+
+  // What the stream and the ladder reads have priced goes into the phone's own quote memory, so a strike the
+  // exchange has gone quiet on — or a ladder prod answers without premiums — still shows the number this
+  // trader last saw, with its minute, instead of an empty cell. A saved premium only paints on the day it
+  // was printed: theta makes yesterday's price for a strike a different contract's number.
+  const quotes = useQuoteMemory();
+  useEffect(() => {
+    const legs = items.flatMap(item => (item.kind === "row" ? [item.row.call, item.row.put] : []));
+    quotes.remember([...tickEntries(feed.quotes), ...legEntries(legs)]);
+  }, [quotes, items, feed.quotes]);
 
   // A desk opens at at-the-money, not on the cheapest far out-of-the-money strike at the top of the grid,
   // and it opens there once: re-centering on each poll would yank the list back while the trader reads a
@@ -768,6 +793,8 @@ export default function OptionChainScreen() {
                 styles={styles}
                 liveCall={live.get(item.row.call?.instrumentId ?? "")}
                 livePut={live.get(item.row.put?.instrumentId ?? "")}
+                savedCall={quotes.seen(item.row.call?.instrumentId)}
+                savedPut={quotes.seen(item.row.put?.instrumentId)}
                 onTrade={openTicket}
               />
             );

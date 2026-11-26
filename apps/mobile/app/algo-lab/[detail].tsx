@@ -27,6 +27,7 @@ import { curves, payoffFigures } from "@nraialgo/shared/api";
 import type { ManagedRun, StrategyAnalysisLeg, StrategyDraftSummary, DraftDetail } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "@/components/ThemeProvider";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 
 type TabId = "payoff" | "settings" | "actions";
 type Source = "run" | "draft";
@@ -76,6 +77,7 @@ export default function AlgoLabDetailScreen() {
 
   const [activeTab, setActiveTab] = useState<TabId>("payoff");
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmStart, setConfirmStart] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [ack, setAck] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -146,7 +148,8 @@ export default function AlgoLabDetailScreen() {
   }, [source, run, draft.data]);
 
   const analysisBody = spot !== null && analysisLegs.length ? { spot: String(spot), rate: 0, dividend: 0, legs: analysisLegs } : null;
-  const analysis = useStrategyAnalysis(analysisBody);
+  const focused = useScreenFocused();
+  const analysis = useStrategyAnalysis(analysisBody, { enabled: focused && !!analysisBody });
 
   const figures = useMemo(() => (analysis.data ? payoffFigures(analysis.data) : null), [analysis.data]);
   const curve = useMemo(() => (analysis.data ? curves(analysis.data) : null), [analysis.data]);
@@ -557,7 +560,7 @@ export default function AlgoLabDetailScreen() {
         <TouchableOpacity
           style={[styles.button, styles.buttonDanger, (!gateOpen || !ack || startLive.isPending) && styles.buttonOff]}
           disabled={!gateOpen || !ack || startLive.isPending}
-          onPress={() => void startFromStrategy()}
+          onPress={() => setConfirmStart(true)}
           accessibilityRole="button" accessibilityLabel="Start the live algo"
         >
           {startLive.isPending ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.buttonText}>Start Live Algo</Text>}
@@ -608,6 +611,19 @@ export default function AlgoLabDetailScreen() {
             <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
               <TouchableOpacity style={[styles.buttonGhost, { flex: 1 }]} onPress={() => setConfirmStop(false)}><Text style={styles.buttonGhostText}>Keep running</Text></TouchableOpacity>
               <TouchableOpacity style={[styles.button, styles.buttonDanger, { flex: 1 }]} onPress={() => void confirmClose()}><Text style={styles.buttonText}>Confirm stop</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={confirmStart} transparent animationType="fade" onRequestClose={() => setConfirmStart(false)}>
+        <View style={styles.scrim}>
+          <View style={[styles.card, { maxWidth: 380, width: "100%" }]}>
+            <Text style={styles.title}>Start live algorithm?</Text>
+            <Text style={styles.note}>This deploys {title} with real broker orders. Ensure you have reviewed the strategy configuration and gates are open.</Text>
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+              <TouchableOpacity style={[styles.buttonGhost, { flex: 1 }]} onPress={() => setConfirmStart(false)}><Text style={styles.buttonGhostText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.button, styles.buttonDanger, { flex: 1 }]} onPress={() => { setConfirmStart(false); void startFromStrategy(); }}><Text style={styles.buttonText}>Start live</Text></TouchableOpacity>
             </View>
           </View>
         </View>

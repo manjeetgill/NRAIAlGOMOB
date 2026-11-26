@@ -10,6 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
 import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
+import { forgetLastKnown } from "@/hooks/useLastKnown";
 
 export default function MoreScreen() {
   const { useMe, useLogout } = useApi();
@@ -48,17 +49,24 @@ export default function MoreScreen() {
   const handleLogout = async () => {
     Alert.alert("Logout", "Are you sure you want to logout?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Logout", style: "destructive", onPress: async () => {
-          try {
-            await logoutMutation.mutateAsync();
-            logoutStore();
-            router.replace("/login");
-          } catch (error) {
-            Alert.alert("Error", "Failed to logout");
-          }
-        }
+      {
+        text: "Logout",
+        style: "destructive",
+        onPress: async () => {
+          logoutMutation.mutate(undefined, {
+            onSettled: () => {
+              logoutStore();
+              forgetLastKnown();
+              router.replace("/login");
+            },
+          });
+        },
       },
     ]);
+  };
+
+  const showComingSoon = (feature: string) => {
+    Alert.alert("Coming Soon", `${feature} is under development and will be available in a future update.`);
   };
 
   if (meLoading) {
@@ -79,27 +87,27 @@ export default function MoreScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Account</Text>
         <View style={styles.card}>
-          <View style={[styles.row, styles.rowDivider]}>
+          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => showComingSoon("Profile")} accessibilityRole="button">
             <View style={styles.labelRow}>
               <Ionicons name="person-circle-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Profile</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </View>
-          <View style={styles.row}>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => showComingSoon("Security")} accessibilityRole="button">
             <View style={styles.labelRow}>
               <Ionicons name="lock-closed-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Security</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </View>
-          <View style={styles.row}>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.row} onPress={() => showComingSoon("Notifications")} accessibilityRole="button">
             <View style={styles.labelRow}>
               <Ionicons name="notifications-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Notifications</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </View>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -194,20 +202,20 @@ export default function MoreScreen() {
             </View>
             <Text style={styles.value}>1.0.0 (Beta)</Text>
           </View>
-          <View style={[styles.row, styles.rowDivider]}>
+          <TouchableOpacity style={[styles.row, styles.rowDivider]} onPress={() => showComingSoon("Source Code")} accessibilityRole="button">
             <View style={styles.labelRow}>
               <Ionicons name="logo-github" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Source Code</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </View>
-          <View style={styles.row}>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.row} onPress={() => showComingSoon("Help & Support")} accessibilityRole="button">
             <View style={styles.labelRow}>
               <Ionicons name="help-circle-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Help & Support</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} style={styles.chevron} />
-          </View>
+          </TouchableOpacity>
         </View>
       </View>
 

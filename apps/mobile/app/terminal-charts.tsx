@@ -21,6 +21,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import {
   chartFailureReason,
   chartInstrument,
@@ -125,7 +126,8 @@ export default function TerminalChartsScreen() {
     () => (interval === "1d" ? withForming(session.data?.candles ?? [], session.data?.forming, INTRADAY_CANDLES_SHOWN) : []),
     [interval, session.data],
   );
-  const live = useLiveCandles(symbol, interval as ChartBucket, baseCandles, sessionCandles);
+  const focused = useScreenFocused();
+  const live = useLiveCandles(symbol, interval as ChartBucket, baseCandles, sessionCandles, focused);
 
   const chartDataPoints = useMemo(
     () => live.points.map((c) => ({

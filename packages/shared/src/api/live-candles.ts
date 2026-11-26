@@ -232,9 +232,10 @@ export function useLiveCandles(
   interval: ChartBucket,
   base: readonly Candle[],
   extras: readonly Candle[] = [],
+  enabled = true,
 ): LiveCandles {
   const id = useMemo(() => streamId(name), [name]);
-  const feed = useQuoteFeed(id ? [id] : [], !!id);
+  const feed = useQuoteFeed(id ? [id] : [], !!id && enabled);
 
   const tick = useMemo(() => (id ? feed.quotes.find((quote) => quote.id === id) ?? null : null), [feed, id]);
 

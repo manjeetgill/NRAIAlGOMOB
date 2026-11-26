@@ -105,7 +105,9 @@ it("subscribes the rendered list off the stream instead of only re-reading it", 
   const screen = readFileSync(resolve("apps/mobile/app/(tabs)/watchlist.tsx"), "utf8");
   expect(screen).toContain("const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0)");
   expect(screen).toContain("markWatchlist(rows, feed.quotes)");
-  expect(screen).toContain("data={liveRows}");
+  // What gets rendered is what was ticked, then painted only in the gaps the ticks left (see quote-memory.ts).
+  expect(screen).toContain("paintWatchlist(liveRows, quotes.seen)");
+  expect(screen).toContain("data={shownRows}");
   // The state line used to cover an open socket with no ticks and a closed one with the same word.
   expect(screen).toContain('"ticking" : feed.connected ? "waiting for ticks" : "no live stream"');
 });

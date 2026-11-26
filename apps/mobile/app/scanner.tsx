@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatRupees } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { asMs } from "@/utils/scan-chart";
 import type { ScannerSignalType } from "@nraialgo/shared/api";
 
@@ -53,8 +54,9 @@ export default function ScannerScreen() {
   const { resolvedTheme } = useTheme();
   const router = useRouter();
   const [filter, setFilter] = useState<SignalFilter>("all");
+  const focused = useScreenFocused();
 
-  const { data, isLoading, isError, refetch } = useTechnicalEvents();
+  const { data, isLoading, isError, refetch } = useTechnicalEvents({ enabled: focused });
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }

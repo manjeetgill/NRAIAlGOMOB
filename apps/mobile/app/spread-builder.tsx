@@ -33,6 +33,7 @@ import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 import { useApi } from "@/hooks/useApi";
+import { useScreenFocused } from "@/hooks/useScreenFocused";
 
 /** One staged leg, as the trader left it. The contract prod resolves it into is not this screen's business. */
 interface Leg {
@@ -154,7 +155,8 @@ export default function SpreadBuilderScreen() {
   // prices are only ever read out of the chain for the date being staged, so a date change is its own
   // read rather than a re-labelled one.
   const [date, setDate] = useState("");
-  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry);
+  const focused = useScreenFocused();
+  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry, { enabled: focused && !!underlying });
   useEffect(() => {
     setDate("");
   }, [underlying]);
@@ -173,6 +175,7 @@ export default function SpreadBuilderScreen() {
   const [basket, setBasket] = useState("");
   // The sheet that asks for the name. Execute opens it; only its Send talks to prod.
   const [sendSheet, setSendSheet] = useState(false);
+  const [confirmExecute, setConfirmExecute] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sentId, setSentId] = useState("");
@@ -731,7 +734,7 @@ export default function SpreadBuilderScreen() {
   const ask = () => {
     const reason = refusal();
     if (reason) { setNote(reason); return; }
-    if (adjusting && basket.trim()) { send(); return; }
+    if (adjusting && basket.trim()) { setConfirmExecute(true); return; }
     setBasket(suggestedName());
     setNote(null);
     setSendSheet(true);
@@ -1031,6 +1034,28 @@ export default function SpreadBuilderScreen() {
     </Modal>
   );
 
+  const executeConfirmModal = (
+    <Modal visible={confirmExecute} transparent animationType="fade" onRequestClose={() => setConfirmExecute(false)}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 20 }}>
+        <View style={{ backgroundColor: colors.card, borderRadius: 12, padding: 16, maxWidth: 380, width: "100%", gap: 8 }}>
+          <Text style={styles.title}>Execute adjustment?</Text>
+          <Text style={styles.small}>
+            {`${[closeText, adds ? `Add ${adds}` : ""].filter(Boolean).join("  ·  ")}  ·  ${net >= 0 ? "Net credit" : "Net debit"} ₹${formatNumber(Math.abs(net), 2)}`}
+          </Text>
+          <Text style={styles.small}>This sends real broker orders under this basket name.</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+            <TouchableOpacity style={[styles.cancel, { flex: 1 }]} onPress={() => setConfirmExecute(false)} accessibilityRole="button" accessibilityLabel="Cancel adjustment">
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.execute, { flex: 1 }]} onPress={() => { setConfirmExecute(false); void send(); }} disabled={sending} accessibilityRole="button" accessibilityLabel="Confirm adjustment orders">
+              <Text style={styles.executeText}>{sending ? "Sending" : "Execute"}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.body}>
       {tabs}
@@ -1265,6 +1290,7 @@ export default function SpreadBuilderScreen() {
       {picker}
       {expirySheet}
       {nameSheet}
+      {executeConfirmModal}
     </ScrollView>
   );
 }

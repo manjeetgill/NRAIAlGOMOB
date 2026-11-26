@@ -224,6 +224,7 @@ export interface TradingState {
   // Actions
   setOrderTicketSymbol: (symbol: string, exchange?: string, product?: string) => void;
   setOrderTicketField: <K extends keyof TradingState["orderTicket"]>(field: K, value: TradingState["orderTicket"][K]) => void;
+  setOrderTicketBatch: (fields: Partial<TradingState["orderTicket"]>) => void;
   resetOrderTicket: () => void;
   setOptionChainUnderlying: (underlying: string) => void;
   setOptionChainExpiry: (expiry: string) => void;
@@ -282,6 +283,9 @@ export function createTradingStore() {
           set(state => ({
             orderTicket: { ...state.orderTicket, [field]: value },
           })),
+
+        setOrderTicketBatch: (fields) =>
+          set((state) => ({ orderTicket: { ...state.orderTicket, ...fields } })),
 
         resetOrderTicket: () => set({ orderTicket: defaultOrderTicket }),
 
