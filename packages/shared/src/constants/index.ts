@@ -37,7 +37,6 @@ export const ENDPOINTS = {
   AUTH_LOGIN: "/v1/auth/login",
   AUTH_LOGOUT: "/v1/auth/logout",
   AUTH_REFRESH: "/v1/auth/refresh",
-  AUTH_BROKERS: "/v1/auth/brokers",
 
   // Baskets
   BASKETS: "/v1/baskets",
