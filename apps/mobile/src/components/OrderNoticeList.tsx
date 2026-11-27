@@ -1,9 +1,10 @@
 /**
  * The notices themselves, at the top of the Orders tab.
  *
- * The badge on the tab and the line above every screen both point here, so this is where a trader lands to
- * read what happened. The rows are the server's own titles and summaries, in the server's own order (unread
- * first, then newest) — the same list the web desk shows from the same route, so the two can never disagree.
+ * This is where a trader lands to read what happened: the toast above every screen points here, and a notice
+ * the toast timed out on is still listed, unread. The rows are the server's own titles and summaries, in the
+ * server's own order (unread first, then newest) — the same list the web desk shows from the same route, so the
+ * two can never disagree.
  *
  * Three are listed before a "show them all" line, because this section sits on top of the order book and a
  * session of fills should not push the actual orders off the screen.
