@@ -682,8 +682,8 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
-      {/* What the badge counted, listed first: the notices are why the trader came here, the book below is
-          what they check afterwards. Renders nothing until prod has a live notice for this account. */}
+      {/* The notices a toast said out loud and the trader did not tap are still here, unread, above the book.
+          Renders nothing until prod has a live notice for this account. */}
       <OrderNoticeList />
       <View style={styles.tabBar}>
         {TABS.map((t) => (

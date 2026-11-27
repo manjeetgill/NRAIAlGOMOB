@@ -18,7 +18,7 @@ const sse = read("packages/shared/src/api/sse.ts");
 const shell = read("apps/mobile/app/_layout.tsx");
 const tabs = read("apps/mobile/app/(tabs)/_layout.tsx");
 const orders = read("apps/mobile/app/(tabs)/orders.tsx");
-const banner = read("apps/mobile/src/components/OrderNoticeBanner.tsx");
+const toast = read("apps/mobile/src/components/OrderNoticeToast.tsx");
 const list = read("apps/mobile/src/components/OrderNoticeList.tsx");
 const barrel = read("packages/shared/src/api/index.ts");
 
@@ -122,7 +122,7 @@ describe("the read is bounded and costs the broker nothing", () => {
 
   it("filters live rows in the one place every reader shares", () => {
     expect(inbox).toContain("liveNotices(await client.get<OrderInboxBody>");
-    for (const surface of [banner, list, tabs]) expect(surface).not.toContain("mode === \"live\"");
+    for (const surface of [toast, list, tabs]) expect(surface).not.toContain("mode === \"live\"");
   });
 });
 
@@ -148,57 +148,74 @@ describe("the stream keeps the event name this route signals with", () => {
 describe("nothing on the phone may clear the inbox or call itself push", () => {
   it("never reaches the clear route, which would also take paper rows with it", () => {
     expect(inbox).not.toContain("orders/clear");
-    expect(banner).not.toContain("orders/clear");
+    expect(toast).not.toContain("orders/clear");
     expect(list).not.toContain("orders/clear");
     expect(orders).not.toContain("orders/clear");
   });
 
   it("reads a notice rather than scheduling anything", () => {
     expect(inbox).toContain('client.post<void>(`/v1/alerts/orders/${id}/read`, {})');
-    expect(banner).not.toContain("expo-notifications");
+    expect(toast).not.toContain("expo-notifications");
     expect(list).not.toContain("expo-notifications");
-  });
-
-  it("has no timer that could hide a fill before it is read", () => {
-    expect(banner).not.toContain("setTimeout");
-    expect(banner).toContain("const close = () => setAnnounced((ids) => [...ids, current.id]);");
   });
 });
 
-describe("the three surfaces point at the same cache", () => {
-  it("mounts the notice line once, above every screen but the two before a session is open", () => {
-    expect(shell).toContain('import OrderNoticeBanner from "@/components/OrderNoticeBanner";');
+describe("the two surfaces point at the same cache", () => {
+  it("mounts the toast once, over every screen but the two before a session is open", () => {
+    expect(shell).toContain('import OrderNoticeToast from "@/components/OrderNoticeToast";');
     // The shell's own gate, which #37 widened to the unlock screen: a notice about positions belongs to a
     // session the trader has actually entered.
-    expect(shell).toContain("{chromeless ? null : <OrderNoticeBanner />}");
+    expect(shell).toContain("{chromeless ? null : <OrderNoticeToast />}");
     expect(shell).not.toContain("<<<<<<<");
   });
 
-  it("badges the Orders tab with unread live notices", () => {
-    expect(tabs).toContain("const unread = unreadNotices(inbox.data ?? []).length;");
-    expect(tabs).toContain("tabBarBadge: unread > 0 ? unread : undefined,");
+  it("lays it over the screen instead of taking a line of it", () => {
+    // The banner this replaces sat between the search bar and the router slot, so every route lost the height.
+    expect(shell).not.toContain("OrderNoticeBanner");
+    expect(toast).toContain('wrap: { position: "absolute", left: 0, right: 0');
+    expect(toast).toContain("pointerEvents=\"box-none\"");
   });
 
-  it("lists the notices on the tab the badge opens", () => {
+  it("leaves the Orders tab unbadged, because a notice now says itself once and stops", () => {
+    expect(tabs).not.toContain("tabBarBadge");
+    expect(tabs).not.toContain("unreadNotices");
+    expect(tabs).not.toContain("useOrderInbox");
+  });
+
+  it("lists the notices on the tab the toast opens", () => {
     expect(orders).toContain("<OrderNoticeList />");
     expect(list).toContain("const rows = inbox.data ?? [];");
     expect(list).toContain("if (rows.length === 0) return null;");
   });
 
-  it("marks read from both banner actions, so the badge cannot outlive what was shown", () => {
-    expect(banner.match(/markRead\.mutate\(current\.id\)/g)?.length).toBe(2);
+  it("opens the orders desk from the toast", () => {
+    expect(toast).toContain('router.navigate("/(tabs)/orders")');
   });
 
-  it("opens the tab the badge sits on, spelled as the tab group's own route", () => {
-    expect(banner).toContain('router.navigate("/(tabs)/orders")');
+  it("retires a toast on a timer and clears that timer when the notice changes", () => {
+    expect(toast).toContain("const timer = setTimeout(() => setAnnounced((ids) => [...ids, current.id]), SHOW_MS);");
+    expect(toast).toContain("return () => clearTimeout(timer);");
+  });
+
+  it("does not mark a notice read just because its toast timed out", () => {
+    // Only the tap reaches the read route, so a message the trader may never have looked at cannot silently
+    // empty their unread list. The notice stays at the top of the Orders tab until they deal with it.
+    expect(toast.match(/markRead\.mutate/g)?.length).toBe(1);
+  });
+
+  it("walks a burst of fills one toast at a time, newest first, so none is skipped", () => {
+    const three = [row({ id: 21 }), row({ id: 22 }), row({ id: 20 })];
+    expect(unshownNotices(three, [], false).map((r) => r.id)).toEqual([22, 21, 20]);
+    expect(unshownNotices(three, [22], false).map((r) => r.id)).toEqual([21, 20]);
+    expect(unshownNotices(three, [22, 21, 20], false)).toEqual([]);
   });
 
   it("prints the server's title and summary on each surface, never a sentence written here", () => {
-    for (const surface of [banner, list]) {
+    for (const surface of [toast, list]) {
       expect(surface).toContain("noticeTitle(");
       expect(surface).toContain("noticeSummary(");
     }
-    expect(banner).not.toContain('"Order executed');
+    expect(toast).not.toContain('"Order executed');
     expect(list).not.toContain('"Live order');
   });
 });
