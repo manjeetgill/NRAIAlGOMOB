@@ -5,7 +5,7 @@
  * Uses the shared ApiClient for consistent behavior
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
 import { brokerConnections, type BrokerConnection, type ProviderTimestamps } from "./broker-connection";
@@ -23,7 +23,13 @@ import { formatISTDate } from "../utils";
  */
 const STREAM_SAFETY_POLL_MS = 2 * 60 * 1000;
 const CLOSED_CHAIN_POLL_MS = 60 * 1000;
-const ORDER_REREAD_MS = 2 * 1000;
+/** The seed a cold watchlist waits for is reused for exactly this long, so asking faster repeats the same work. */
+const SEED_POLL_MS = 5_000;
+const SEED_POLL_TRIES = 3;
+/** A ticket that the order stream is not feeding is re-read this often; the stream itself needs no timer. */
+const ORDER_POLL_MS = 60_000;
+/** Algo entries and exits are execution intents, so one burst of frames is one re-read of the live-trades list. */
+const LIVE_TRADES_DEBOUNCE_MS = 1_000;
 /**
  * The instrument ids a screen ticks from the price socket, read when a poll is scheduled. Only a screen
  * that passes one may slow its REST read, and only while every one of those ids is ticking
@@ -63,6 +69,98 @@ let accountStream: SseSubscription | null = null;
 let accountStreamUsers = 0;
 let alertStream: SseSubscription | null = null;
 let alertStreamUsers = 0;
+let orderStream: SseSubscription | null = null;
+let orderStreamUsers = 0;
+const orderStreamHandlers = new Set<(event: string, payload: unknown) => void>();
+
+/** True while the order stream is delivering, so a screen can drop its timed REST read instead of guessing. */
+export function orderStreamAlive(): boolean {
+  return orderStream !== null && orderStream.alive();
+}
+
+/** One leg as the order stream names it: the projection of the server's own execution row. */
+export interface OrderStreamLeg {
+  index?: number;
+  state?: string | null;
+  filledQuantity?: number | string | null;
+  averagePrice?: number | string | null;
+  brokerOrderId?: string | null;
+  message?: string | null;
+}
+
+/** One instruction as the order stream names it, keyed by the `client_id` the ticket was sent with. */
+export interface OrderStreamIntent {
+  client_id?: string | null;
+  clientId?: string | null;
+  status?: string | null;
+  message?: string | null;
+  legs?: OrderStreamLeg[] | null;
+}
+
+/** The `order` frame is `{intents: [...], asOf}`; anything else carries no instruction. */
+export function orderFrameIntents(payload: unknown): OrderStreamIntent[] {
+  const intents = (payload as { intents?: unknown } | null)?.intents;
+  return Array.isArray(intents) ? (intents as OrderStreamIntent[]) : [];
+}
+
+/** The `gtt` frame is `{gtts: [...], asOf}` with the same rows as GET /v1/orders/gtt; null means no list. */
+export function orderFrameGtts<T>(payload: unknown): T[] | null {
+  const gtts = (payload as { gtts?: unknown } | null)?.gtts;
+  return Array.isArray(gtts) ? (gtts as T[]) : null;
+}
+
+const text = (value: unknown): string | null =>
+  typeof value === "string" ? value : typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+const count = (value: unknown): number | null => {
+  const n = typeof value === "string" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Fold one order-stream intent into the ticket body already in the cache, so a leg repaints from the frame
+ * instead of paying a REST read for it.
+ *
+ * Only fields the frame actually carries are written: the frame is the execution row, while the ticket body
+ * also holds the basket name, the phase and the cancel flag that only the REST route returns, and those stay
+ * as they were read. A leg the frame does not name is left alone, so a partial frame never blanks a row.
+ */
+export function applyOrderFrame(snapshot: OrderSnapshot, intent: OrderStreamIntent): OrderSnapshot {
+  const legs = Array.isArray(intent.legs) ? intent.legs : [];
+  const byIndex = new Map<number, OrderStreamLeg>();
+  for (const leg of legs) {
+    if (leg && typeof leg.index === "number") byIndex.set(leg.index, leg);
+  }
+  const status = text(intent.status);
+  return {
+    ...snapshot,
+    status: status ?? snapshot.status,
+    message: intent.message === undefined ? snapshot.message : intent.message,
+    orders: snapshot.orders.map((leg) => {
+      const frame = byIndex.get(leg.index);
+      if (!frame) return leg;
+      const state = text(frame.state);
+      return {
+        ...leg,
+        state: state ?? leg.state,
+        filledQuantity: frame.filledQuantity === undefined ? leg.filledQuantity : count(frame.filledQuantity),
+        averagePrice: frame.averagePrice === undefined ? leg.averagePrice : text(frame.averagePrice),
+        orderId: frame.brokerOrderId === undefined ? leg.orderId : text(frame.brokerOrderId),
+        message: frame.message === undefined ? leg.message : frame.message,
+      };
+    }),
+  };
+}
+
+/**
+ * While the server seeds a cold watchlist's prices it answers `pricesPending`, and the socket prices the rows
+ * the moment that seed lands, so the REST read only exists to catch the seed: three tries at the quote TTL
+ * (a batch read is reused for exactly that long), then the page falls back to its ordinary safety net instead
+ * of starting another seed every five seconds for the rest of the session.
+ */
+export function watchlistPoll(pricesPending: boolean | undefined, dataUpdateCount: number, streamedCarries: boolean): number {
+  if (pricesPending && dataUpdateCount <= SEED_POLL_TRIES) return SEED_POLL_MS;
+  return streamedCarries ? STREAM_SAFETY_POLL_MS : 15_000;
+}
 
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
 const FULL_WINDOW = 400;
@@ -675,6 +773,46 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
   const accountPoll = () => (accountStream?.alive() ? STREAM_SAFETY_POLL_MS : 30 * 1000);
 
+  /**
+   * One `/v1/broker-auth/order/stream` for every screen that follows an execution.
+   *
+   * The server answers two named events on it: `order` carries `{intents, asOf}` — the execution rows and
+   * their legs, re-checked once a second and sent only when something moved, with finished intents kept for
+   * ten minutes — and `gtt` carries `{gtts, asOf}`, the same rows `GET /v1/orders/gtt` returns, re-checked
+   * every five seconds with the first frame sent on connect. Each consumer takes the event it reads, so the
+   * ticket, the GTT list and Algo Lab share one connection instead of holding three.
+   */
+  const useOrderStream = (onEvent: (event: string, payload: unknown) => void, wanted = true) => {
+    // The handler is kept in a ref so a screen re-rendering on every tick never re-arms the connection.
+    const latest = useRef(onEvent);
+    latest.current = onEvent;
+    useEffect(() => {
+      if (!wanted) return;
+      const dispatch = (event: string, payload: unknown) => latest.current(event, payload);
+      orderStreamHandlers.add(dispatch);
+      orderStreamUsers += 1;
+      if (!orderStream) {
+        orderStream = subscribeSSEEvents(`${Constants.API.BASE_URL}/v1/broker-auth/order/stream`, (event, data) => {
+          let payload: unknown = null;
+          try {
+            payload = JSON.parse(data) as unknown;
+          } catch {
+            return; // a frame that is not JSON names nothing, so no consumer can act on it
+          }
+          for (const listener of orderStreamHandlers) listener(event, payload);
+        });
+      }
+      return () => {
+        orderStreamHandlers.delete(dispatch);
+        orderStreamUsers -= 1;
+        if (orderStreamUsers === 0 && orderStream) {
+          orderStream.close();
+          orderStream = null;
+        }
+      };
+    }, [wanted]);
+  };
+
   // ===== POSITIONS =====
   // Prod has no /v1/positions/open. The desk the owner reads on the web is /v1/broker-auth/icici/account:
   // ICICI's own position rows, each carrying average, last price and marked P&L, and it keeps serving them
@@ -750,7 +888,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryKey: queryKeys.watchlist.list(number),
       queryFn: () => client.get<WatchlistPage>("/v1/watchlist", { params: { list: number } }),
       staleTime: 2 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarries(streamed?.()) ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (query) => watchlistPoll(query.state.data?.pricesPending, query.state.dataUpdateCount, quoteStreamCarries(streamed?.())),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -759,15 +897,16 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   // Prod answers a cold list with its membership first and keeps seeding the prices in the
   // background, so the first page says pricesPending until that seed lands. Measured on prod
   // 2026-11-22: a 50-symbol list turns priced 3 s after the cold call, and a batch read is
-  // only reused for 5 s (QUOTES_TTL), so a refresh slower than that arrives after the seed's
-  // work has already expired and starts another one. Polling at 2 s while pending is what
-  // makes the prices show up in one screen-load instead of never.
+  // only reused for 5 s (QUOTES_TTL), so a faster refresh arrives before the first seed has
+  // finished and starts a second one behind it. `watchlistPoll` waits the TTL between tries and
+  // gives up after three; from there the socket prices the rows and the ordinary net catches a
+  // stream that never arrived.
   const useBuiltinWatchlist = (name: BuiltinListName, page = 0, options?: UseQueryOptions<WatchlistPage, ApiError>, streamed?: StreamedIds) => {
     return useQuery({
       queryKey: queryKeys.watchlist.builtin(name, page),
       queryFn: () => client.get<WatchlistPage>(`/v1/watchlist/builtin/${name}`, { params: { page } }),
       staleTime: 10 * 1000,
-      refetchInterval: (state) => (state.state.data?.pricesPending ? 2_000 : quoteStreamCarries(streamed?.()) ? STREAM_SAFETY_POLL_MS : 15_000),
+      refetchInterval: (query) => watchlistPoll(query.state.data?.pricesPending, query.state.dataUpdateCount, quoteStreamCarries(streamed?.())),
       placeholderData: keepPreviousData,
       ...options,
     });
@@ -861,7 +1000,10 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       refetchInterval: ({ state }) => {
         if (!state.data) return false;
         if (state.data.marketOpen === false) return CLOSED_CHAIN_POLL_MS;
-        return quoteStreamCarries(streamed?.()) ? 30 * 1000 : 5 * 1000;
+        // While the socket carries the index spot, prod prices every strike in the window from socket ticks
+        // and re-reads the whole-expiry ICICI snapshot only every five minutes, so this poll is no longer how
+        // a price arrives. It stays at a minute as the net for strikes that have just entered the window.
+        return quoteStreamCarries(streamed?.()) ? 60 * 1000 : 5 * 1000;
       },
       ...options,
     });
@@ -945,8 +1087,10 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   /**
    * The server's own basket model: it inverts each leg's volatility from the price sent, so it answers
    * the T+0 curve, the probability of profit and the greeks that no client arithmetic can honestly give.
-   * A POST, because the leg set travels in the body, and re-read on a timer rather than on every tick -
-   * one call prices the whole basket, and the desk is already pacing the chain read underneath it.
+   * A POST, because the leg set travels in the body. It never re-reads on a timer: this is arithmetic the
+   * server does from the legs it was sent, with no broker call in it, and the leg set is already part of the
+   * query key — edit a leg and a new key reads a new answer. What moves while a basket is held is its P&L,
+   * and that ticks from the price socket.
    */
   const useStrategyAnalysis = (body: StrategyAnalysisRequest | null, options?: Omit<UseQueryOptions<StrategyAnalysis, ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
@@ -954,19 +1098,23 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
       queryFn: () => client.post<StrategyAnalysis>("/v1/strategy-analysis", body),
       enabled: !!body,
       staleTime: 30 * 1000,
-      refetchInterval: 30 * 1000,
+      refetchInterval: false,
       ...options,
     });
   };
 
-  /** What the exchange would need in the margin account for this leg set, from the published margin parameters. */
+  /**
+   * What the exchange would need in the margin account for this leg set, from the published margin
+   * parameters. Like the analysis above it is our own arithmetic on the legs it was sent, so it re-reads
+   * when the legs change and not on a clock.
+   */
   const usePlanningMargin = (body: MarginRequest | null, options?: UseQueryOptions<MarginEstimate, ApiError>) => {
     return useQuery({
       queryKey: queryKeys.optionChain.margin(body as MarginRequest),
       queryFn: () => client.post<MarginEstimate>("/v1/planning-margin", body),
       enabled: !!body,
       staleTime: 30 * 1000,
-      refetchInterval: 60 * 1000,
+      refetchInterval: false,
       ...options,
     });
   };
@@ -1068,45 +1216,32 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
    * once the basket has landed, so a finished trade never keeps the phone polling prod.
    */
   const useOrderSnapshot = (clientId: string, wanted: boolean) => {
-    useEffect(() => {
-      if (!wanted || clientId.length === 0) return;
-      // The stream yields on every change (each leg of a basket fill is one), so re-reads are held to one
-      // every ORDER_REREAD_MS: the first frame reads at once, frames inside the window share one trailing
-      // read, and the final state is never missed.
-      const reread = throttleReread(
-        () => void queryClient.invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) }),
-        ORDER_REREAD_MS,
-      );
-      const sub = subscribeSSE(
-        `${Constants.API.BASE_URL}/v1/broker-auth/order/stream`,
-        // The stream sends {intents: [<execution_intents rows>], asOf}: database rows keyed `client_id`, not
-        // the /v1/orders/{clientId} body, so the old `clientId` match never fired and the screen waited for
-        // the 15 s poll. A frame naming this order now re-reads its snapshot at once.
-        (raw) => {
-          try {
-            const parsed = JSON.parse(raw) as { intents?: Array<{ client_id?: string; clientId?: string }> };
-            const named = Array.isArray(parsed?.intents)
-              && parsed.intents.some((i) => (i.client_id ?? i.clientId) === clientId);
-            if (named) reread.request();
-          } catch {
-            // Ignore malformed SSE frame
-          }
-        },
-      );
-      return () => {
-        reread.cancel();
-        sub.close();
-      };
-    }, [clientId, wanted]);
+    // The frame names the instruction by the `client_id` it was sent with and carries each leg's execution
+    // row, so the ticket is repainted from the frame itself. Re-reading `/v1/orders/{clientId}` on every
+    // frame asked the server for the rows it had just sent, and a phone whose stream was up still waited
+    // 15 s for the poll when a frame was missed.
+    useOrderStream((event, payload) => {
+      if (!wanted || event !== "order") return;
+      const intent = orderFrameIntents(payload).find(i => (i.client_id ?? i.clientId) === clientId);
+      if (!intent) return;
+      const key = queryKeys.orders.snapshot(clientId);
+      const cached = queryClient.getQueryData<OrderSnapshot>(key);
+      // The first body still comes from REST: the frame carries the legs, not the basket name, the phase or
+      // the cancel flag, so there is nothing honest to write into a cache that has never been filled.
+      if (cached) queryClient.setQueryData(key, applyOrderFrame(cached, intent));
+    }, wanted && clientId.length > 0);
 
     return useQuery({
       queryKey: queryKeys.orders.snapshot(clientId),
       queryFn: () => client.get<OrderSnapshot>(`/v1/orders/${clientId}`),
       enabled: wanted && clientId.length > 0,
       staleTime: 0,
+      // While the stream is up it is the source and no timer is needed. This is the disconnected fallback:
+      // one read a minute, and it stops by itself once every leg has settled.
       refetchInterval: ({ state }) => {
-        if (state.data === undefined) return 15 * 1000;
-        return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? 15 * 1000 : false;
+        if (orderStreamAlive()) return false;
+        if (state.data === undefined) return ORDER_POLL_MS;
+        return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? ORDER_POLL_MS : false;
       },
     });
   };
@@ -1143,6 +1278,15 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   const useGttOrders = (options?: UseQueryOptions<GttOrder[], ApiError>) => {
+    // The order stream also carries the GTT rows, so a trigger that fires or gets filled repaints this list
+    // the moment the server notices, and the first frame arrives on connect rather than after a poll. The
+    // stream is held open only while the list is actually subscribed, so a screen that moved to another tab
+    // does not keep a fourth connection running for a list nobody is reading.
+    useOrderStream((event, payload) => {
+      if (event !== "gtt") return;
+      const rows = orderFrameGtts<GttOrder>(payload);
+      if (rows) qc.setQueryData(queryKeys.orders.gtt(), rows);
+    }, options?.subscribed !== false);
     return useQuery({
       queryKey: queryKeys.orders.gtt(),
       queryFn: async () => {
@@ -1150,7 +1294,9 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
         return response.gtts;
       },
       staleTime: 5 * 1000,
-      refetchInterval: 10 * 1000,
+      // Only a phone whose stream is down needs a timer, and it needs two minutes rather than ten seconds.
+      // The screen still reads on focus and on pull-to-refresh either way.
+      refetchInterval: () => (orderStreamAlive() ? false : STREAM_SAFETY_POLL_MS),
       ...options,
     });
   };
@@ -1255,11 +1401,23 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   const useLiveTrades = (options?: UseQueryOptions<LiveTrade[], ApiError>) => {
+    // An algo entry or exit is an execution intent, so it is on the order stream before it appears in this
+    // list. The stream sends one frame per change and a basket is several changes at once, so the re-read is
+    // held to one per second.
+    const reread = useMemo(
+      () => throttleReread(() => void qc.invalidateQueries({ queryKey: queryKeys.scanner.liveTrades() }), LIVE_TRADES_DEBOUNCE_MS),
+      [],
+    );
+    useOrderStream((event, payload) => {
+      if (event === "order" && orderFrameIntents(payload).length > 0) reread.request();
+    });
+    useEffect(() => () => reread.cancel(), [reread]);
     return useQuery({
       queryKey: queryKeys.scanner.liveTrades(),
       queryFn: () => client.get<LiveTrade[]>("/v1/scanner-automations/live-trades"),
       staleTime: 5 * 1000,
-      refetchInterval: 10 * 1000,
+      // What still moves here is each leg's P&L, and that already ticks from the price socket.
+      refetchInterval: 60 * 1000,
       ...options,
     });
   };

@@ -160,8 +160,16 @@ describe("Orders screen shows four tabs", () => {
     expect(screen).toContain("no read time printed");
   });
 
-  it("auto-refreshes orders every 10 seconds", () => {
-    expect(hooks).toMatch(/refetchInterval:\s*10\s*\*\s*1000/);
+  it("takes the GTT list from the order stream and polls only a phone that lost it", () => {
+    // The server pushes `GET /v1/orders/gtt`'s own rows on the order stream's `gtt` event every five seconds,
+    // so a trigger that fires or gets filled repaints the list without a REST read. A ten-second timer on top
+    // of that asked prod for rows the phone already had.
+    const gtt = hooks.slice(hooks.indexOf("const useGttOrders ="), hooks.indexOf("const useOrderInbox ="));
+    expect(gtt).toContain('if (event !== "gtt") return;');
+    expect(gtt).toContain("qc.setQueryData(queryKeys.orders.gtt(), rows)");
+    expect(gtt).toContain("refetchInterval: () => (orderStreamAlive() ? false : STREAM_SAFETY_POLL_MS)");
+    // The read on foreground and pull-to-refresh is untouched: the timer is the only thing that went.
+    expect(gtt).not.toMatch(/refetchInterval:\s*10\s*\*\s*1000/);
   });
 
   it("says why a row carries no price instead of printing a dash", () => {
