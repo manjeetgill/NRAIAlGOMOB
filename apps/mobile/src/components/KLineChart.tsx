@@ -252,16 +252,37 @@ export default function KLineChart({
           // offered history to never asks at all.
           const LEAD_BARS = 12;
 
+          function oldestBar() {
+            const list = chart.getDataList() || [];
+            return list.length ? list[0].timestamp : null;
+          }
+
+          // Whether this chart is asking for a page it does not already have. A window that holds every bar
+          // the chart owns cannot be dragged at all — the drag moves the empty margin, not the candles — so
+          // the range event that would trigger a page never arrives. A seven-bar hour on a wide phone screen
+          // is that chart: without filling on the arm alone, its history stays unreachable however hard it is
+          // scrolled. Once the candles overflow the screen, dragging works and only a real scroll asks.
+          function needsOlder(range) {
+            if (!pagerOn || !moreAhead || asking) return false;
+            const list = chart.getDataList() || [];
+            if (!list.length) return false;
+            const allOnScreen = !range || typeof range.from !== 'number' || (range.to - range.from) >= list.length;
+            return allOnScreen || range.from <= LEAD_BARS;
+          }
+
+          function askForOlder() {
+            const before = oldestBar();
+            if (before === null) return;
+            asking = true;
+            postApp({ type: 'needMore', before });
+          }
+
           function watchLeftEdge() {
             if (typeof chart.subscribeAction !== 'function') return;
             try {
               chart.subscribeAction('onVisibleRangeChange', function (range) {
-                if (!pagerOn || !moreAhead || asking || !range || typeof range.from !== 'number') return;
-                if (range.from > LEAD_BARS) return;
-                const list = chart.getDataList() || [];
-                if (!list.length) return;
-                asking = true;
-                postApp({ type: 'needMore', before: list[0].timestamp });
+                if (!needsOlder(range)) return;
+                askForOlder();
               });
             } catch (e) {
               console.error('Edge watch error:', e);
@@ -277,17 +298,22 @@ export default function KLineChart({
             moreAhead = !!request.more;
             asking = false;
             const list = chart.getDataList() || [];
-            if (!list.length) return;
-            if (request.nonce === lastHistoryNonce) return;
-            lastHistoryNonce = request.nonce;
-            const edge = list[0].timestamp;
-            const page = (request.bars || []).map(toBar).filter(function (item) { return item.timestamp < edge; });
-            if (!page.length) return;
-            try {
-              chart._chartStore._addData(page, 'forward', { forward: moreAhead, backward: false });
-            } catch (e) {
-              console.error('History error:', e);
+            if (list.length && request.nonce !== lastHistoryNonce) {
+              lastHistoryNonce = request.nonce;
+              const edge = list[0].timestamp;
+              const page = (request.bars || []).map(toBar).filter(function (item) { return item.timestamp < edge; });
+              if (page.length) {
+                try {
+                  chart._chartStore._addData(page, 'forward', { forward: moreAhead, backward: false });
+                } catch (e) {
+                  console.error('History error:', e);
+                }
+              }
             }
+            // Arm-to-arm: the first page arrives without any gesture, and while the chart still shows all it
+            // holds, so does the next one. This stops on its own — the record running out clears the flag
+            // that says more exists, and a chart long enough to scroll stops needing the free fill.
+            if (needsOlder(chart.getVisibleRange && chart.getVisibleRange())) askForOlder();
           }
 
           function clearScan() {

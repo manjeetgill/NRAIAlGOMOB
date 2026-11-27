@@ -201,7 +201,7 @@ it("prepends older sessions without moving the chart", () => {
   expect(chart).toContain("chart._chartStore._addData(page, 'forward', { forward: moreAhead, backward: false });");
   // Only bars the canvas does not already hold, so a canvas rebuilt by a theme change is refilled once.
   expect(chart).toContain("const page = (request.bars || []).map(toBar).filter(function (item) { return item.timestamp < edge; });");
-  expect(chart).toContain("if (request.nonce === lastHistoryNonce) return;");
+  expect(chart).toContain("if (list.length && request.nonce !== lastHistoryNonce) {");
   expect(chart).toContain("const list = chart.getDataList() || [];");
   // A chart switched to another instrument has no pages, and must not be asked for any either.
   expect(chart).toContain("pagerOn = false;\n            moreAhead = false;");
@@ -212,12 +212,24 @@ it("prepends older sessions without moving the chart", () => {
 it("asks for the next page as the oldest bar comes into view", () => {
   const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
   expect(chart).toContain("chart.subscribeAction('onVisibleRangeChange', function (range) {");
-  expect(chart).toContain("if (!pagerOn || !moreAhead || asking || !range || typeof range.from !== 'number') return;");
-  expect(chart).toContain("if (range.from > LEAD_BARS) return;");
-  expect(chart).toContain("postApp({ type: 'needMore', before: list[0].timestamp });");
+  expect(chart).toContain("if (!pagerOn || !moreAhead || asking) return false;");
+  expect(chart).toContain("return allOnScreen || range.from <= LEAD_BARS;");
+  expect(chart).toContain("postApp({ type: 'needMore', before });");
   expect(chart).toContain("asking = true;");
   expect(chart).toContain('message.type === "needMore"');
   expect(chart).toContain("needMoreRef.current?.(message.before);");
+});
+
+// Seven hourly bars fit a phone screen with room to spare, so dragging them moves the empty margin and not a
+// single candle: no range event, no request, and a chart that looks like it has no history at all. While the
+// canvas shows every bar it owns, the fill has to come from the arm itself.
+it("fills a chart that is too short to be scrolled", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain("const allOnScreen = !range || typeof range.from !== 'number' || (range.to - range.from) >= list.length;");
+  // The same check runs after a page is applied, so a chart that still cannot scroll asks again.
+  expect(chart).toContain("if (needsOlder(chart.getVisibleRange && chart.getVisibleRange())) askForOlder();");
+  // and it stops by itself: the record ending clears `more`, which the guard reads first.
+  expect(chart).toContain("moreAhead = !!request.more;");
 });
 
 // A candle closing while the trader reads an older session used to replace the whole list, which threw the
