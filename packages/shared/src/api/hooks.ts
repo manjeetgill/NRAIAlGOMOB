@@ -12,6 +12,7 @@ import { brokerConnections, type BrokerConnection, type ProviderTimestamps } fro
 import { readMfaStatus, type MfaStatus } from "./security";
 import { subscribeSSE, subscribeSSEEvents, type SseSubscription } from "./sse";
 import { liveNotices, type OrderInboxBody, type OrderNotice } from "./order-inbox";
+import type { SectorRotationBody } from "./sector-rotation";
 import { quoteStreamCarries } from "./websocket";
 import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
@@ -177,6 +178,12 @@ export const queryKeys = {
     results: (params?: QueryParams) => ["scanner", "results", params] as const,
     technicalEvents: () => ["scanner", "technical-events"] as const,
     evidence: (identity: ScannerEvidenceIdentity) => ["scanner", "evidence", identity] as const,
+  },
+
+  // The stored end-of-day sector dataset. One body carries all four periods and every constituent, so the
+  // board and the buildup table under it are the same cache key — a period switch never reads again.
+  sectorRotation: {
+    body: () => ["sector-rotation"] as const,
   },
 
   // Algo Lab
@@ -1276,6 +1283,23 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   /**
+   * The stored sector-rotation body: every period's sector rows, their constituents and the regime.
+   *
+   * Prod builds this from archived NSE and F&O files, so it changes once a session, not once a tick — and the
+   * read walks the archive rather than the broker, which is why it is allowed on the phone at all. Ten minutes
+   * of freshness is generous for data that is a day old, and a period switch inside that window is a lookup in
+   * the body already held.
+   */
+  const useSectorRotation = (options?: Omit<UseQueryOptions<SectorRotationBody, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.sectorRotation.body(),
+      queryFn: () => client.get<SectorRotationBody>("/v1/sector-rotation"),
+      staleTime: 10 * 60 * 1000,
+      ...options,
+    });
+  };
+
+  /**
    * The candles, levels and studies behind one saved scan — the same read the web scanner makes when a row
    * is clicked. `timeframe` has exactly the server's own words; anything else is asked as `1d` rather than
    * sent and rejected, because the route answers 422 to a period it cannot store a scan under.
@@ -1512,6 +1536,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useLiveTrades,
     useTechnicalEvents,
     useScannerEvidence,
+    // Sector rotation
+    useSectorRotation,
     // Algo Lab
     useFleet,
     useDrafts,
