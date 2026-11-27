@@ -1261,18 +1261,16 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 
     return useQuery({
       queryKey: queryKeys.orders.snapshot(clientId),
-      queryFn: async () => {
-        // The stream is the source while it carries this event, so the minute timer costs nothing; the read
-        // stays armed underneath it because a stream that dies for good sends no more frames and the last
-        // state the phone saw was whatever the final frame happened to name.
-        const fed = orderStreamCarries("order");
-        const cached = fed ? queryClient.getQueryData<OrderSnapshot>(queryKeys.orders.snapshot(clientId)) : undefined;
-        return cached ?? client.get<OrderSnapshot>(`/v1/orders/${clientId}`);
-      },
+      // The read always goes to the server. The frame is the execution row — it names each leg and the
+      // intent's status — while the ticket also carries the basket's phase and whether a cancel was
+      // requested, and only this route returns those. Skipping the read because the stream is up would keep
+      // a live order's phase frozen and hide a cancel pressed on another device, so here the frames buy the
+      // instant repaint of the legs and the timer keeps the parts no frame names true.
+      queryFn: () => client.get<OrderSnapshot>(`/v1/orders/${clientId}`),
       enabled: wanted && clientId.length > 0,
       staleTime: 0,
-      // One read a minute for the state the frames do not name (the basket's phase, its cancel flag) and for
-      // a phone that never got the stream up. It stops by itself once every leg has settled.
+      // One read a minute while the order still moves, for the state the frames do not name; it stops by
+      // itself once every leg has settled.
       refetchInterval: ({ state }) => {
         if (state.data === undefined) return ORDER_POLL_MS;
         return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? ORDER_POLL_MS : false;

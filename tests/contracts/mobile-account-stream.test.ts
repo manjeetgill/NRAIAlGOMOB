@@ -42,12 +42,27 @@ it("repaints a ticket from the order frame instead of re-reading the rows the fr
   const ticket = hooks.slice(hooks.indexOf("const useOrderSnapshot"), hooks.indexOf("const useEquityQuote"));
   expect(ticket).toContain("i.client_id ?? i.clientId");
   expect(ticket).toContain("queryClient.setQueryData(key, applyOrderFrame(cached, intent))");
-  // The frame is the execution row, so it is the source: no re-read per frame. The minute timer stays armed
-  // underneath and only the read inside it is skipped, and it is gated on the `order` event arriving rather
-  // than on the connection being open.
+  // The frame is the execution row, so the legs repaint from it and nothing is re-read per frame. The minute
+  // timer underneath stays a real read, because the ticket also carries the basket's phase and its cancel
+  // flag, which no frame names.
   expect(ticket).not.toContain("invalidateQueries");
-  expect(ticket).toContain('orderStreamCarries("order")');
+  expect(ticket).toContain("queryFn: () => client.get<OrderSnapshot>(`/v1/orders/${clientId}`)");
+  expect(ticket).not.toContain("orderStreamCarries");
   expect(ticket).toContain("return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? ORDER_POLL_MS : false;");
+});
+
+it("lets a ticket read the fields no frame names, and lets only the GTT list skip one", () => {
+  // Skipping a read because frames arrive is right when the frame carries the whole row set and wrong when
+  // it carries part of it. `gtt` sends the same rows GET /v1/orders/gtt returns; `order` sends the execution
+  // rows only, so a ticket that skipped would never move its phase past "checking" and would hide a cancel
+  // requested from another device until it was reopened.
+  const ticket = hooks.slice(hooks.indexOf("const useOrderSnapshot"), hooks.indexOf("const useEquityQuote"));
+  const gtt = hooks.slice(hooks.indexOf("const useGttOrders ="), hooks.indexOf("const useOrderInbox ="));
+  expect(ticket).not.toContain("orderStreamCarries");
+  expect(gtt).toContain('orderStreamCarries("gtt")');
+  // Both keep their timer rather than answering false, which a stream that dies cannot restart.
+  expect(ticket).toContain("ORDER_POLL_MS");
+  expect(gtt).toContain("refetchInterval: ORDER_POLL_MS,");
 });
 
 /** The ticket body a cold `/v1/orders/{clientId}` read would have left in the cache. */
