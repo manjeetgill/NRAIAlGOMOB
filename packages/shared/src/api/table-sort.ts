@@ -1,5 +1,5 @@
 /**
- * Sorting the rows of a table by one of its columns.
+ * Sorting and narrowing the rows of a table.
  *
  * A broker table is not a spreadsheet: most of its cells are figures the server either reported or did not, and
  * "did not" is not zero. So a column reads a value of text, number or null, and a null always sorts last -
@@ -40,6 +40,34 @@ export function nextSort<Row>(column: SortKey<Row>, current: SortState | null): 
 }
 
 const text = (value: string | number) => String(value).toUpperCase();
+
+/**
+ * Rows whose own names carry every word the trader typed.
+ *
+ * A book is searched by what a row is called, so the caller hands over the parts a row answers to: the symbol
+ * the broker sent and, for a derivative, the underlying name the master reads out from behind ICICI's contract
+ * code, which no prefix of that code can decide. Matching is a case-insensitive substring per
+ * whitespace-separated word - deliberately no pattern, because words a person types into a field must never be
+ * able to fail as an expression - and every word has to land, so `nifty 27000` narrows rather than widens.
+ *
+ * An empty or blank query returns a copy of the list, so a screen can always come through here instead of
+ * keeping a second, unfiltered array beside the one it shows.
+ */
+export function filterRows<Row>(
+  rows: readonly Row[],
+  query: string,
+  searchOf: (row: Row) => readonly (string | number | null | undefined)[],
+): Row[] {
+  const words = query.toUpperCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [...rows];
+  return rows.filter((row) => {
+    const haystack = searchOf(row)
+      .filter((part) => part !== null && part !== undefined && part !== "")
+      .join(" ")
+      .toUpperCase();
+    return words.every((word) => haystack.includes(word));
+  });
+}
 
 /** Rows in the order the chosen column asks for. The rows themselves are never copied or rewritten. */
 export function sortRows<Row>(
