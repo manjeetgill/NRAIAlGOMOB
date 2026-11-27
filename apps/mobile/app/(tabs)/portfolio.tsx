@@ -183,6 +183,7 @@ export default function PortfolioScreen() {
     ...savedPositions.map((row) => streamIdFor(row, underlyings[row.symbol.trim().toUpperCase()] ?? null)),
     ...savedHoldings.map((row) => streamIdFor({
       exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null,
+      instrumentId: row.instrumentId,
     })),
   ].filter((id): id is string => !!id))].sort(), [savedPositions, savedHoldings, underlyings]);
   const feed = useQuoteFeed(instruments, authenticated && instruments.length > 0);
@@ -201,7 +202,7 @@ export default function PortfolioScreen() {
       if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
     }
     for (const row of holdings) {
-      const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null });
+      const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null, instrumentId: row.instrumentId });
       const price = Number(row.currentPrice);
       if (id && Number.isFinite(price) && price > 0) priced.push({ id, price, at: null });
     }
