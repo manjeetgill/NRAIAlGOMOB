@@ -187,13 +187,24 @@ export default function KLineChart({
                 styles: {
                   grid: { show: true, horizontal: { color: colors.grid }, vertical: { color: colors.grid } },
                   candle: {
+                    // The OHLC table used to sit over the candles permanently, and the high and low marks were
+                    // printed on the price scale whatever the trader was looking at. Both now appear only while
+                    // a crosshair is on the chart, which is the only moment either one answers a question.
                     tooltip: {
+                      showRule: 'follow_cross',
                       title: { show: false, template: "{ticker}" },
                     },
-                    priceMark: { high: { color: colors.up }, low: { color: colors.down }, last: { color: colors.text } },
+                    priceMark: {
+                      high: { show: false, color: colors.up },
+                      low: { show: false, color: colors.down },
+                      last: { show: true, color: colors.text },
+                    },
                     bar: { upColor: colors.up, downColor: colors.down, noChangeColor: colors.text },
                   },
-                  indicator: { text: { color: colors.text } },
+                  indicator: {
+                    tooltip: { showRule: 'follow_cross', title: { show: false } },
+                    text: { color: colors.text },
+                  },
                   xAxis: { axisLine: { color: colors.grid }, tickText: { color: colors.text } },
                   yAxis: { axisLine: { color: colors.grid }, tickText: { color: colors.text } },
                   crosshair: { horizontal: { color: colors.crosshair }, vertical: { color: colors.crosshair } },
@@ -202,6 +213,7 @@ export default function KLineChart({
               });
 
               registerAtr();
+              registerSuperTrend(colors);
               watchLeftEdge();
               paintSymbol();
               if (pendingStudies) applyStudies(pendingStudies);
@@ -240,7 +252,6 @@ export default function KLineChart({
             }
             try {
               if (typeof chart.setSymbol === 'function') chart.setSymbol({ ticker: pendingSymbol });
-              chart.setStyles({ candle: { tooltip: { title: { show: !!pendingSymbol } } } });
             } catch (e) {
               console.error('Symbol error:', e);
             }
@@ -366,6 +377,75 @@ export default function KLineChart({
               });
             } catch (e) {
               console.error('ATR registration error:', e);
+            }
+          }
+
+          // Supertrend is not in the bundled build either. It walks a band off the middle of each bar by a
+          // multiple of Wilder-smoothed true range, and the band only ratchets while price is on its side of
+          // it — which is why the final bands, not the raw ones, decide a flip. Green while price holds above
+          // the lower band, red from the session that closes below the upper one.
+          let superTrendRegistered = false;
+          function registerSuperTrend(colors) {
+            if (superTrendRegistered || typeof klinecharts === 'undefined' || typeof klinecharts.registerIndicator !== 'function') return;
+            superTrendRegistered = true;
+            try {
+              klinecharts.registerIndicator({
+                name: 'SUPER_TREND',
+                shortName: 'ST',
+                series: 'price',
+                precision: 2,
+                calcParams: [10, 3],
+                figures: [
+                  { key: 'upTrend', title: 'ST: ', type: 'line', styles: function () { return { color: colors.up, size: 2 }; } },
+                  { key: 'downTrend', title: 'ST: ', type: 'line', styles: function () { return { color: colors.down, size: 2 }; } },
+                ],
+                calc: function (list, indicator) {
+                  const params = indicator.calcParams || [];
+                  const period = Math.max(1, params[0] || 10);
+                  const multiplier = Math.max(0.1, params[1] || 3);
+                  let seeded = 0;
+                  let previousATR = 0;
+                  let previousUpper = 0;
+                  let previousLower = 0;
+                  let previousClose = null;
+                  let previousTrend = 1;
+                  return list.map(function (bar, index) {
+                    const row = {};
+                    let range = bar.high - bar.low;
+                    if (previousClose !== null) {
+                      const up = Math.abs(bar.high - previousClose);
+                      const down = Math.abs(bar.low - previousClose);
+                      if (up > range) range = up;
+                      if (down > range) range = down;
+                    }
+                    if (index < period - 1) { seeded += range; previousClose = bar.close; return row; }
+                    if (index === period - 1) {
+                      seeded += range;
+                      previousATR = seeded / period;
+                    } else {
+                      previousATR = (previousATR * (period - 1) + range) / period;
+                    }
+                    const middle = (bar.high + bar.low) / 2;
+                    let upper = middle + multiplier * previousATR;
+                    let lower = middle - multiplier * previousATR;
+                    if (previousClose !== null) {
+                      if (!(upper < previousUpper || previousClose > previousUpper)) upper = previousUpper;
+                      if (!(lower > previousLower || previousClose < previousLower)) lower = previousLower;
+                    }
+                    let trend = previousTrend;
+                    if (previousTrend === 1 && bar.close < lower) trend = -1;
+                    else if (previousTrend === -1 && bar.close > upper) trend = 1;
+                    if (trend === 1) row.upTrend = lower; else row.downTrend = upper;
+                    previousUpper = upper;
+                    previousLower = lower;
+                    previousTrend = trend;
+                    previousClose = bar.close;
+                    return row;
+                  });
+                }
+              });
+            } catch (e) {
+              console.error('Supertrend registration error:', e);
             }
           }
 

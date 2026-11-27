@@ -66,22 +66,30 @@ const INTRADAY_CANDLES_SHOWN = 375;
  */
 const OLDER_BARS_HELD = 25_000;
 const STUDY_STORAGE = "terminal-chart-studies";
+/** Periods are a habit rather than a property of the instrument, so they are stored once for the phone. */
+const STUDY_PARAM_STORAGE = "terminal-chart-study-params";
 /** Past three, the panes squeeze the candles into a strip nobody can read a trend in. */
 const MAX_PANES = 3;
 
 /**
  * Every entry is a study the bundled chart library really has: `pane: "candle"` draws over the candles,
- * any other value names the entry's own pane. The numbers are the library's defaults, printed so a switch
- * is made on a known setting rather than a guess. ATR is the one exception — it is not bundled, and
- * KLineChart registers it before the first use.
+ * any other value names the entry's own pane. `calcParams` is what the study opens with — for every entry
+ * below it is the number the bundled library itself defaults to, so switching on shows the usual setting —
+ * and the trader can edit it from the sheet. ATR and Supertrend are the exceptions: neither is bundled, and
+ * KLineChart registers both before the first use.
  */
 interface StudyOption {
   key: string;
   name: string;
+  /** What the chip prints; the library's own name is sometimes too long for one. */
+  abbr: string;
   label: string;
-  params: string;
   pane: "candle" | string;
-  calcParams?: number[];
+  calcParams: number[];
+  /** Says what the numbers mean when they are not all plain periods. */
+  paramHint?: string;
+  /** Whether the library draws one line per number, so the count itself can change. */
+  variable?: boolean;
 }
 
 const STUDY_GROUPS: { title: string; note: string; options: StudyOption[] }[] = [
@@ -89,38 +97,72 @@ const STUDY_GROUPS: { title: string; note: string; options: StudyOption[] }[] = 
     title: "Over the candles",
     note: "Drawn on the price pane",
     options: [
-      { key: "ma", name: "MA", label: "Moving average", params: "5, 10, 20, 60", pane: "candle", calcParams: [5, 10, 20, 60] },
-      { key: "ema", name: "EMA", label: "Exponential MA", params: "6, 12, 20", pane: "candle" },
-      { key: "boll", name: "BOLL", label: "Bollinger bands", params: "20, 2", pane: "candle" },
-      { key: "sar", name: "SAR", label: "Parabolic SAR", params: "2, 2, 20", pane: "candle" },
+      { key: "ma", name: "MA", abbr: "MA", label: "Moving average", pane: "candle", calcParams: [5, 10, 20, 60], variable: true },
+      { key: "ema", name: "EMA", abbr: "EMA", label: "Exponential MA", pane: "candle", calcParams: [6, 12, 20], variable: true },
+      { key: "sma", name: "SMA", abbr: "SMA", label: "Simple moving average", pane: "candle", calcParams: [12, 2], paramHint: "the period, then its weight" },
+      { key: "st", name: "SUPER_TREND", abbr: "ST", label: "Supertrend", pane: "candle", calcParams: [10, 3], paramHint: "the ATR period, then how wide the band is" },
+      { key: "boll", name: "BOLL", abbr: "BOLL", label: "Bollinger bands", pane: "candle", calcParams: [20, 2], paramHint: "the period, then the width in std deviations" },
+      { key: "sar", name: "SAR", abbr: "SAR", label: "Parabolic SAR", pane: "candle", calcParams: [2, 2, 20], paramHint: "start factor, step, max step" },
     ],
   },
   {
     title: "In their own pane",
     note: `Up to ${MAX_PANES} at a time`,
     options: [
-      { key: "vol", name: "VOL", label: "Volume", params: "5, 10, 20", pane: "vol" },
-      { key: "atr", name: "ATR", label: "ATR", params: "14, Wilder", pane: "atr" },
-      { key: "rsi", name: "RSI", label: "RSI", params: "6, 12, 24", pane: "rsi" },
-      { key: "macd", name: "MACD", label: "MACD", params: "12, 26, 9", pane: "macd" },
-      { key: "kdj", name: "KDJ", label: "Stochastic", params: "9, 3, 3", pane: "kdj" },
+      { key: "vol", name: "VOL", abbr: "VOL", label: "Volume", pane: "vol", calcParams: [5, 10, 20], variable: true },
+      { key: "atr", name: "ATR", abbr: "ATR", label: "ATR", pane: "atr", calcParams: [14], paramHint: "the period, smoothed Wilder-style" },
+      { key: "rsi", name: "RSI", abbr: "RSI", label: "RSI", pane: "rsi", calcParams: [6, 12, 24], variable: true },
+      { key: "macd", name: "MACD", abbr: "MACD", label: "MACD", pane: "macd", calcParams: [12, 26, 9], paramHint: "fast, slow, signal" },
+      { key: "kdj", name: "KDJ", abbr: "KDJ", label: "Stochastic", pane: "kdj", calcParams: [9, 3, 3], paramHint: "the period, then two smoothing periods" },
     ],
   },
   {
     title: "More",
     note: "Also drawn in a pane of their own",
     options: [
-      { key: "cci", name: "CCI", label: "CCI", params: "20", pane: "cci" },
-      { key: "dmi", name: "DMI", label: "DMI / ADX", params: "14, 6", pane: "dmi" },
-      { key: "obv", name: "OBV", label: "On-balance volume", params: "30", pane: "obv" },
-      { key: "roc", name: "ROC", label: "Rate of change", params: "12, 6", pane: "roc" },
-      { key: "wr", name: "WR", label: "Williams %R", params: "6, 10, 14", pane: "wr" },
-      { key: "bbi", name: "BBI", label: "Bull bear index", params: "3, 6, 12, 24", pane: "bbi" },
+      { key: "cci", name: "CCI", abbr: "CCI", label: "CCI", pane: "cci", calcParams: [20] },
+      { key: "dmi", name: "DMI", abbr: "DMI", label: "DMI / ADX", pane: "dmi", calcParams: [14, 6], paramHint: "the period, then the smoothing" },
+      { key: "obv", name: "OBV", abbr: "OBV", label: "On-balance volume", pane: "obv", calcParams: [30], paramHint: "the moving-average period" },
+      { key: "roc", name: "ROC", abbr: "ROC", label: "Rate of change", pane: "roc", calcParams: [12, 6] },
+      { key: "wr", name: "WR", abbr: "WR", label: "Williams %R", pane: "wr", calcParams: [6, 10, 14], variable: true },
+      { key: "bbi", name: "BBI", abbr: "BBI", label: "Bull bear index", pane: "bbi", calcParams: [3, 6, 12, 24] },
     ],
   },
 ];
 
 const STUDY_OPTIONS = new Map(STUDY_GROUPS.flatMap((group) => group.options).map((option) => [option.key, option]));
+
+/** The periods in force for a study: the trader's own if they set one, otherwise the usual setting. */
+function effectiveParams(option: StudyOption, overrides: Record<string, number[]>): number[] {
+  const stored = overrides[option.key];
+  return Array.isArray(stored) && stored.length ? stored : option.calcParams;
+}
+
+/**
+ * One study's periods read back as text. A study that draws a line per period says so, because typing a
+ * fourth number into MACD would otherwise look like it worked while the chart still drew three.
+ */
+function paramRule(option: StudyOption): string {
+  const count = option.calcParams.length;
+  const shape = option.variable
+    ? `one number per line, up to ${count}`
+    : `${count} number${count === 1 ? "" : "s"}`;
+  return `${option.abbr} takes ${shape}${option.paramHint ? ` — ${option.paramHint}` : ""}.`;
+}
+
+/** Reads the trader's typing into periods, and says in `error` what is wrong when it is not periods. */
+function parseParams(raw: string, option: StudyOption): { params: number[]; error: string | null } {
+  const parts = raw.split(/[^0-9.]+/).filter(Boolean);
+  const params = parts.map((entry) => Number(entry));
+  if (!parts.length) return { params: [], error: paramRule(option) };
+  if (params.some((value) => !isFinite(value) || value <= 0)) {
+    return { params: [], error: "Every period has to be a number above zero." };
+  }
+  if (params.length > option.calcParams.length || (!option.variable && params.length !== option.calcParams.length)) {
+    return { params: [], error: paramRule(option) };
+  }
+  return { params, error: null };
+}
 
 /**
  * Names the bundled library registers as overlays. A tool waits for its taps on the chart, so the count
@@ -187,6 +229,11 @@ export default function TerminalChartsScreen() {
   const [chartHeight, setChartHeight] = useState(500);
   const [isReady, setIsReady] = useState(false);
   const [studyKeys, setStudyKeys] = useState<string[]>([]);
+  /** Periods the trader typed over the usual ones, keyed by study. Absent means "use the default". */
+  const [studyParams, setStudyParams] = useState<Record<string, number[]>>({});
+  const [editingStudy, setEditingStudy] = useState<string | null>(null);
+  const [paramDraft, setParamDraft] = useState("");
+  const [paramError, setParamError] = useState<string | null>(null);
   const [showStudyPicker, setShowStudyPicker] = useState(false);
   const [showDrawPicker, setShowDrawPicker] = useState(false);
   const [draw, setDraw] = useState<ChartDraw | null>(null);
@@ -243,6 +290,38 @@ export default function TerminalChartsScreen() {
     };
   }, [symbol]);
 
+  // Periods are the phone's, not the chart's, so they are read once rather than on every symbol switch.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let map: Record<string, number[]> = {};
+      try {
+        const raw = await AsyncStorage.getItem(STUDY_PARAM_STORAGE);
+        const parsed: unknown = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === "object") map = parsed as Record<string, number[]>;
+      } catch {
+        // A preference that cannot be read only costs the trader the usual periods.
+      }
+      if (cancelled) return;
+      const kept: Record<string, number[]> = {};
+      Object.keys(map).forEach((key) => {
+        const value = map[key];
+        if (STUDY_OPTIONS.has(key) && Array.isArray(value) && value.length && value.every((n) => isFinite(n) && n > 0)) {
+          kept[key] = value;
+        }
+      });
+      setStudyParams(kept);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveParams = useCallback((next: Record<string, number[]>) => {
+    setStudyParams(next);
+    AsyncStorage.setItem(STUDY_PARAM_STORAGE, JSON.stringify(next)).catch(() => {});
+  }, []);
+
   useEffect(() => {
     const stored = studyPrefs.current;
     if (!stored || stored.symbol !== symbol) return;
@@ -288,14 +367,50 @@ export default function TerminalChartsScreen() {
     say("Every line drawn on this chart is gone.");
   }, [say]);
 
+  const openParamEditor = useCallback(
+    (option: StudyOption) => {
+      if (editingStudy === option.key) {
+        setEditingStudy(null);
+        return;
+      }
+      setEditingStudy(option.key);
+      setParamDraft(effectiveParams(option, studyParams).join(", "));
+      setParamError(null);
+    },
+    [editingStudy, studyParams],
+  );
+
+  const applyParam = useCallback(() => {
+    const option = editingStudy ? STUDY_OPTIONS.get(editingStudy) : undefined;
+    if (!option) return;
+    const parsed = parseParams(paramDraft, option);
+    if (parsed.error) {
+      setParamError(parsed.error);
+      return;
+    }
+    saveParams({ ...studyParams, [option.key]: parsed.params });
+    setEditingStudy(null);
+    say(`${option.abbr} now uses ${parsed.params.join(", ")}.`);
+  }, [editingStudy, paramDraft, say, saveParams, studyParams]);
+
+  const resetParam = useCallback(() => {
+    const option = editingStudy ? STUDY_OPTIONS.get(editingStudy) : undefined;
+    if (!option) return;
+    const rest = { ...studyParams };
+    delete rest[option.key];
+    saveParams(rest);
+    setEditingStudy(null);
+    say(`${option.abbr} back to its usual ${option.calcParams.join(", ")}.`);
+  }, [editingStudy, say, saveParams, studyParams]);
+
   const studies = useMemo<ChartStudy[]>(
     () =>
       studyKeys.flatMap((key) => {
         const option = STUDY_OPTIONS.get(key);
         if (!option) return [];
-        return [{ key: option.key, name: option.name, pane: option.pane, ...(option.calcParams ? { calcParams: option.calcParams } : {}) }];
+        return [{ key: option.key, name: option.name, pane: option.pane, calcParams: effectiveParams(option, studyParams) }];
       }),
-    [studyKeys],
+    [studyKeys, studyParams],
   );
 
   const handleSymbolChange = useCallback((newSymbol: string) => {
@@ -684,7 +799,7 @@ export default function TerminalChartsScreen() {
             accessibilityRole="button"
             accessibilityLabel={`Switch off ${STUDY_OPTIONS.get(key)?.label ?? key}`}
           >
-            <Text style={styles.studyChipActiveText}>{STUDY_OPTIONS.get(key)?.name ?? key}</Text>
+            <Text style={styles.studyChipActiveText}>{STUDY_OPTIONS.get(key)?.abbr ?? key}</Text>
             <Ionicons name="close" size={12} color={colors.muted} />
           </TouchableOpacity>
         ))}
@@ -779,7 +894,9 @@ export default function TerminalChartsScreen() {
                 <Text style={styles.sheetDone}>Done</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.groupNote}>Off by default. The chart opens as candles only, and each symbol keeps the set it was last shown with.</Text>
+            <Text style={styles.groupNote}>
+              Off by default. The chart opens as candles only, and each symbol keeps the set it was last shown with. The pencil sets a study's periods.
+            </Text>
             <ScrollView style={styles.sheetScroll} keyboardShouldPersistTaps="handled">
               {STUDY_GROUPS.map((group) => (
                 <View key={group.title} style={styles.sheetGroup}>
@@ -787,21 +904,70 @@ export default function TerminalChartsScreen() {
                   <Text style={styles.groupNote}>{group.note}</Text>
                   {group.options.map((option) => {
                     const on = studyKeys.includes(option.key);
+                    const active = editingStudy === option.key;
+                    const current = effectiveParams(option, studyParams);
+                    const edited = current.join(",") !== option.calcParams.join(",");
                     return (
-                      <TouchableOpacity
-                        key={option.key}
-                        style={styles.row}
-                        onPress={() => toggleStudy(option.key)}
-                        accessibilityRole="switch"
-                        accessibilityState={{ checked: on }}
-                        accessibilityLabel={`${option.label}, ${option.name} ${option.params}`}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.rowName}>{option.label}</Text>
-                          <Text style={styles.rowMeta}>{`${option.name} · ${option.params}`}</Text>
+                      <View key={option.key}>
+                        <View style={styles.row}>
+                          <TouchableOpacity
+                            style={styles.studyToggle}
+                            onPress={() => toggleStudy(option.key)}
+                            accessibilityRole="switch"
+                            accessibilityState={{ checked: on }}
+                            accessibilityLabel={`${option.label}, ${option.abbr} ${current.join(", ")}`}
+                          >
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.rowName}>{option.label}</Text>
+                              <Text style={[styles.rowMeta, edited && { color: colors.accent }]}>
+                                {`${option.abbr} · ${current.join(", ")}${edited ? " · set by you" : ""}`}
+                              </Text>
+                            </View>
+                            <Ionicons name={on ? "checkbox-outline" : "square-outline"} size={22} color={on ? colors.accent : colors.muted} />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.paramEdit}
+                            onPress={() => openParamEditor(option)}
+                            hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                            accessibilityRole="button"
+                            accessibilityLabel={active ? `Cancel editing ${option.label} periods` : `Edit ${option.label} periods`}
+                          >
+                            <Ionicons name={active ? "close-outline" : "create-outline"} size={19} color={active ? colors.down : colors.accent} />
+                          </TouchableOpacity>
                         </View>
-                        <Ionicons name={on ? "checkbox-outline" : "square-outline"} size={22} color={on ? colors.accent : colors.muted} />
-                      </TouchableOpacity>
+                        {active && (
+                          <View style={styles.paramEditor}>
+                            <Text style={styles.paramRule}>{paramRule(option)}</Text>
+                            <View style={styles.paramInputRow}>
+                              <TextInput
+                                style={styles.paramInput}
+                                value={paramDraft}
+                                onChangeText={(text) => {
+                                  setParamDraft(text);
+                                  setParamError(null);
+                                }}
+                                placeholder={option.calcParams.join(", ")}
+                                placeholderTextColor={colors.muted}
+                                keyboardType="numbers-and-punctuation"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                returnKeyType="done"
+                                onSubmitEditing={applyParam}
+                                accessibilityLabel={`${option.label} periods`}
+                              />
+                              <TouchableOpacity style={styles.paramApply} onPress={applyParam} accessibilityRole="button" accessibilityLabel="Apply these periods">
+                                <Text style={styles.paramApplyText}>Apply</Text>
+                              </TouchableOpacity>
+                              {edited && (
+                                <TouchableOpacity style={styles.paramReset} onPress={resetParam} accessibilityRole="button" accessibilityLabel="Reset to the usual periods">
+                                  <Text style={styles.paramResetText}>Reset</Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                            {paramError && <Text style={styles.paramError}>{paramError}</Text>}
+                          </View>
+                        )}
+                      </View>
                     );
                   })}
                 </View>
@@ -940,6 +1106,17 @@ function createStyles(colors: { bg: string; card: string; text: string; muted: s
     search: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg, marginBottom: 8 },
     sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, color: colors.muted, textTransform: "uppercase", paddingTop: 10, paddingBottom: 4 },
     row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
+    studyToggle: { flex: 1, flexDirection: "row", alignItems: "center", gap: 12 },
+    paramEdit: { paddingHorizontal: 4, paddingVertical: 6 },
+    paramEditor: { paddingTop: 10, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 8 },
+    paramRule: { fontSize: 11.5, color: colors.muted },
+    paramInputRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    paramInput: { flex: 1, borderWidth: 1, borderColor: colors.accent, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 15, color: colors.text, backgroundColor: colors.bg },
+    paramApply: { backgroundColor: colors.accent, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9 },
+    paramApplyText: { fontSize: 13, fontWeight: "700", color: "#ffffff" },
+    paramReset: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
+    paramResetText: { fontSize: 13, fontWeight: "600", color: colors.text },
+    paramError: { fontSize: 12, color: colors.down },
     rowName: { fontSize: 16, fontWeight: "600", color: colors.text },
     rowMeta: { fontSize: 12, color: colors.muted },
     notice: { paddingVertical: 12, fontSize: 13, color: colors.muted, textAlign: "center" },

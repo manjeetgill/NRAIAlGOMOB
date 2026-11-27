@@ -275,3 +275,142 @@ it("keeps one bar per timestamp, oldest first, up to a ceiling", () => {
   expect(mergeOlderCandles([], [], 1_500)).toEqual([]);
 });
 
+// The chart used to print an OHLC and volume table over the candles whatever the trader was looking at, plus
+// the session's high and low on the price scale, and the library only hides those through `showRule` — an
+// early attempt set `tooltip.show`, which this bundle does not read, so nothing changed. The last-price tag is
+// the one mark that answers a question at a glance and it stays.
+it("draws the readouts only while a finger is on the chart", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart.match(/showRule: 'follow_cross'/g)).toHaveLength(2);
+  expect(chart).toContain("tooltip: {\n                      showRule: 'follow_cross',\n                      title: { show: false, template: \"{ticker}\" },");
+  expect(chart).toContain("indicator: {\n                    tooltip: { showRule: 'follow_cross', title: { show: false } },");
+  expect(chart).toContain("high: { show: false, color: colors.up },");
+  expect(chart).toContain("low: { show: false, color: colors.down },");
+  expect(chart).toContain("last: { show: true, color: colors.text },");
+  // Setting the title back on per symbol is what put the instrument's name back over the candles.
+  expect(chart).not.toContain("title: { show: !!pendingSymbol }");
+});
+
+// Periods used to be printed as a static string next to a switch, so EMA could only ever be 6, 12, 20 and the
+// trader had no way to ask for another. The sheet now edits them, and the numbers sent to the chart are the
+// edited ones.
+it("edits a study's periods and keeps them on the phone", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  expect(screen).toContain('const STUDY_PARAM_STORAGE = "terminal-chart-study-params";');
+  expect(screen).toContain("AsyncStorage.setItem(STUDY_PARAM_STORAGE, JSON.stringify(next))");
+  expect(screen).toContain("calcParams: effectiveParams(option, studyParams)");
+  expect(screen).toContain("const [editingStudy, setEditingStudy] = useState<string | null>(null);");
+  expect(screen).toContain("onPress={applyParam}");
+  expect(screen).toContain("onPress={resetParam}");
+  // A study with no stored override still gets its numbers sent, or the editor would appear to do nothing.
+  expect(screen).toContain("return Array.isArray(stored) && stored.length ? stored : option.calcParams;");
+  // The old static string is gone: every entry now declares the periods it really opens with.
+  expect(screen).not.toMatch(/params: "/);
+  const declared = screen.slice(screen.indexOf("const STUDY_GROUPS"), screen.indexOf("const STUDY_OPTIONS"));
+  expect(declared.match(/calcParams: \[/g)?.length).toBe(17);
+});
+
+// A study that draws a fixed number of lines cannot draw a fifth one, so typing four numbers into MACD would
+// look accepted while the chart still drew three. The editor says what each study takes instead of failing
+// quietly, and only the five that regenerate a figure per period may change count.
+it("refuses a period list the study cannot draw and says why", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  expect(screen).toContain("if (params.length > option.calcParams.length || (!option.variable && params.length !== option.calcParams.length)) {");
+  expect(screen).toContain('return { params: [], error: paramRule(option) };');
+  expect(screen).toContain('"Every period has to be a number above zero."');
+  expect(screen).toContain("if (parsed.error) {");
+  const variable = screen
+    .slice(screen.indexOf("const STUDY_GROUPS"), screen.indexOf("const STUDY_OPTIONS"))
+    .split("\n")
+    .filter((line) => line.includes("variable: true"))
+    .map((line) => /key: "(\w+)"/.exec(line)?.[1]);
+  expect(variable).toEqual(["ma", "ema", "vol", "rsi", "wr"]);
+});
+
+// SMA and Supertrend were simply not offered: SMA is in the bundled library and nobody listed it, and
+// Supertrend is not bundled at all, so it is registered the way ATR already is.
+it("offers SMA and Supertrend over the candles", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  const candlePane = screen.slice(screen.indexOf('title: "Over the candles"'), screen.indexOf('title: "In their own pane"'));
+  expect(candlePane).toContain('{ key: "sma", name: "SMA"');
+  expect(candlePane).toContain('{ key: "st", name: "SUPER_TREND", abbr: "ST"');
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain("registerSuperTrend(colors);");
+  expect(chart).toContain("name: 'SUPER_TREND'");
+  expect(chart).toContain("{ key: 'upTrend', title: 'ST: ', type: 'line'");
+  expect(chart).toContain("{ key: 'downTrend', title: 'ST: ', type: 'line'");
+});
+
+/**
+ * The Supertrend arithmetic runs here exactly as the WebView runs it: the calc is lifted out of the page
+ * script rather than rewritten, so this is the shipped code being checked. The compiled slice comes from this
+ * repository's own source file, read at test time — nothing from outside the repo reaches it.
+ */
+function superTrendCalc() {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  const start = chart.indexOf("calc: function (list, indicator)", chart.indexOf("name: 'SUPER_TREND'"));
+  let depth = 0;
+  let i = chart.indexOf("{", start);
+  for (; i < chart.length; i++) {
+    if (chart[i] === "{") depth += 1;
+    else if (chart[i] === "}") {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  return new Function(`return function (list, indicator) ${chart.slice(chart.indexOf("{", start), i + 1)}`)();
+}
+
+const ST_BARS = (closes: number[]) =>
+  closes.map((close, index) => ({
+    timestamp: index,
+    open: close,
+    high: close + 12,
+    low: close - 12,
+    close,
+    volume: 1,
+  }));
+
+it("walks Supertrend below a rising market and above a falling one", () => {
+  const calc = superTrendCalc();
+  const rising = calc(ST_BARS(Array.from({ length: 30 }, (_, i) => 1000 + i * 10)), { calcParams: [10, 3] });
+  const printed = rising.filter((row: Record<string, number>) => row.upTrend !== undefined || row.downTrend !== undefined);
+  expect(printed.length).toBe(21);
+  expect(printed.every((row: Record<string, number>) => row.upTrend !== undefined && row.downTrend === undefined)).toBe(true);
+  // Below price, and never loosening once price has moved away from it.
+  expect(printed.every((row: Record<string, number>, i: number) => row.upTrend > (i ? printed[i - 1].upTrend : 0))).toBe(true);
+
+  const falling = calc(ST_BARS(Array.from({ length: 30 }, (_, i) => 2000 - i * 10)), { calcParams: [10, 3] });
+  const down = falling.filter((row: Record<string, number>) => row.downTrend !== undefined);
+  expect(down.length).toBeGreaterThan(0);
+  expect(down.every((row: Record<string, number>, i: number) => row.downTrend < (i ? down[i - 1].downTrend : Infinity))).toBe(true);
+});
+
+it("flips Supertrend only when a close loses the band it printed", () => {
+  const calc = superTrendCalc();
+  // Up, then a break deep enough to close under the lower band, then a recovery back over the upper one.
+  const closes = [
+    ...Array.from({ length: 16 }, (_, i) => 1000 + i * 12),
+    ...Array.from({ length: 8 }, (_, i) => 1180 - i * 55),
+    ...Array.from({ length: 10 }, (_, i) => 785 + i * 60),
+  ];
+  const rows = calc(ST_BARS(closes), { calcParams: [10, 3] });
+  const trend = rows.map((row: Record<string, number>) => (row.upTrend !== undefined ? 1 : row.downTrend !== undefined ? -1 : 0));
+  const flips = trend.filter((value, i) => value !== 0 && trend[i - 1] !== 0 && value !== trend[i - 1]).length;
+  expect(flips).toBe(2);
+  expect(trend.slice(0, 9).every((value) => value === 0)).toBe(true);
+  expect(trend.filter((value) => value === 1).length).toBeGreaterThan(trend.filter((value) => value === -1).length);
+});
+
+it("keeps Supertrend off the candles until the period is warm", () => {
+  const calc = superTrendCalc();
+  const bars = ST_BARS(Array.from({ length: 12 }, (_, i) => 500 + i));
+  const rows = calc(bars, { calcParams: [10, 3] });
+  // Nothing is printed before the true-range average exists, so the line starts rather than inventing a band.
+  expect(rows.slice(0, 9).every((row: Record<string, number>) => Object.keys(row).length === 0)).toBe(true);
+  // The first printed band is the mid of that session less three times the average range over the period.
+  const averageRange = bars.slice(0, 10).reduce((sum, bar) => sum + (bar.high - bar.low), 0) / 10;
+  expect(rows[9].upTrend).toBeCloseTo((bars[9].high + bars[9].low) / 2 - 3 * averageRange, 6);
+});
+
+
