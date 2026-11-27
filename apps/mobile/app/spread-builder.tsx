@@ -28,7 +28,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { newClientId } from "@nraialgo/shared/hooks";
 import { useTradingStore } from "@nraialgo/shared/stores";
 import { formatNumber } from "@nraialgo/shared/utils";
-import { chartFailureReason, chartPickerSections, expiryKey, heldLots, ladderUnderlying, manualPayoff, queryKeys, rupees, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
+import { chartFailureReason, chartPickerSections, expiryKey, heldLots, ladderUnderlying, limitPlaceholder, manualPayoff, queryKeys, rupees, typedLimit, valueAt, useQuoteFeed, streamId, tickByInstrument, optionStreamId } from "@nraialgo/shared/api";
 import type { Basket, OptionChainData, OptionDraftLeg, PayoffLeg, PlaceOrderLine, QuoteTick } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import BasketDesk from "@/components/BasketDesk";
@@ -56,6 +56,14 @@ interface Leg {
    * carries no steppers, and its x marks a close rather than deleting the row.
    */
   held?: { lots: number; lotSize: number; entry: string } | null;
+  /**
+   * The trader's own limit price for this leg, kept as the text in the box so a half-typed "12." survives
+   * the keystroke that made it. Empty means the line leaves at the price this screen reads off the book.
+   * It is the number prod copies onto the broker's limit, so nothing else may quietly overwrite it:
+   * moving the strike, the side, the right or the date replaces a contract the price was meant for, and so
+   * clears it.
+   */
+  limit?: string;
 }
 
 /** One contract line this press sends: a close of something held, or something new. */
@@ -244,12 +252,13 @@ export default function SpreadBuilderScreen() {
   //
   // A close mark is part of what would be sent, so it is part of the key: marking a wing and then undoing
   // it returns to the same instruction, while adding a close to a basket that was already staged must not
-  // reuse the reference of the press that did not carry it.
+  // reuse the reference of the press that did not carry it. A typed limit price changes the order the
+  // broker is asked for just as surely, so it belongs here too.
   const basketKey = JSON.stringify([
     underlying,
     legs.map(leg => leg.held
-      ? ["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg)]
-      : [leg.expiry, leg.side, leg.right, String(leg.strike), leg.lots]),
+      ? ["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg), leg.limit ?? ""]
+      : [leg.expiry, leg.side, leg.right, String(leg.strike), leg.lots, leg.limit ?? ""]),
   ]);
   const references = useRef(new Map<string, string>());
   const referenceFor = (key: string) => {
@@ -498,6 +507,12 @@ export default function SpreadBuilderScreen() {
     const read = chainOf.get(leg.expiry);
     return read ? legQuote(read, leg.strike, leg.right, side) : null;
   };
+  /**
+   * What one leg's line leaves at. A price typed into its box wins over the book - a limit the trader chose
+   * does not chase the market - and an empty box means nothing was chosen, so an untouched basket still
+   * goes out at the number `quoteOf` read off the broker.
+   */
+  const priceOf = (leg: Leg, side: "BUY" | "SELL") => typedLimit(leg.limit) ?? quoteOf(leg, side)?.price ?? null;
   const sizeOf = (leg: Leg) => leg.held?.lotSize || chainOf.get(leg.expiry)?.lotSize || lotSize;
 
   const stage = (template: Template) => {
@@ -568,7 +583,9 @@ export default function SpreadBuilderScreen() {
             newStrike = targetLadder[0];
           }
         }
-        return { ...item, expiry: targetDay, strike: newStrike };
+        // Another date is another contract, even where the strike number survives, so a price typed for
+        // the first one cannot be carried onto this one.
+        return { ...item, expiry: targetDay, strike: newStrike, limit: "" };
       }));
     }
   };
@@ -598,6 +615,10 @@ export default function SpreadBuilderScreen() {
     }]);
   };
 
+  /**
+   * Step one of a leg. A price typed for strike 24000 says nothing about 24100, so moving along the ladder
+   * hands the box back empty rather than sending the old number against a different contract.
+   */
   const step = (leg: Leg, field: "strike" | "lots", direction: 1 | -1) =>
     edit(current => current.map(item => {
       if (item.id !== leg.id) return item;
@@ -606,20 +627,34 @@ export default function SpreadBuilderScreen() {
       if (!ladder.length) return item;
       const index = ladder.indexOf(item.strike);
       const next = Math.min(ladder.length - 1, Math.max(0, (index < 0 ? 0 : index) + direction));
-      return { ...item, strike: ladder[next] };
+      return { ...item, strike: ladder[next], limit: "" };
     }));
 
+  /** Flip one of a leg's two contract halves; the same reason as `step` clears a price typed for the other one. */
   const flip = (leg: Leg, field: "side" | "right") =>
     edit(current => current.map(item => item.id === leg.id
-      ? { ...item, [field]: field === "side" ? (item.side === "BUY" ? "SELL" : "BUY") : (item.right === "CE" ? "PE" : "CE") }
+      ? { ...item, limit: "", [field]: field === "side" ? (item.side === "BUY" ? "SELL" : "BUY") : (item.right === "CE" ? "PE" : "CE") }
       : item));
 
   const remove = (leg: Leg) => edit(current => current.filter(item => item.id !== leg.id));
 
-  /** Mark a held leg to close all of it, or take the mark back off. Nothing is sent by this press of the x. */
+  /**
+   * Put a number into one leg's price box. The text is stored unparsed, so "12." stays while it is being
+   * typed and the box never rewrites itself under a finger; `priceOf` reads the value out on every pass.
+   */
+  const setLimit = (leg: Leg, text: string) =>
+    edit(current => current.map(item => item.id === leg.id ? { ...item, limit: text } : item));
+
+  /**
+   * Mark a held leg to close all of it, or take the mark back off. Nothing is sent by this press of the x.
+   * The mark is also what shows the leg's price box, so a number typed for a close that is called off goes
+   * with it - an unmarked leg sends no line, and a price left in its state would reappear against a mark
+   * the trader did not make.
+   */
   const markClose = (leg: Leg) => {
     setSentId("");
     setNote(null);
+    setLegs(current => current.map(item => item.id === leg.id && closing.includes(leg.id) ? { ...item, limit: "" } : item));
     setMarked(current => {
       const next = { ...current };
       if (next[leg.id]) delete next[leg.id];
@@ -639,7 +674,8 @@ export default function SpreadBuilderScreen() {
   /**
    * Every contract line Execute would send. A held leg that was not marked appears nowhere: the broker
    * keeps it and no order is raised for it. A marked one is bought back or sold on the opposite side at the
-   * strike and on the date the book holds it, for only the lots the trader left on the close.
+   * strike and on the date the book holds it, for only the lots the trader left on the close, and at the
+   * price in its box - or the book's, while the box is empty.
    */
   const plan: PlanLine[] = legs.flatMap((leg): PlanLine[] => {
     const closingNow = !!leg.held && closing.includes(leg.id);
@@ -653,7 +689,7 @@ export default function SpreadBuilderScreen() {
       expiry: leg.expiry,
       lots: closingNow ? closeLotsOf(leg) : leg.lots,
       lotSize: sizeOf(leg),
-      price: quoteOf(leg, side)?.price ?? null,
+      price: priceOf(leg, side),
     }];
   });
   const closes = plan.filter(line => line.kind === "close").length;
@@ -673,12 +709,13 @@ export default function SpreadBuilderScreen() {
   /**
    * The curve is drawn for the book this press leaves behind: a held leg nobody marked stays whole at the
    * premium it was already bought for, a partly marked one keeps only the lots that were not closed, an
-   * added leg enters at its own date's price, and a fully closed leg has left the book.
+   * added leg enters at the price in its box - or at its own date's price while the box is empty - and a
+   * fully closed leg has left the book.
    */
   const priced = legs.flatMap((leg) => {
     const left = (leg.held?.lots ?? leg.lots) - closeLotsOf(leg);
     if (left <= 0) return [];
-    const premium = leg.held ? amount(leg.held.entry) : quoteOf(leg, leg.side)?.price ?? null;
+    const premium = leg.held ? amount(leg.held.entry) : priceOf(leg, leg.side);
     return [{ leg, qty: left * sizeOf(leg), premium }];
   });
 
@@ -726,6 +763,13 @@ export default function SpreadBuilderScreen() {
     if (!account) return "No connected broker account for this sign-in. Nothing was sent.";
     const unpriced = plan.find(line => line.price === null);
     if (unpriced) return `${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker. Nothing was sent.`;
+    // A box holding something that is not a price stops the press rather than falling back to the book:
+    // the trader would have sent a number the screen never showed them.
+    const mistyped = legs.find(leg =>
+      (!leg.held || closing.includes(leg.id)) && !!leg.limit?.trim() && typedLimit(leg.limit) === null);
+    if (mistyped) {
+      return `${mistyped.strike} ${mistyped.right} ${mistyped.expiry} has "${mistyped.limit?.trim()}" in its price box, which is not a price above zero. Empty the box to send at the book. Nothing was sent.`;
+    }
     return null;
   };
 
@@ -866,6 +910,19 @@ export default function SpreadBuilderScreen() {
     bid: { fontSize: 12, fontWeight: "700", color: colors.buy },
     ask: { fontSize: 12, fontWeight: "700", color: colors.sell },
     placed: { fontSize: 12, fontWeight: "700", color: colors.text },
+    priceWord: { fontSize: 12, fontWeight: "700", color: colors.muted },
+    priceInput: {
+      width: 96,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      backgroundColor: colors.bg,
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      fontSize: 14,
+      fontWeight: "700",
+      color: colors.text,
+    },
     small: { fontSize: 12, color: colors.muted },
     price: { fontSize: 13, fontWeight: "600", color: colors.text },
     add: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed" },
@@ -940,7 +997,7 @@ export default function SpreadBuilderScreen() {
     const id = expiryFor;
     setExpiryFor(null);
     if (!id) return;
-    edit(current => current.map(item => item.id === id ? { ...item, expiry: day } : item));
+    edit(current => current.map(item => item.id === id ? { ...item, expiry: day, limit: "" } : item));
   };
 
   // The two halves of one desk: stage and send on Builder, read what is held on Basket. The builder keeps
@@ -1262,6 +1319,11 @@ export default function SpreadBuilderScreen() {
         const closingNow = !!leg.held && closing.includes(leg.id);
         const side = closingNow ? (leg.side === "BUY" ? "SELL" : "BUY") : leg.side;
         const quote = quoteOf(leg, side);
+        const verb = closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell";
+        // Only a leg that sends a line gets a price box: an unmarked held leg sends nothing, so a number
+        // typed against it would be a price for an order this press does not place.
+        const sendable = !leg.held || closingNow;
+        const chosen = typedLimit(leg.limit) !== null;
         const entry = leg.held ? amount(leg.held.entry) : null;
         const heldLots = leg.held?.lots ?? leg.lots;
         const going = closeLotsOf(leg);
@@ -1396,27 +1458,46 @@ export default function SpreadBuilderScreen() {
               )}
             </View>
 
-            <View style={styles.legRow}>
-              {twoSided.listed ? (
-                <Text style={styles.small}>
-                  {"Bid "}
-                  <Text style={styles.bid}>{price(twoSided.bid)}</Text>
-                  {"   Ask "}
-                  <Text style={styles.ask}>{price(twoSided.ask)}</Text>
-                </Text>
-              ) : null}
-              <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
-                {leg.held
-                  ? [
+            {(twoSided.listed || leg.held) ? (
+              <View style={styles.legRow}>
+                {twoSided.listed ? (
+                  <Text style={styles.small}>
+                    {"Bid "}
+                    <Text style={styles.bid}>{price(twoSided.bid)}</Text>
+                    {"   Ask "}
+                    <Text style={styles.ask}>{price(twoSided.ask)}</Text>
+                  </Text>
+                ) : null}
+                {leg.held ? (
+                  <Text style={[styles.placed, { flex: 1, textAlign: "right" }, closingNow && { color: colors.warn }]}>
+                    {[
                       quote ? `LTP ₹${formatNumber(quote.price, 2)}` : null,
                       entry !== null ? `Bought @ ₹${formatNumber(entry, 2)}` : null,
                       closingNow ? `(Close ${going} lots)` : null,
-                    ].filter(Boolean).join(" · ")
-                  : quote === null
-                    ? ""
-                    : `${closingNow ? "Close" : side === "BUY" ? "Buy" : "Sell"} at ${formatNumber(quote.price, 2)}`}
-              </Text>
-            </View>
+                    ].filter(Boolean).join(" · ")}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {sendable ? (
+              // The price this line goes out at, in the trader's own hand. Left empty it sends the number
+              // printed in the placeholder, which is the one this screen read off the book; the Bid/Ask
+              // figures above stay put either way, so the market the price was typed against never hides.
+              <View style={styles.legRow}>
+                <Text style={styles.priceWord}>{`${verb} at`}</Text>
+                <TextInput
+                  style={[styles.priceInput, chosen && { borderColor: colors.brand }]}
+                  value={leg.limit ?? ""}
+                  onChangeText={text => setLimit(leg, text)}
+                  keyboardType="decimal-pad"
+                  maxLength={10}
+                  placeholder={limitPlaceholder(quote?.price ?? null)}
+                  placeholderTextColor={colors.muted}
+                  accessibilityLabel={`${verb} price for ${leg.strike} ${leg.right} on ${leg.expiry}`}
+                />
+              </View>
+            ) : null}
           </View>
         );
       })}

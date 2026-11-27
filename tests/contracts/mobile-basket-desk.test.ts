@@ -870,7 +870,7 @@ it("sends each leg on its own date and prices it off that date's chain", () => {
   expect(screen).toContain("const read = chainOf.get(leg.expiry);");
   // The date is part of what would be sent, so it is part of the reference key: tapping the strip above
   // can no longer re-aim every contract under a reference that named the old ones.
-  expect(screen).toContain('["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg)]');
+  expect(screen).toContain('["hold", leg.expiry, leg.strike, leg.right, leg.side, closeLotsOf(leg), leg.limit ?? ""]');
   // An unpriced line names the date it could not be priced on, and stops the whole press.
   expect(screen).toContain("${unpriced.strike} ${unpriced.right} ${unpriced.expiry} has no price from the broker.");
 });
