@@ -184,6 +184,8 @@ export default function ScannerChartScreen() {
 
   // Chart pan & zoom controls state
   const [chartAction, setChartAction] = useState<ChartAction | null>(null);
+  // While a finger is on the chart the page stops scrolling, so a sideways drag pans the candles.
+  const [chartTouched, setChartTouched] = useState(false);
   const dispatchAction = useCallback((type: ChartAction["type"]) => {
     setChartAction({ type, nonce: Date.now() });
   }, []);
@@ -254,7 +256,7 @@ export default function ScannerChartScreen() {
         ) : null}
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 24 }} scrollEnabled={!chartTouched}>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{`Saved ${timeframe} chart`}</Text>
           <Text style={styles.cardNote}>
@@ -271,6 +273,7 @@ export default function ScannerChartScreen() {
                 markers={markers}
                 panes={panes}
                 action={chartAction}
+                onTouchActive={setChartTouched}
               />
               <View style={styles.chartControls}>
                 <View style={styles.controlGroup}>
