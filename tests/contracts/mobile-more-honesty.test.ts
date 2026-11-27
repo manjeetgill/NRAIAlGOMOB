@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 const more = readFileSync(resolve("apps/mobile/app/(tabs)/more.tsx"), "utf8");
 const links = readFileSync(resolve("apps/mobile/src/utils/deepLinking.ts"), "utf8");
 const hooks = readFileSync(resolve("packages/shared/src/api/hooks.ts"), "utf8");
+const serverHost = readFileSync(resolve("apps/mobile/src/utils/serverHost.ts"), "utf8");
 
 /**
  * The opening tag of an element, scanned with brace depth and string state, because an arrow function in
@@ -106,7 +107,6 @@ describe("The account card says what the server said", () => {
   it("names each of the three read states instead of printing a dash", () => {
     expect(more).toContain('"Reading from myalgodesk.in…"');
     expect(more).toContain('"Could not be read just now"');
-    expect(more).toContain('"No credentials saved"');
     expect(more).toContain('"Required at sign-in"');
     expect(more).not.toContain('": "—"');
   });
@@ -114,10 +114,16 @@ describe("The account card says what the server said", () => {
   it("reads only the fields /v1/auth/me returns", () => {
     // prod answers with email, displayName, mfaRequired, adminRole, hasBroker and visualDirection.
     expect(more).toContain("account.displayName || account.email");
-    expect(more).toContain("account.hasBroker");
     expect(more).toContain("account.mfaRequired");
     expect(more).not.toContain("account.tier");
     expect(more).not.toContain("account.name");
+  });
+
+  it("asks the broker status routes rather than the account probe", () => {
+    // /v1/auth/me only reports that credentials exist, which is not the question the row answers.
+    expect(more).not.toContain("account.hasBroker");
+    expect(more).toContain("useBrokerConnection()");
+    expect(more).toContain("brokerSummary(");
   });
 
   it("drops the plan and broker list the route never sends from the shared type", () => {
@@ -142,8 +148,9 @@ describe("What the build reports about itself", () => {
   });
 
   it("names the server the requests go to", () => {
-    expect(more).toContain("Constants.API?.BASE_URL");
-    expect(more).toContain("new URL(url).host");
+    expect(serverHost).toContain("Constants.API?.BASE_URL");
+    expect(serverHost).toContain("new URL(url).host");
+    expect(more).toContain("serverLine()");
     expect(more).toContain("{host}");
   });
 

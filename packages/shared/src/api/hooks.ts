@@ -8,6 +8,8 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
+import { brokerConnections, type BrokerConnection, type ProviderTimestamps } from "./broker-connection";
+import { readMfaStatus, type MfaStatus } from "./security";
 import { subscribeSSE, subscribeSSEEvents, type SseSubscription } from "./sse";
 import { liveNotices, type OrderInboxBody, type OrderNotice } from "./order-inbox";
 import { quoteStreamCarries } from "./websocket";
@@ -104,7 +106,8 @@ export const queryKeys = {
   // Auth
   auth: {
     me: () => ["auth", "me"] as const,
-    brokers: () => ["auth", "brokers"] as const,
+    brokerConnection: () => ["auth", "broker-connection"] as const,
+    mfa: () => ["auth", "mfa"] as const,
   },
 
   // Baskets. Prod serves the whole desk from GET /v1/baskets - there is no single-basket read, so a
@@ -494,11 +497,41 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
-  const useBrokers = (options?: UseQueryOptions<BrokerStatus[], ApiError>) => {
+  /**
+   * Whether the phone may read the broker at all.
+   *
+   * Prod has no single broker route: the saved-credentials map and the live-session map are two reads, and an
+   * expired session is only distinguishable from a never-authorized one by putting them together, so they
+   * travel as one query and `brokerConnections` folds them. The hook this replaced named an auth path the
+   * backend never registered, so it could only ever have errored.
+   */
+  const useBrokerConnection = (options?: Omit<UseQueryOptions<BrokerConnection[], ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
-      queryKey: queryKeys.auth.brokers(),
-      queryFn: () => client.get<BrokerStatus[]>("/v1/auth/brokers"),
+      queryKey: queryKeys.auth.brokerConnection(),
+      queryFn: async () => {
+        const [credentials, session] = await Promise.all([
+          client.get<ProviderTimestamps>("/v1/broker-credentials/status"),
+          client.get<ProviderTimestamps>("/v1/broker-auth/status"),
+        ]);
+        return brokerConnections(credentials, session);
+      },
       staleTime: 30 * 1000,
+      ...options,
+    });
+  };
+
+  /**
+   * The account's two-factor facts, as one object the screen can print.
+   *
+   * The route is deliberately parsed rather than cast: prod's body is the difference between telling a trader
+   * two-factor is off and telling them this session still owes a code, and a silent `undefined` reads as the
+   * first of those.
+   */
+  const useMfa = (options?: Omit<UseQueryOptions<MfaStatus, ApiError>, "queryKey" | "queryFn">) => {
+    return useQuery({
+      queryKey: queryKeys.auth.mfa(),
+      queryFn: async () => readMfaStatus(await client.get("/v1/auth/mfa")),
+      staleTime: 60 * 1000,
       ...options,
     });
   };
@@ -518,6 +551,24 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     return useMutation({
       ...rest,
       mutationFn: () => client.post<void>("/v1/auth/logout"),
+      onSuccess: async (data, variables, context, meta) => {
+        qc.clear();
+        await onSuccess?.(data, variables, context, meta);
+      },
+    });
+  };
+
+  /**
+   * Ends every session the account holds, not just this phone's: the route deletes the session rows and
+   * revokes the registered devices, so this device is signed out by the same call and the cache clear is not
+   * optional. Same guard as `useLogout` — a caller that passes its own `onSuccess` extends it, it cannot
+   * replace the clear and leave the next person holding this account's books.
+   */
+  const useLogoutAll = (options?: UseMutationOptions<void, ApiError, void>) => {
+    const { onSuccess, ...rest } = options ?? {};
+    return useMutation({
+      ...rest,
+      mutationFn: () => client.post<void>("/v1/auth/logout-all"),
       onSuccess: async (data, variables, context, meta) => {
         qc.clear();
         await onSuccess?.(data, variables, context, meta);
@@ -1406,9 +1457,11 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   return {
     // Auth
     useMe,
-    useBrokers,
+    useBrokerConnection,
+    useMfa,
     useLogin,
     useLogout,
+    useLogoutAll,
     // Baskets
     useBaskets,
     useExitLeg,
