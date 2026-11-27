@@ -11,13 +11,16 @@ import React, { useMemo } from "react";
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import Constants from "expo-constants";
 import { useAuthStore, useUIStore } from "@nraialgo/shared/stores";
+import { brokerSummary } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
+import { useClock } from "@/hooks/useClock";
 import { router } from "expo-router";
 import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
 import { forgetLastKnown } from "@/hooks/useLastKnown";
 import { forgetDeviceUnlock } from "@/utils/deviceUnlock";
+import { serverLine } from "@/utils/serverHost";
 
 const THEMES = [
   { id: "system", label: "System" },
@@ -26,30 +29,30 @@ const THEMES = [
 ] as const;
 
 /**
- * The three states the account read can be in, each with its own sentence. The rows never fall back to a
- * dash: a trader deciding whether to re-link a broker needs to know whether the server said "no broker" or
- * never answered at all.
+ * The two facts `/v1/auth/me` answers about the account, in each of the three states that read can be in.
+ * The rows never fall back to a dash: a trader deciding whether to re-link an account needs to know whether
+ * the server said "no credentials" or never answered at all. The broker session is not one of these facts -
+ * `/v1/auth/me` only reports that credentials exist, so it has its own row fed by the two status routes that
+ * actually answer whether the app can reach the broker.
  */
 export function accountLines(
-  account: { displayName?: string; email?: string; hasBroker?: boolean; mfaRequired?: boolean } | null,
+  account: { displayName?: string; email?: string; mfaRequired?: boolean } | null,
   state: "ready" | "loading" | "failed",
 ) {
   if (state === "loading") {
-    return { who: "Reading from myalgodesk.in…", broker: "Checking…", mfa: "Checking…" };
+    return { who: "Reading from myalgodesk.in…", mfa: "Checking…" };
   }
   if (state === "failed") {
     return {
       who: "Signed in on this phone",
-      broker: "Could not be read just now",
       mfa: "Could not be read just now",
     };
   }
   if (!account) {
-    return { who: "No account on this phone", broker: "Not read yet", mfa: "Not read yet" };
+    return { who: "No account on this phone", mfa: "Not read yet" };
   }
   return {
     who: account.displayName || account.email || "No sign-in name on the account",
-    broker: account.hasBroker ? "Credentials saved" : "No credentials saved",
     mfa: account.mfaRequired ? "Required at sign-in" : "Not required",
   };
 }
@@ -67,24 +70,15 @@ export function versionLine(): string {
   return build ? `${version} (build ${build})` : version;
 }
 
-/** The host this build was compiled to talk to - the same constant every request uses. */
-export function serverLine(): string {
-  const url = Constants.API?.BASE_URL;
-  if (!url) return "Not configured in this build";
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
 export default function MoreScreen() {
-  const { useMe, useLogout } = useApi();
+  const { useMe, useLogout, useBrokerConnection } = useApi();
   const { theme, resolvedTheme } = useTheme();
   const { user, isAuthenticated, logout: logoutStore } = useAuthStore();
   const setTheme = useUIStore(state => state.setTheme);
   const { data: me, isLoading: meLoading, isError: meError } = useMe();
+  const { data: connections, isLoading: brokersLoading, isError: brokersError } = useBrokerConnection();
   const logoutMutation = useLogout();
+  const now = useClock();
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155", danger: "#ef4444", accent: "#38bdf8", track: "#0f172a", onAccent: "#0f172a" }
@@ -143,6 +137,11 @@ export default function MoreScreen() {
   // The copy saved at sign-in paints the card immediately and the server's answer replaces it, so the
   // screen never blocks on a read for facts the phone already holds.
   const lines = accountLines(me ?? user, meError ? "failed" : meLoading && !me ? "loading" : "ready");
+  const broker = brokerSummary(
+    connections ?? [],
+    brokersError ? "failed" : brokersLoading && !connections ? "loading" : "ready",
+    now,
+  );
   const host = serverLine();
 
   return (
@@ -161,20 +160,30 @@ export default function MoreScreen() {
             </View>
             <Text style={styles.value} numberOfLines={1}>{lines.who}</Text>
           </View>
-          <View style={[styles.row, styles.rowDivider]}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowDivider]}
+            onPress={() => router.push("/broker-connection")}
+            accessibilityRole="button"
+          >
             <View style={styles.labelRow}>
               <Ionicons name="business-outline" size={24} color={colors.muted} style={styles.icon} />
-              <Text style={styles.label}>Broker app</Text>
+              <Text style={styles.label}>Broker connection</Text>
             </View>
-            <Text style={styles.value}>{lines.broker}</Text>
-          </View>
-          <View style={styles.row}>
+            <Text style={styles.value} numberOfLines={1}>{broker}</Text>
+            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/security")}
+            accessibilityRole="button"
+          >
             <View style={styles.labelRow}>
               <Ionicons name="lock-closed-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Two-factor</Text>
             </View>
-            <Text style={styles.value}>{lines.mfa}</Text>
-          </View>
+            <Text style={styles.value} numberOfLines={1}>{lines.mfa}</Text>
+            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
+          </TouchableOpacity>
           <Text style={styles.note}>
             Connecting a broker and changing two-factor settings happens on {host}. The app shows the
             account the broker reports.
