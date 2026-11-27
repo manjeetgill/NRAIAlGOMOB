@@ -43,6 +43,7 @@ export {
   chartRequest,
   chartFailureReason,
   chartPickerSections,
+  mergeOlderCandles,
   type User,
   type BrokerStatus,
   type LoginRequest,

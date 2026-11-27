@@ -6,6 +6,7 @@ import {
   chartInstrument,
   chartPickerSections,
   chartRequest,
+  mergeOlderCandles,
 } from "../../packages/shared/src/api/hooks.ts";
 
 // Prod splits candles across two routes and takes the instrument as an exchange-prefixed key. The
@@ -153,7 +154,10 @@ it("switches charts by message instead of rebuilding the canvas", () => {
   // The page itself must stop depending on the symbol, or every switch re-parses the library again.
   expect(chart).not.toContain("${JSON.stringify(symbol)}");
   expect(chart).toContain("}, [resolvedTheme]);");
-  expect(screen).not.toContain("chartKey");
+  // The canvas must not be keyed to the chart it draws: that is what rebuilt the WebView on every switch.
+  // (The screen keys its own paged sessions by the chart they belong to, which never reaches the component.)
+  expect(chart).not.toContain("chartKey");
+  expect(screen).not.toContain("chartKey={");
   expect(screen).toContain("const [canvasUp, setCanvasUp] = useState(false);");
   expect(screen).toContain("if (canvasUp) body = chartNode;");
   expect(screen).toContain("<KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol}");
@@ -172,3 +176,90 @@ it("charts a recorded session and leaves it alone once chosen", () => {
   expect(screen).toContain("onPress={() => chooseDay(entry)}");
   expect(screen).toContain("Today's prices are not drawn on an earlier day.");
 });
+
+// The intraday route answered one session, so 1h showed about seven candles of today and nothing else, even
+// though the server holds NIFTY and BANKNIFTY at one-second resolution for months. The route now names the
+// oldest bar it returned and takes it back as `before` to hand over the sessions behind it. A picked session
+// is answered whole, so it is never asked for a page too.
+it("asks the intraday route for the sessions behind what is on screen", () => {
+  expect(chartRequest("NSE:NIFTY", "1h", null, 1_764_000_000_000).params).toEqual({
+    instrument: "NSE:NIFTY",
+    interval: "1h",
+    before: 1_764_000_000_000,
+  });
+  expect(chartRequest("NSE:NIFTY", "1d", null, 1_764_000_000_000).params).not.toHaveProperty("before");
+  expect(chartRequest("NSE:NIFTY", "1h", "2026-11-20").params).not.toHaveProperty("before");
+  expect(chartRequest("NSE:NIFTY", "1h", null, 0).params.before).toBe(0);
+});
+
+// KLineChart v10 has no applyNewData in the bundled build, but prepending with the store's own 'forward'
+// type leaves the view exactly where the trader put it. A page must go in that way or every scroll back
+// would snap the chart to today.
+it("prepends older sessions without moving the chart", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain("else if (message.type === 'history') applyHistory(message);");
+  expect(chart).toContain("chart._chartStore._addData(page, 'forward', { forward: moreAhead, backward: false });");
+  // Only bars the canvas does not already hold, so a canvas rebuilt by a theme change is refilled once.
+  expect(chart).toContain("const page = (request.bars || []).map(toBar).filter(function (item) { return item.timestamp < edge; });");
+  expect(chart).toContain("if (request.nonce === lastHistoryNonce) return;");
+  expect(chart).toContain("const list = chart.getDataList() || [];");
+  // A chart switched to another instrument has no pages, and must not be asked for any either.
+  expect(chart).toContain("pagerOn = false;\n            moreAhead = false;");
+});
+
+// Paging is driven by the chart's own left edge, which the library reports on a drag and on a zoom-out, so
+// the trader never reaches the end of what was loaded. One page is in flight at a time.
+it("asks for the next page as the oldest bar comes into view", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain("chart.subscribeAction('onVisibleRangeChange', function (range) {");
+  expect(chart).toContain("if (!pagerOn || !moreAhead || asking || !range || typeof range.from !== 'number') return;");
+  expect(chart).toContain("if (range.from > LEAD_BARS) return;");
+  expect(chart).toContain("postApp({ type: 'needMore', before: list[0].timestamp });");
+  expect(chart).toContain("asking = true;");
+  expect(chart).toContain('message.type === "needMore"');
+  expect(chart).toContain("needMoreRef.current?.(message.before);");
+});
+
+// A candle closing while the trader reads an older session used to replace the whole list, which threw the
+// paged sessions away and re-anchored the view to today, at the right edge too. Each changed bar now goes
+// through the library's single-bar update, which keeps the pages and follows the live bar only at the edge.
+it("adds a closed candle to the end instead of redrawing the chart", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain("if (previous.length > 0 && bars.length >= previous.length &&");
+  expect(chart).toContain("for (const bar of bars.slice(previous.length - 1)) chart._chartStore._addData(bar);");
+  expect(chart).not.toContain("rightEdgeVisible");
+  expect(chart).toContain("chart._chartStore._addData(bars, 'init');");
+  // The older pages reach the chart after its candles, or there is no left edge to put them behind.
+  expect(chart.indexOf("postSymbol();")).toBeLessThan(chart.indexOf("postHistory();"));
+});
+
+// The screen holds the pages, not the chart: the window refetches every 30 seconds and would drop them. A
+// daily chart and a chosen session have nothing behind them, so neither is offered history, and a page
+// fetched for one chart is never put on another that the trader switched to mid-scroll.
+it("pages the terminal chart and says what it loaded", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  expect(screen).toContain("const { useTerminalChart, useChainUnderlyings, readOlderCandles } = useApi();");
+  expect(screen).toContain("const pagesBack = !isDaily && day === null;");
+  expect(screen).toContain("await readOlderCandles(symbol, interval, before);");
+  expect(screen).toContain('const chartKey = `${symbol}|${interval}|${day ?? ""}`;');
+  expect(screen).toContain("const older = paged.key === chartKey ? paged : noPages(chartKey);");
+  expect(screen).toContain("if (currentKey.current !== chartKey) return;");
+  expect(screen).toContain("history={pagesBack ? older : undefined} onNeedMore={askOlder}");
+  // The trader is told the chart continues behind the first bar, and where the record actually stops.
+  expect(screen).toContain('" · scroll or zoom out for older sessions"');
+  expect(screen).toContain('" · the record starts here"');
+  expect(screen).toContain("${pagedLine}");
+});
+
+// Two scrolls can land on the same session, and a chart scrolled far back must not grow without bound.
+it("keeps one bar per timestamp, oldest first, up to a ceiling", () => {
+  const bar = (timestamp: number, close: number) => ({ timestamp, open: close, high: close, low: close, close });
+  expect(mergeOlderCandles([bar(30, 1), bar(10, 1)], [bar(20, 1), bar(10, 9)], 10)).toEqual([
+    bar(10, 9),
+    bar(20, 1),
+    bar(30, 1),
+  ]);
+  expect(mergeOlderCandles([bar(30, 1), bar(20, 1)], [bar(10, 1)], 2)).toEqual([bar(20, 1), bar(30, 1)]);
+  expect(mergeOlderCandles([], [], 1_500)).toEqual([]);
+});
+
