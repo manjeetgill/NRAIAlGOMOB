@@ -10,7 +10,8 @@
 
 import { useMemo, useRef } from "react";
 import { chartInstrument, type Candle } from "./hooks";
-import { useQuoteFeed, type FeedReason, type QuoteTick } from "./websocket";
+import { useQuoteSubscription, type FeedReason, type QuoteTick } from "./websocket";
+import { useInstrumentTick, useQuoteStore } from "./quote-store";
 
 /** Intervals the chart draws. Minutes and hours are session buckets; the rest start at an IST boundary. */
 export type ChartBucket = "1m" | "3m" | "5m" | "10m" | "15m" | "30m" | "1h" | "1d" | "1w" | "1M";
@@ -235,18 +236,21 @@ export function useLiveCandles(
   enabled = true,
 ): LiveCandles {
   const id = useMemo(() => streamId(name), [name]);
-  const feed = useQuoteFeed(id ? [id] : [], !!id && enabled);
-
-  const tick = useMemo(() => (id ? feed.quotes.find((quote) => quote.id === id) ?? null : null), [feed, id]);
+  useQuoteSubscription(id ? [id] : [], !!id && enabled);
+  const tick = useInstrumentTick(enabled ? id : null) ?? null;
+  const connected = useQuoteStore((s) => s.connected);
+  const reason = useQuoteStore((s) => s.reason);
+  const states = useQuoteStore((s) => s.states);
 
   // Only a price the server published as fresh, with a positive value and an exchange stamp, may move a bar.
   const usable = tickBarInput(tick ?? undefined);
   const at = usable?.at ?? null;
+  const activeBucketStart = at !== null ? bucketStart(at, interval) : null;
 
   const seed = useMemo(() => {
-    if (at === null) return base.length ? base[base.length - 1] : null;
-    return foldBucket(extras.length ? [...base, ...extras] : base, interval, at);
-  }, [base, extras, interval, at]);
+    if (activeBucketStart === null) return base.length ? base[base.length - 1] : null;
+    return foldBucket(extras.length ? [...base, ...extras] : base, interval, activeBucketStart);
+  }, [base, extras, interval, activeBucketStart]);
 
   // What this device has already seen in the current bucket. Keyed by symbol, interval and bucket start,
   // so a re-seeded record, a rolled bucket or a switched chart cannot fold an unrelated bar into this one,
@@ -255,24 +259,26 @@ export function useLiveCandles(
 
   const bar = useMemo(() => {
     const hit = tickBarInput(tick ?? undefined);
-    if (!hit) return seed;
-    const start = bucketStart(hit.at, interval);
-    if (start === null) return seed;
-    const key = `${name}|${interval}|${start}`;
+    if (!hit || activeBucketStart === null) return seed;
+    const key = `${name}|${interval}|${activeBucketStart}`;
     const carried = seen.current?.key === key ? seen.current.bar : undefined;
-    const previous = foldPriors(seed && seed.timestamp === start ? seed : undefined, carried);
+    const previous = foldPriors(seed && seed.timestamp === activeBucketStart ? seed : undefined, carried);
     const next = applyTick(previous, interval, hit.price, hit.at);
     if (!next) return seed;
     seen.current = { key, bar: next };
     return next;
-  }, [tick, seed, interval, name]);
+  }, [tick, seed, interval, name, activeBucketStart]);
 
   const points = useMemo(() => {
     if (!bar) return [...base];
-    const kept = base.filter((candle) => candle.timestamp !== bar.timestamp);
-    const last = kept[kept.length - 1];
-    if (last && last.timestamp > bar.timestamp) return kept;
-    return [...kept, bar];
+    const last = base[base.length - 1];
+    if (last && last.timestamp === bar.timestamp) {
+      const copy = base.slice();
+      copy[copy.length - 1] = bar;
+      return copy;
+    }
+    if (last && last.timestamp > bar.timestamp) return [...base];
+    return [...base, bar];
   }, [base, bar]);
 
   return {
@@ -280,9 +286,9 @@ export function useLiveCandles(
     bar,
     tick,
     at,
-    connected: feed.connected,
-    reason: feed.reason,
-    states: feed.states,
+    connected,
+    reason,
+    states,
     unavailable: id
       ? null
       : `${chartInstrument(name)} is not on the live price stream: only NSE cash symbols and NSE indices are published tick by tick.`,

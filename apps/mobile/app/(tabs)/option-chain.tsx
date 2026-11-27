@@ -36,18 +36,19 @@ import {
   strikeIds,
   streamId,
   tickBeats,
-  tickByInstrument,
   tickEntries,
   tickWord,
   todayIST,
-  useQuoteFeed,
+  useInstrumentTick,
+  useQuoteSubscription,
   pauseQuoteDispatch,
   resumeQuoteDispatch,
   watchBand,
   type Band,
   type OptionChainData,
+  type OptionQuote,
   type OptionRow,
-  type QuoteTick,
+  type QuoteEntry,
   type RememberedQuote,
   type UnderlyingInfo,
 } from "@nraialgo/shared/api";
@@ -121,20 +122,113 @@ type ChainItem =
  */
 const BAND_PAD = 6;
 
-/** What no ticks means on the ladder: every number is the chain read's own, with its own label. */
-const NO_TICKS = new Map<string, QuoteTick>();
+interface OptionLegCellProps {
+  quote: OptionQuote | null;
+  expiry: string;
+  row: OptionRow;
+  right: "CE" | "PE";
+  saved?: RememberedQuote | null;
+  styles: Record<string, any>;
+  onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
+}
+
+const OptionLegCell = React.memo(function OptionLegCell({
+  quote,
+  expiry,
+  row,
+  right,
+  saved,
+  styles,
+  onTrade,
+  onRemember,
+}: OptionLegCellProps) {
+  const liveTick = useInstrumentTick(quote?.instrumentId);
+  useEffect(() => {
+    if (liveTick) onRemember(tickEntries([liveTick]));
+  }, [liveTick, onRemember]);
+  const priceObj = quote ? (liveSide(quote, liveTick) ?? rememberedSide(saved)) : null;
+  const oiChange = quote?.oiChangePct;
+  const handlePress = useCallback(() => onTrade(expiry, row, right), [onTrade, expiry, row, right]);
+
+  if (!quote) {
+    return (
+      <>
+        <Text style={styles.noPrice}>Not listed</Text>
+        <TouchableOpacity style={styles.actionButton} onPress={handlePress}>
+          <Text style={styles.actionButtonText}>Trade</Text>
+        </TouchableOpacity>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {priceObj === null ? (
+        <Text style={styles.noPrice}>No price</Text>
+      ) : (
+        <Text style={styles.priceText}>{formatNumber(priceObj.price)}</Text>
+      )}
+      <Text style={styles.metaText} numberOfLines={1}>
+        {priceObj?.word ? `${priceObj.word}  ·  ` : ""}
+        {quote.iv === null ? "No IV" : `IV ${formatNumber(quote.iv, 1)}%`}
+        {quote.oi === null ? "" : `  ·  OI ${formatNumber(quote.oi, 0)}`}
+        {oiChange !== null && oiChange !== 0 ? (
+          <Text style={oiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
+            {`  ·  ${oiChange > 0 ? "+" : ""}${formatNumber(oiChange, 1)}%`}
+          </Text>
+        ) : null}
+      </Text>
+      <TouchableOpacity style={styles.actionButton} onPress={handlePress}>
+        <Text style={styles.actionButtonText}>Trade</Text>
+      </TouchableOpacity>
+    </>
+  );
+});
+
+const SpotDisplay = React.memo(function SpotDisplay({
+  chain,
+  styles,
+  onRemember,
+}: {
+  chain: OptionChainData;
+  styles: Record<string, any>;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
+}) {
+  const spotId = useMemo(() => streamId(chain.underlying), [chain.underlying]);
+  const spotTick = useInstrumentTick(spotId);
+  useEffect(() => {
+    if (spotTick) onRemember(tickEntries([spotTick]));
+  }, [spotTick, onRemember]);
+  const spot = amount(chain.spot?.price);
+  const currentSpot = spotTick && tickBeats(spotTick, chain.spot?.at) ? spotTick : null;
+  const shownSpot = currentSpot ? currentSpot.price : spot;
+  const spotWord = currentSpot ? tickWord(currentSpot) : null;
+
+  return (
+    <View style={styles.spotRow}>
+      <Text style={styles.spotLabel}>Spot</Text>
+      {shownSpot === null ? (
+        <Text style={styles.noPrice}>{QUALITY_WORD[chain.spot?.quality] ?? "no spot price"}</Text>
+      ) : (
+        <Text style={styles.spotValue}>{formatNumber(shownSpot)}</Text>
+      )}
+      {shownSpot !== null && spotWord ? <Text style={styles.spotLabel}>{spotWord}</Text> : null}
+      <View style={[styles.statusDot, chain.marketOpen ? styles.dotLive : styles.dotClosed]} />
+    </View>
+  );
+});
 
 interface OptionRowItemProps {
   row: OptionRow;
   expiry: string;
   styles: Record<string, any>;
-  liveCall?: QuoteTick;
-  livePut?: QuoteTick;
   /** What this phone last saw for each leg, asked for at render so a row that redraws for any reason picks
    *  up the newest saved number without the whole ladder redrawing for it. */
   savedCall?: RememberedQuote | null;
   savedPut?: RememberedQuote | null;
   onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
 }
 
 const OptionRowItem = React.memo(
@@ -142,47 +236,24 @@ const OptionRowItem = React.memo(
     row,
     expiry,
     styles,
-    liveCall,
-    livePut,
     savedCall,
     savedPut,
     onTrade,
+    onRemember,
   }: OptionRowItemProps) {
-    const callQuote = row.call;
-    const putQuote = row.put;
-    const callPrice = callQuote ? (liveSide(callQuote, liveCall) ?? rememberedSide(savedCall)) : null;
-    const putPrice = putQuote ? (liveSide(putQuote, livePut) ?? rememberedSide(savedPut)) : null;
-    const callOiChange = callQuote?.oiChangePct;
-    const putOiChange = putQuote?.oiChangePct;
-
     return (
       <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
         <View style={[styles.cell, styles.callCell]}>
-          {!callQuote ? (
-            <>
-              <Text style={styles.noPrice}>Not listed</Text>
-              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
-                <Text style={styles.actionButtonText}>Trade</Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <>
-              {callPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(callPrice.price)}</Text>}
-              <Text style={styles.metaText} numberOfLines={1}>
-                {callPrice?.word ? `${callPrice.word}  ·  ` : ""}
-                {callQuote.iv === null ? "No IV" : `IV ${formatNumber(callQuote.iv, 1)}%`}
-                {callQuote.oi === null ? "" : `  ·  OI ${formatNumber(callQuote.oi, 0)}`}
-                {callOiChange !== null && callOiChange !== 0 ? (
-                  <Text style={callOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
-                    {`  ·  ${callOiChange > 0 ? "+" : ""}${formatNumber(callOiChange, 1)}%`}
-                  </Text>
-                ) : null}
-              </Text>
-              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "CE")}>
-                <Text style={styles.actionButtonText}>Trade</Text>
-              </TouchableOpacity>
-            </>
-          )}
+          <OptionLegCell
+            quote={row.call}
+            expiry={expiry}
+            row={row}
+            right="CE"
+            saved={savedCall}
+            styles={styles}
+            onTrade={onTrade}
+            onRemember={onRemember}
+          />
         </View>
 
         <View style={[styles.cell, styles.strikeCell]}>
@@ -191,45 +262,26 @@ const OptionRowItem = React.memo(
         </View>
 
         <View style={[styles.cell, styles.putCell]}>
-          {!putQuote ? (
-            <>
-              <Text style={styles.noPrice}>Not listed</Text>
-              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
-                <Text style={styles.actionButtonText}>Trade</Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <>
-              {putPrice === null ? <Text style={styles.noPrice}>No price</Text> : <Text style={styles.priceText}>{formatNumber(putPrice.price)}</Text>}
-              <Text style={styles.metaText} numberOfLines={1}>
-                {putPrice?.word ? `${putPrice.word}  ·  ` : ""}
-                {putQuote.iv === null ? "No IV" : `IV ${formatNumber(putQuote.iv, 1)}%`}
-                {putQuote.oi === null ? "" : `  ·  OI ${formatNumber(putQuote.oi, 0)}`}
-                {putOiChange !== null && putOiChange !== 0 ? (
-                  <Text style={putOiChange > 0 ? styles.oiChangePos : styles.oiChangeNeg}>
-                    {`  ·  ${putOiChange > 0 ? "+" : ""}${formatNumber(putOiChange, 1)}%`}
-                  </Text>
-                ) : null}
-              </Text>
-              <TouchableOpacity style={styles.actionButton} onPress={() => onTrade(expiry, row, "PE")}>
-                <Text style={styles.actionButtonText}>Trade</Text>
-              </TouchableOpacity>
-            </>
-          )}
+          <OptionLegCell
+            quote={row.put}
+            expiry={expiry}
+            row={row}
+            right="PE"
+            saved={savedPut}
+            styles={styles}
+            onTrade={onTrade}
+            onRemember={onRemember}
+          />
         </View>
       </View>
     );
   },
-  // Re-render when anything the row shows or hands to the ticket changed. The chain is re-read as a whole,
-  // so an unchanged row keeps its object and skips; comparing a few fields instead let a row keep a stale
-  // `row` (old bid/ask, old order symbol) and a stale onTrade (the previous underlying) for the Trade press.
   (prev, next) =>
     prev.row === next.row &&
     prev.expiry === next.expiry &&
     prev.styles === next.styles &&
     prev.onTrade === next.onTrade &&
-    prev.liveCall === next.liveCall &&
-    prev.livePut === next.livePut &&
+    prev.onRemember === next.onRemember &&
     prev.savedCall === next.savedCall &&
     prev.savedPut === next.savedPut
 );
@@ -237,12 +289,11 @@ const OptionRowItem = React.memo(
 export default function OptionChainScreen() {
   const { useOptionChain, useOptionChains, useChainUnderlyings } = useApi();
   const { resolvedTheme } = useTheme();
-  const {
-    optionChain: { underlying, expiry },
-    setOptionChainUnderlying,
-    setOptionChainExpiry,
-    setOptionChainFilters,
-  } = useTradingStore();
+  const underlying = useTradingStore((s) => s.optionChain.underlying);
+  const expiry = useTradingStore((s) => s.optionChain.expiry);
+  const setOptionChainUnderlying = useTradingStore((s) => s.setOptionChainUnderlying);
+  const setOptionChainExpiry = useTradingStore((s) => s.setOptionChainExpiry);
+  const setOptionChainFilters = useTradingStore((s) => s.setOptionChainFilters);
 
   // One ticket object, handed to the sheet: the sheet renders from `ticket.visible`, so a screen that
   // opened a ticket without rendering it would press and show nothing at all.
@@ -356,6 +407,10 @@ export default function OptionChainScreen() {
   itemsRef.current = items;
   const [band, setBand] = useState<Band | null>(null);
 
+  useEffect(() => {
+    setBand(null);
+  }, [underlying, expiry, allExpiries]);
+
   // Initialize a band around ATM strikes immediately when items load so strikes subscribe to WebSocket ticks
   // without waiting for onViewableItemsChanged to fire.
   useEffect(() => {
@@ -386,30 +441,20 @@ export default function OptionChainScreen() {
     return spot ? [...strikeIds(rows), spot] : strikeIds(rows);
   }, [band, items, chain]);
 
-  // Off-hours the stream carries nothing for these contracts and the ladder is the closing prices the
-  // trader expects, so the screen asks for ticks only while the exchange is trading or marketOpen is true.
-  const feed = useQuoteFeed(ids, !!chain?.marketOpen && ids.length > 0);
+  // Subscribe without re-rendering OptionChainScreen on every tick; OptionLegCell & SpotDisplay subscribe individually.
+  useQuoteSubscription(ids, !!chain?.marketOpen && ids.length > 0);
   useEffect(() => {
     streamedStrikes.current = ids;
   }, [ids]);
-  // Each socket frame carries a newer `at`, so the map keyed by instrument is rebuilt on every frame. It is
-  // a plain read of the feed, so it happens here in render: holding it in state made every commit schedule
-  // one more update, and the screen never reached a quiet commit — the ladder repaints forever.
-  const ticksRef = useRef<Map<string, QuoteTick>>(new Map());
-  ticksRef.current = tickByInstrument(feed.quotes, ticksRef.current);
-  // A dropped socket stops carrying prices; keeping its last tick on screen would leave an old number
-  // looking live while the chain read goes on refreshing underneath it.
-  const live = feed.connected ? ticksRef.current : NO_TICKS;
 
   // What the stream and the ladder reads have priced goes into the phone's own quote memory, so a strike the
   // exchange has gone quiet on — or a ladder prod answers without premiums — still shows the number this
-  // trader last saw, with its minute, instead of an empty cell. A saved premium only paints on the day it
-  // was printed: theta makes yesterday's price for a strike a different contract's number.
+  // trader last saw, with its minute, instead of an empty cell.
   const quotes = useQuoteMemory();
   useEffect(() => {
     const legs = items.flatMap(item => (item.kind === "row" ? [item.row.call, item.row.put] : []));
-    quotes.remember([...tickEntries(feed.quotes), ...legEntries(legs)]);
-  }, [quotes, items, feed.quotes]);
+    quotes.remember(legEntries(legs));
+  }, [quotes, items]);
 
   // A desk opens at at-the-money, not on the cheapest far out-of-the-money strike at the top of the grid,
   // and it opens there once: re-centering on each poll would yank the list back while the trader reads a
@@ -485,7 +530,7 @@ export default function OptionChainScreen() {
     pickerTag: { fontSize: 10, fontWeight: "700", color: colors.brand, textTransform: "uppercase" },
     spotRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 12 },
     spotLabel: { fontSize: 12, color: colors.muted },
-    spotValue: { fontSize: 20, fontWeight: "700", color: colors.text },
+    spotValue: { fontSize: 20, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"] },
     statusDot: { width: 9, height: 9, borderRadius: 5 },
     dotLive: { backgroundColor: "#22c55e" },
     dotClosed: { backgroundColor: "#94a3b8" },
@@ -504,13 +549,13 @@ export default function OptionChainScreen() {
     cell: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
     cellText: { fontSize: 11, fontWeight: "500", color: colors.text },
     strikeCell: { flex: 0.8, backgroundColor: colors.headerBg },
-    strikeText: { fontSize: 13, fontWeight: "700", color: colors.brand },
+    strikeText: { fontSize: 13, fontWeight: "700", color: colors.brand, fontVariant: ["tabular-nums"] },
     atmTag: { position: "absolute", bottom: 3, left: 0, right: 0, fontSize: 9, fontWeight: "700", color: colors.brand, textAlign: "center", textTransform: "uppercase" },
     callCell: { backgroundColor: "rgba(34,197,94,0.05)" },
     putCell: { backgroundColor: "rgba(239,68,68,0.05)" },
-    priceText: { fontSize: 13, fontWeight: "600", color: colors.text },
+    priceText: { fontSize: 13, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] },
     noPrice: { fontSize: 11, color: colors.muted },
-    metaText: { fontSize: 10, color: colors.muted, marginTop: 1 },
+    metaText: { fontSize: 10, color: colors.muted, marginTop: 1, fontVariant: ["tabular-nums"] },
     oiChangePos: { color: "#22c55e" },
     oiChangeNeg: { color: "#ef4444" },
     actionButton: { marginTop: 4, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, backgroundColor: colors.brand },
@@ -649,13 +694,6 @@ export default function OptionChainScreen() {
     return null;
   }
 
-  const spot = amount(chain.spot?.price);
-  // The spot is the number the ladder was priced from, so it moves on the same stream the strikes do.
-  const spotTick = live.get(streamId(chain.underlying) ?? "");
-  const currentSpot = spotTick && tickBeats(spotTick, chain.spot?.at) ? spotTick : null;
-  const shownSpot = currentSpot ? currentSpot.price : spot;
-  const spotWord = currentSpot ? tickWord(currentSpot) : null;
-
   // Where each line sits, built once per read. Rebuilt only when the list itself is replaced, because the
   // scroller asks for these numbers for every row it decides to mount.
   if (!layoutRef.current || layoutRef.current.items !== items) {
@@ -745,16 +783,7 @@ export default function OptionChainScreen() {
 
         {underlyingPicker}
 
-        <View style={styles.spotRow}>
-          <Text style={styles.spotLabel}>Spot</Text>
-          {shownSpot === null ? (
-            <Text style={styles.noPrice}>{QUALITY_WORD[chain.spot?.quality] ?? "no spot price"}</Text>
-          ) : (
-            <Text style={styles.spotValue}>{formatNumber(shownSpot)}</Text>
-          )}
-          {shownSpot !== null && spotWord ? <Text style={styles.spotLabel}>{spotWord}</Text> : null}
-          <View style={[styles.statusDot, chain.marketOpen ? styles.dotLive : styles.dotClosed]} />
-        </View>
+        <SpotDisplay chain={chain} styles={styles} onRemember={quotes.remember} />
 
         {/* The server answers a cold read with the last frame it kept so the ladder appears at once, and while
             that frame is on the screen the session dot beside it says live — so the frame says its own age,
@@ -825,11 +854,10 @@ export default function OptionChainScreen() {
                 row={item.row}
                 expiry={item.expiry}
                 styles={styles}
-                liveCall={live.get(item.row.call?.instrumentId ?? "")}
-                livePut={live.get(item.row.put?.instrumentId ?? "")}
                 savedCall={quotes.seen(item.row.call?.instrumentId)}
                 savedPut={quotes.seen(item.row.put?.instrumentId)}
                 onTrade={openTicket}
+                onRemember={quotes.remember}
               />
             );
           }}

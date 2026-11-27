@@ -101,22 +101,30 @@ export function parseISTDateTime(value: string | null | undefined): Date | null 
 }
 
 // ===== NUMBER FORMATTING =====
+const NUMBER_FORMATTERS = new Map<number, Intl.NumberFormat>();
+
+function getNumberFormatter(decimals: number): Intl.NumberFormat {
+  let formatter = NUMBER_FORMATTERS.get(decimals);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-IN", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+    NUMBER_FORMATTERS.set(decimals, formatter);
+  }
+  return formatter;
+}
+
 export function formatNumber(value: number | null | undefined, decimals = 2): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return value.toLocaleString("en-IN", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
+  return getNumberFormatter(decimals).format(value);
 }
 
 export function formatRupees(value: number | null | undefined, options?: { signed?: boolean; decimals?: number }): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   const { signed = false, decimals = 2 } = options ?? {};
   const abs = Math.abs(value);
-  const formatted = abs.toLocaleString("en-IN", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
+  const formatted = getNumberFormatter(decimals).format(abs);
   const sign = signed ? (value > 0 ? "+" : value < 0 ? "−" : "") : value < 0 ? "−" : "";
   return `${sign}₹${formatted}`;
 }
@@ -129,7 +137,7 @@ export function formatPercent(value: number | null | undefined, decimals = 2): s
 
 export function formatQuantity(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return Math.round(value).toLocaleString("en-IN");
+  return getNumberFormatter(0).format(Math.round(value));
 }
 
 export function roundTo(value: number, decimals: number): number {

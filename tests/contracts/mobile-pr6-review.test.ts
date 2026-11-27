@@ -8,9 +8,10 @@ const read = (p: string) => readFileSync(resolve(__dirname, "../..", p), "utf8")
 // the previous underlying's handler and the old bid/ask.
 it("re-renders an option row whenever anything the Trade press uses changed", () => {
   const chain = read("apps/mobile/app/(tabs)/option-chain.tsx");
-  for (const prop of ["row", "expiry", "styles", "onTrade", "liveCall", "livePut"]) {
+  for (const prop of ["row", "expiry", "styles", "onTrade"]) {
     expect(chain).toContain(`prev.${prop} === next.${prop}`);
   }
+  expect(chain).toContain("useInstrumentTick(quote?.instrumentId)");
 });
 
 // An expired session must go to sign-in; only an unreachable server keeps the saved user.

@@ -12,7 +12,7 @@
  * credit or debit, the margin estimate and the spot-and-IV what-if simulator.
  */
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -197,6 +197,39 @@ function getPalette(theme: string) {
   };
 }
 
+function useThrottledValue<T>(value: T, intervalMs = 250): T {
+  const [throttled, setThrottled] = useState(value);
+  const lastUpdated = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const now = Date.now();
+    const remaining = intervalMs - (now - lastUpdated.current);
+    if (remaining <= 0) {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+      lastUpdated.current = now;
+      setThrottled(value);
+    } else if (!timer.current) {
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        lastUpdated.current = Date.now();
+        setThrottled(value);
+      }, remaining);
+    }
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+    };
+  }, [value, intervalMs]);
+
+  return throttled;
+}
+
 export default function PayoffChart({
   underlying,
   expiry,
@@ -209,6 +242,8 @@ export default function PayoffChart({
   const { resolvedTheme } = useTheme();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const colors = useMemo(() => getPalette(resolvedTheme), [resolvedTheme]);
+  // Cap live spot updates to 4 FPS for BSM / SVG curve generation so spot ticks never starve the JS thread
+  const throttledSpot = useThrottledValue(spot, 250);
 
   // Zoom & Pan state
   const [zoom, setZoom] = useState(1);
@@ -268,9 +303,9 @@ export default function PayoffChart({
       charges: [],
       warnings: [],
       realized: 0,
-      spot: spot ? String(spot) : "0",
+      spot: throttledSpot ? String(throttledSpot) : "0",
     } as unknown as Basket;
-  }, [legs, underlying, expiry, spot, title]);
+  }, [legs, underlying, expiry, throttledSpot, title]);
 
   // 2. Prepare chains: fallback missing ltp to close/ask/bid/entryPrice so after-hours builds succeed
   const preparedChains = useMemo(() => {
@@ -298,7 +333,9 @@ export default function PayoffChart({
             : quote.ask || quote.bid || fallbackPrice || quote.ltp;
 
           const currentSpot = Number(c.spot.price);
-          const spotVal = Number.isFinite(currentSpot) && currentSpot > 0 ? String(currentSpot) : spot ? String(spot) : "0";
+          const spotVal = Number.isFinite(currentSpot) && currentSpot > 0
+            ? String(currentSpot)
+            : throttledSpot ? String(throttledSpot) : "0";
 
           return {
             ...quote,
@@ -319,7 +356,7 @@ export default function PayoffChart({
         };
       }),
     })) as unknown as readonly OptionChainData[];
-  }, [chains, legs, spot]);
+  }, [chains, legs, throttledSpot]);
 
   // 3. Build Analysis payload for backend model & planning margin
   const built = useMemo(
@@ -354,7 +391,7 @@ export default function PayoffChart({
 
   // The price the axis is drawn around. The middle of the strike range is the only fallback, so a curve is
   // never refused because a quote has not arrived yet.
-  const liveSpot = Number(analysis.data?.spot ?? spot ?? virtualBasket.spot) || 0;
+  const liveSpot = Number(analysis.data?.spot ?? throttledSpot ?? virtualBasket.spot) || 0;
 
   /** One sampled axis, from five steps below the lowest strike to five steps above the highest. */
   const grid = useMemo(() => {
@@ -664,10 +701,14 @@ export default function PayoffChart({
   // handle is drawn on.
   const projected = scrubTarget ?? scrubExpiry;
 
+  const chartRef = useRef(chart);
+  chartRef.current = chart;
+
   const spotAtPixel = (x: number) => {
-    if (!chart || !Number.isFinite(x)) return null;
-    const inside = Math.min(Math.max(x, chart.plotLeft), chart.plotRight);
-    return chart.lo + ((inside - chart.plotLeft) / (chart.plotRight - chart.plotLeft || 1)) * (chart.hi - chart.lo);
+    const c = chartRef.current;
+    if (!c || !Number.isFinite(x)) return null;
+    const inside = Math.min(Math.max(x, c.plotLeft), c.plotRight);
+    return c.lo + ((inside - c.plotLeft) / (c.plotRight - c.plotLeft || 1)) * (c.hi - c.lo);
   };
 
   const moveRaf = useRef<number | null>(null);
@@ -688,8 +729,7 @@ export default function PayoffChart({
         moveRaf.current = requestAnimationFrame(() => setScrubSpot(at));
       },
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chart]);
+  }, []);
 
   // Open interest at each strike on its own scale behind the curve, which is what the desk's OI Bar toggle
   // draws. A strike the ladder does not list is not drawn, and a read with no OI says so rather than

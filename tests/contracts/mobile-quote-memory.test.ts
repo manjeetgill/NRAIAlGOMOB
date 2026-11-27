@@ -310,10 +310,10 @@ it("fills an unpriced watchlist row and keeps its minute on the row", () => {
 it("falls a ladder leg back to the premium this phone last saw for that same id", () => {
   const screen = read("apps/mobile/app/(tabs)/option-chain.tsx");
   // A tick still outranks the memory, and prod's chain read still outranks it: only a leg neither priced asks.
-  expect(screen).toContain("liveSide(callQuote, liveCall) ?? rememberedSide(savedCall)");
-  expect(screen).toContain("liveSide(putQuote, livePut) ?? rememberedSide(savedPut)");
+  expect(screen).toContain("liveSide(quote, liveTick) ?? rememberedSide(saved)");
   expect(screen).toContain("savedCall={quotes.seen(item.row.call?.instrumentId)}");
-  expect(screen).toContain("quotes.remember([...tickEntries(feed.quotes), ...legEntries(legs)])");
+  expect(screen).toContain("savedPut={quotes.seen(item.row.put?.instrumentId)}");
+  expect(screen).toContain("quotes.remember(legEntries(legs))");
 });
 
 it("seeds the memory from the two surfaces that always carry prices", () => {
