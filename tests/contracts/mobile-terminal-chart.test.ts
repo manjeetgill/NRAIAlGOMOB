@@ -221,13 +221,14 @@ it("asks for the next page as the oldest bar comes into view", () => {
 });
 
 // A candle closing while the trader reads an older session used to replace the whole list, which threw the
-// paged sessions away and re-anchored the view to today. At the right edge that is still what they want.
-it("appends a closed candle when the trader is scrolled back", () => {
+// paged sessions away and re-anchored the view to today, at the right edge too. Each changed bar now goes
+// through the library's single-bar update, which keeps the pages and follows the live bar only at the edge.
+it("adds a closed candle to the end instead of redrawing the chart", () => {
   const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
-  expect(chart).toContain("if (!rightEdgeVisible() && previous.length > 0 && bars.length > previous.length &&");
-  expect(chart).toContain("chart._chartStore._addData(bars.slice(previous.length), 'backward', { forward: moreAhead, backward: false });");
+  expect(chart).toContain("if (previous.length > 0 && bars.length >= previous.length &&");
+  expect(chart).toContain("for (const bar of bars.slice(previous.length - 1)) chart._chartStore._addData(bar);");
+  expect(chart).not.toContain("rightEdgeVisible");
   expect(chart).toContain("chart._chartStore._addData(bars, 'init');");
-  expect(chart).toContain("return range.to >= chart.getDataList().length - 2;");
   // The older pages reach the chart after its candles, or there is no left edge to put them behind.
   expect(chart.indexOf("postSymbol();")).toBeLessThan(chart.indexOf("postHistory();"));
 });

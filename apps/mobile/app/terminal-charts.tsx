@@ -60,10 +60,11 @@ const DEFAULT_INTERVAL: IntervalId = "1d";
 const DAILY_CANDLES_SHOWN = 120;
 const INTRADAY_CANDLES_SHOWN = 375;
 /**
- * How much of the older record the screen keeps to hand the chart. At 5 minutes a session is 75 bars, so this
- * is about twenty sessions; the chart itself holds whatever it is given.
+ * How much of the older record the screen keeps to hand the chart. The server holds about 60 sessions, which is
+ * 22,500 bars at 1m, so this never trims a real record. A smaller cap dropped each new (oldest) page as soon as it
+ * arrived, and scrolling back stalled at about 4 sessions on 1m and 20 on 5m.
  */
-const OLDER_BARS_HELD = 1_500;
+const OLDER_BARS_HELD = 25_000;
 const STUDY_STORAGE = "terminal-chart-studies";
 /** Past three, the panes squeeze the candles into a strip nobody can read a trend in. */
 const MAX_PANES = 3;

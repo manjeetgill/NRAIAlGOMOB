@@ -438,14 +438,15 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               lastDataKey = dataKey;
               const previous = lastWindow;
               lastWindow = bars;
-              // A candle closed while the trader was reading sessions behind it. Adding it to the end of the
-              // list keeps the pages they paged in and the place they were looking at; replacing the whole
-              // list would re-anchor the chart to today and throw the pages away. At the right edge the
-              // newest candle is what they want to see, so that case keeps replacing it.
-              if (!rightEdgeVisible() && previous.length > 0 && bars.length > previous.length &&
+              // The same session grew (a candle closed) or its last bar moved. Feeding the changed bars one at
+              // a time goes through the library's own update path: a bar with the last timestamp replaces it, a
+              // newer one is added after it, the view follows the live bar only when it was already at the
+              // right edge, and the older sessions paged in on the left stay. Replacing the whole list would
+              // drop those pages and re-anchor the chart.
+              if (previous.length > 0 && bars.length >= previous.length &&
                   bars[0].timestamp === previous[0].timestamp &&
                   chart._chartStore && typeof chart._chartStore._addData === 'function') {
-                chart._chartStore._addData(bars.slice(previous.length), 'backward', { forward: moreAhead, backward: false });
+                for (const bar of bars.slice(previous.length - 1)) chart._chartStore._addData(bar);
                 if (lastScan) applyScan(lastScan);
                 return;
               }
@@ -465,19 +466,6 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               if (lastScan) applyScan(lastScan);
             } catch (e) {
               console.error('Update error:', e);
-            }
-          }
-
-          // True when the newest candle is on screen, which is the desk watching a live chart rather than
-          // reading an older session. The library reports bar numbers, and the right margin puts the newest
-          // index at or past the end of the list.
-          function rightEdgeVisible() {
-            try {
-              const range = chart.getVisibleRange();
-              if (!range || typeof range.to !== 'number') return true;
-              return range.to >= chart.getDataList().length - 2;
-            } catch (e) {
-              return true;
             }
           }
 
