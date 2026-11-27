@@ -19,6 +19,7 @@ const index = readFileSync(resolve(root, "packages/shared/src/api/index.ts"), "u
 const prefetch = readFileSync(resolve(root, "apps/mobile/src/utils/prefetch.ts"), "utf8");
 const memory = readFileSync(resolve(root, "apps/mobile/src/utils/chainSelection.ts"), "utf8");
 const screen = readFileSync(resolve(root, "apps/mobile/app/(tabs)/option-chain.tsx"), "utf8");
+const builder = readFileSync(resolve(root, "apps/mobile/app/spread-builder.tsx"), "utf8");
 
 describe("one helper builds the chain read", () => {
   it("sends a live ISO expiry and drops one that has settled", () => {
@@ -66,6 +67,17 @@ describe("the warm-up reads the contract the desk opens on", () => {
     // Two parsers over one key is how a warm-up ends up asking for a date the desk will not open.
     expect(screen).not.toContain("nraialgo.chain-selection");
     expect(memory).toMatch(/expiry < todayIST\(\)\) return null/);
+  });
+
+  it("opens the builder on the remembered contract too", () => {
+    // The builder read the store's contract, and that store does not survive a launch on the phone, so every
+    // opening asked prod for NIFTY's ladder — a seconds-long broker read for a contract nobody meant to open.
+    expect(builder).toContain('import { readChainSelection, rememberChainSelection } from "@/utils/chainSelection"');
+    expect(builder).toContain("readChainSelection()");
+    expect(builder).toContain("setOptionChainFilters(saved)");
+    expect(builder).toContain("enabled: focused && resumed && !!underlying");
+    expect(builder).toContain("rememberChainSelection({ underlying: chain.underlying, expiry: chain.expiry })");
+    expect(builder).not.toContain('"NIFTY"');
   });
 });
 
