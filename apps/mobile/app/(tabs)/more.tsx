@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useApi } from "@/hooks/useApi";
 import { useClock } from "@/hooks/useClock";
 import { router } from "expo-router";
-import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
+import { prefetchAlgoLab, prefetchScanner, prefetchSectorRotation, prefetchSpreadBuilder } from "@/utils/prefetch";
 import { forgetLastKnown } from "@/hooks/useLastKnown";
 import { forgetDeviceUnlock } from "@/utils/deviceUnlock";
 import { serverLine } from "@/utils/serverHost";
@@ -226,6 +226,18 @@ export default function MoreScreen() {
             <View style={styles.labelRow}>
               <Ionicons name="terminal-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Terminal charts</Text>
+            </View>
+            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.row, styles.rowDivider]}
+            onPress={() => router.push("/sector-rotation")}
+            onPressIn={prefetchSectorRotation}
+            accessibilityRole="button"
+          >
+            <View style={styles.labelRow}>
+              <Ionicons name="pie-chart-outline" size={24} color={colors.muted} style={styles.icon} />
+              <Text style={styles.label}>Sector rotation</Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
           </TouchableOpacity>

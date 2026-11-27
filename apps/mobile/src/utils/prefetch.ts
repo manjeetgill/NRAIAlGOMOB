@@ -23,6 +23,7 @@ import {
   type IciciAccountPayload,
   type OptionChainData,
   type OrderIntent,
+  type SectorRotationBody,
   type TechnicalEventsResponse,
   type UnderlyingList,
 } from "@nraialgo/shared/api";
@@ -148,6 +149,21 @@ export function prefetchScanner() {
     queryKey: queryKeys.scanner.technicalEvents(),
     queryFn: () => client.get<TechnicalEventsResponse>("/v1/technical-events"),
     staleTime: 10 * 1000,
+  }).catch(() => {});
+}
+
+/**
+ * The stored sector dataset, warmed on the press that opens it.
+ *
+ * One body carries all four periods and every constituent, so this is the whole screen's read — and because
+ * the data is archived end-of-day rather than live, the key stays fresh for ten minutes, the same window the
+ * screen's own hook holds it under. Nothing here reaches a broker.
+ */
+export function prefetchSectorRotation() {
+  queryClient.prefetchQuery({
+    queryKey: queryKeys.sectorRotation.body(),
+    queryFn: () => client.get<SectorRotationBody>("/v1/sector-rotation"),
+    staleTime: 10 * 60 * 1000,
   }).catch(() => {});
 }
 
