@@ -8,6 +8,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
+import { brokerConnections, type BrokerConnection, type ProviderTimestamps } from "./broker-connection";
 import { subscribeSSE, type SseSubscription } from "./sse";
 import { quoteStreamCarries } from "./websocket";
 import { Constants } from "../constants";
@@ -101,7 +102,7 @@ export const queryKeys = {
   // Auth
   auth: {
     me: () => ["auth", "me"] as const,
-    brokers: () => ["auth", "brokers"] as const,
+    brokerConnection: () => ["auth", "broker-connection"] as const,
   },
 
   // Baskets. Prod serves the whole desk from GET /v1/baskets - there is no single-basket read, so a
@@ -462,10 +463,24 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
-  const useBrokers = (options?: UseQueryOptions<BrokerStatus[], ApiError>) => {
+  /**
+   * Whether the phone may read the broker at all.
+   *
+   * Prod has no single broker route: the saved-credentials map and the live-session map are two reads, and an
+   * expired session is only distinguishable from a never-authorized one by putting them together, so they
+   * travel as one query and `brokerConnections` folds them. The hook this replaced named an auth path the
+   * backend never registered, so it could only ever have errored.
+   */
+  const useBrokerConnection = (options?: Omit<UseQueryOptions<BrokerConnection[], ApiError>, "queryKey" | "queryFn">) => {
     return useQuery({
-      queryKey: queryKeys.auth.brokers(),
-      queryFn: () => client.get<BrokerStatus[]>("/v1/auth/brokers"),
+      queryKey: queryKeys.auth.brokerConnection(),
+      queryFn: async () => {
+        const [credentials, session] = await Promise.all([
+          client.get<ProviderTimestamps>("/v1/broker-credentials/status"),
+          client.get<ProviderTimestamps>("/v1/broker-auth/status"),
+        ]);
+        return brokerConnections(credentials, session);
+      },
       staleTime: 30 * 1000,
       ...options,
     });
@@ -1305,7 +1320,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   return {
     // Auth
     useMe,
-    useBrokers,
+    useBrokerConnection,
     useLogin,
     useLogout,
     // Baskets
