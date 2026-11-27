@@ -429,7 +429,7 @@ export default function SpreadBuilderScreen() {
         ? ` ${offLadder.length} held strike${offLadder.length === 1 ? "" : "s"} (${offLadder.map(leg => `${leg.strike}${leg.right}`).join(", ")}) are not on this ladder, so they have no broker price and sending them is refused.`
         : ""),
     );
-  }, [staging, chain]);
+  }, [staging, chain, aliases, aliasLoading, aliasError]);
 
   const strikes = useMemo(
     () => (chain?.rows ?? []).filter(row => row.call || row.put).map(row => row.strike),
