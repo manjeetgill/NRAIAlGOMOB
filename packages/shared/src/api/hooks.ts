@@ -284,17 +284,40 @@ export function chartInstrument(name: string): string {
  * `day` picks one recorded session out of the intraday archive. Without it the route answers for the newest
  * day it holds, which is how a chart that has past sessions on the server showed only today. Daily candles
  * ignore it: the history route returns the whole stored series, so there is no session to choose.
+ *
+ * `before` is the oldest bar the chart is showing. The intraday route answers with whole sessions older than
+ * that stamp, which is how scrolling left backwards loads the next page instead of the same session again.
  */
 export function chartRequest(
   instrument: string,
   interval: string,
   day?: string | null,
-): { path: string; params: { instrument: string; interval: string; day?: string } } {
+  before?: number | null,
+): {
+  path: string;
+  params: { instrument: string; interval: string; day?: string; before?: number };
+} {
   const daily = DAILY_INTERVALS.has(interval);
   return {
     path: daily ? "/v1/charts/history" : "/v1/charts/intraday",
-    params: { instrument, interval, ...(day && !daily ? { day } : {}) },
+    params: {
+      instrument,
+      interval,
+      ...(day && !daily ? { day } : {}),
+      ...(before != null && !daily ? { before } : {}),
+    },
   };
+}
+
+/**
+ * The sessions paged in behind a chart's left edge, oldest bar first, one bar per timestamp, with the newest
+ * `keep` of them kept. Two scrolls can land on the same session, so a repeat is folded into the bar the
+ * chart already has rather than drawn beside it.
+ */
+export function mergeOlderCandles(held: readonly Candle[], page: readonly Candle[], keep: number): Candle[] {
+  const byTimestamp = new Map<number, Candle>();
+  for (const bar of [...held, ...page]) byTimestamp.set(bar.timestamp, bar);
+  return [...byTimestamp.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-keep);
 }
 
 /** Prod puts its reason in `detail`; a status line alone leaves the trader with a blank that is not a blank. */
@@ -1292,6 +1315,22 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  // Terminal chart scroll-back (Manjeet, 27 Nov 2026): the page of sessions behind the left edge of the chart.
+  // Imperative rather than a query — the canvas prepends it in front of the bars it already holds, and the
+  // same page must not be fetched twice while one is in flight. Keyed by the exact page, so switching the
+  // symbol or interval mid-scroll cannot hand the old instrument's bars to the new chart.
+  const olderCandlesReads = new Map<string, Promise<ChartData>>();
+  const readOlderCandles = (name: string, interval: string, before: number): Promise<ChartData> => {
+    const request = chartRequest(chartInstrument(name), interval, null, before);
+    const key = `${request.params.instrument}|${interval}|${before}`;
+    const running = olderCandlesReads.get(key);
+    if (running) return running;
+    const page = client.get<ChartData>(request.path, { params: request.params });
+    olderCandlesReads.set(key, page);
+    page.finally(() => olderCandlesReads.delete(key)).catch(() => {});
+    return page;
+  };
+
   // ===== HISTORY =====
   const useHistory = (params?: QueryParams, options?: UseQueryOptions<HistoryResponse, ApiError>) => {
     return useQuery({
@@ -1368,6 +1407,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useUpdateCopy,
     // Terminal
     useTerminalChart,
+    readOlderCandles,
     // History
     useHistory,
   };
@@ -2662,6 +2702,10 @@ export interface ChartData {
   day?: string | null;
   /** Every session the server holds candles for, newest first. The intraday route's own list. */
   availableDays?: string[];
+  /** The oldest bar in this page — the stamp the next page backwards starts from. */
+  olderThan?: number | null;
+  /** False once the archive has no session older than `olderThan`, so the chart stops asking. */
+  moreHistory?: boolean;
 }
 
 export interface Candle {

@@ -31,6 +31,7 @@ import {
   chartFailureReason,
   chartInstrument,
   chartPickerSections,
+  mergeOlderCandles,
   tickLabel,
   useLiveCandles,
   type Candle,
@@ -58,6 +59,11 @@ const DEFAULT_SYMBOL = "NIFTY";
 const DEFAULT_INTERVAL: IntervalId = "1d";
 const DAILY_CANDLES_SHOWN = 120;
 const INTRADAY_CANDLES_SHOWN = 375;
+/**
+ * How much of the older record the screen keeps to hand the chart. At 5 minutes a session is 75 bars, so this
+ * is about twenty sessions; the chart itself holds whatever it is given.
+ */
+const OLDER_BARS_HELD = 1_500;
 const STUDY_STORAGE = "terminal-chart-studies";
 /** Past three, the panes squeeze the candles into a strip nobody can read a trend in. */
 const MAX_PANES = 3;
@@ -158,9 +164,17 @@ function withForming(candles: readonly Candle[], forming: Candle | null | undefi
   return forming && (!last || forming.timestamp > last.timestamp) ? [...rows, forming] : rows;
 }
 
+/**
+ * A chart nobody has scrolled back on: nothing beyond the window it was served. `nonce` is one per change
+ * the canvas has to apply, so a rerender cannot put the same session on twice.
+ */
+function noPages(key: string): { key: string; bars: Candle[]; more: boolean; nonce: number } {
+  return { key, bars: [], more: false, nonce: 0 };
+}
+
 export default function TerminalChartsScreen() {
   const { resolvedTheme } = useTheme();
-  const { useTerminalChart, useChainUnderlyings } = useApi();
+  const { useTerminalChart, useChainUnderlyings, readOlderCandles } = useApi();
   const seeded = useLocalSearchParams<{ symbol?: string }>();
   // A press on a stock's "Chart" tab arrives with that symbol, so the desk opens on the instrument the
   // trader was just looking at instead of on the default index. The route takes `NSE:SYMBOL` for a cash
@@ -381,6 +395,62 @@ export default function TerminalChartsScreen() {
 
   const availableDays = chartData?.availableDays;
 
+  // Only the session the route chose for itself pages backwards. A session picked from the list is answered
+  // whole, and asking the route for a page and a day at once is a question it refuses on purpose.
+  const pagesBack = !isDaily && day === null;
+
+  // Switching the instrument, the bucket or the session is a different chart. The pages are keyed to the one
+  // they were fetched for, so a scroll-back that was still in flight cannot put another chart's sessions on
+  // the new canvas, and the chart is told there are none before its new candles arrive.
+  const chartKey = `${symbol}|${interval}|${day ?? ""}`;
+  const [paged, setPaged] = useState(() => noPages(chartKey));
+  const older = paged.key === chartKey ? paged : noPages(chartKey);
+  const currentKey = useRef(chartKey);
+  currentKey.current = chartKey;
+
+  // Whether there is anything older than this window, in the server's own words rather than a guess. Nothing
+  // is fetched on the strength of it until the trader scrolls or zooms towards the left edge.
+  useEffect(() => {
+    const ahead = pagesBack && chartData?.moreHistory === true;
+    setPaged(current => {
+      const held = current.key === chartKey ? current : noPages(chartKey);
+      return held.more === ahead ? held : { ...held, more: ahead, nonce: held.nonce + 1 };
+    });
+  }, [chartKey, pagesBack, chartData?.moreHistory]);
+
+  const askOlder = useCallback((before: number) => {
+    if (!pagesBack) {
+      // The chart is waiting for an answer it will not get, so give it one that stops it asking.
+      setPaged(current => ({ ...noPages(chartKey), nonce: current.nonce + 1 }));
+      return;
+    }
+    void (async () => {
+      let bars: Candle[] = [];
+      let ahead = false;
+      let answered = false;
+      try {
+        const page = await readOlderCandles(symbol, interval, before);
+        bars = page.candles ?? [];
+        ahead = page.moreHistory === true;
+        answered = true;
+      } catch {
+        answered = false;
+      }
+      if (currentKey.current !== chartKey) return;
+      setPaged(current => {
+        const held = current.key === chartKey ? current : noPages(chartKey);
+        return {
+          key: chartKey,
+          bars: mergeOlderCandles(held.bars, bars, OLDER_BARS_HELD),
+          // A page that came back empty says the record ends here; a read that failed says nothing, so the
+          // next scroll is free to ask for the same page again.
+          more: answered ? (bars.length > 0 && ahead) : held.more,
+          nonce: held.nonce + 1,
+        };
+      });
+    })();
+  }, [chartKey, interval, pagesBack, readOlderCandles, symbol]);
+
   // Read when the sheet opens rather than kept in step with every fetch: the list belongs to the picker and
   // must not re-render the chart underneath it.
   const openDayPicker = useCallback(() => {
@@ -401,9 +471,14 @@ export default function TerminalChartsScreen() {
   const liveColor = lookingBack ? colors.muted : live.tick?.fresh ? colors.up : live.reason || live.tick ? colors.down : colors.muted;
 
   const sessionCount = candles.length ? ` · ${candles.length} bars of ${interval}` : "";
+  // What the canvas holds beyond the fetched session, and whether anything older is left to scroll for.
+  // A chart that quietly stops at its first loaded bar reads like a broken one.
+  const pagedLine = !pagesBack ? "" : older.bars.length
+    ? ` · ${older.bars.length} older bars paged in${older.more ? ", scroll left for more" : " · the record starts here"}`
+    : chartData?.moreHistory === true ? " · scroll or zoom out for older sessions" : "";
   const sourceLine = isDaily
     ? `${chartData?.source ?? "Stored daily history"}${chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}`
-    : `${chartData?.source ?? "Recorded session"} · ${sessionDay ?? today}${sessionCount}`;
+    : `${chartData?.source ?? "Recorded session"} · ${sessionDay ?? today}${sessionCount}${pagedLine}`;
 
   // What the session control is worth showing: the trader should see which day is on screen, not assume it.
   const sessionLabel = !sessionDay ? "Session" : sessionDay === today ? "Today" : formatSession(sessionDay);
@@ -551,7 +626,9 @@ export default function TerminalChartsScreen() {
         if (!canvasUp) setCanvasUp(true);
       }}
     >
-      <KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol} studies={studies} draw={draw} />
+      {/* The chart asks for the sessions behind its own left edge, so scrolling back is a fetch rather
+          than a wall. */}
+      <KLineChart data={chartDataPoints} height={chartHeight} symbol={symbol} studies={studies} draw={draw} history={pagesBack ? older : undefined} onNeedMore={askOlder} />
       {state && <View style={styles.stateScrim}>{state}</View>}
     </View>
   );

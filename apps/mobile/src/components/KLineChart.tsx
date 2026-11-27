@@ -34,6 +34,20 @@ export interface ChartDraw {
   nonce: number;
 }
 
+/**
+ * Sessions older than the left edge of the chart, as far as the app has paged them in.
+ *
+ * `bars` is the whole older set rather than the newest page, because a theme change rebuilds the canvas and
+ * the rebuilt chart has to be handed everything again; the page only puts the bars it is missing in front of
+ * the ones on screen. `more` is the server's own answer to "is there anything older", so the chart stops
+ * asking at the end of the record instead of polling a wall. `nonce` applies one update once.
+ */
+export interface ChartHistory {
+  bars: Candle[];
+  more: boolean;
+  nonce: number;
+}
+
 interface KLineChartProps {
   data: Candle[];
   height?: number;
@@ -50,18 +64,25 @@ interface KLineChartProps {
   studies?: ChartStudy[];
   /** `name: null` erases every line drawn from the screen. */
   draw?: ChartDraw | null;
+  /** Omitted on a chart that has no older record behind it, which is every chart but the Terminal's. */
+  history?: ChartHistory | null;
+  /** Called with the oldest bar on screen when the trader scrolls or zooms towards it. */
+  onNeedMore?: (before: number) => void;
 }
 
 type ChartMessage =
   | { type: "ready" }
+  | { type: "needMore"; before: number }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw, history, onNeedMore }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const needMoreRef = useRef(onNeedMore);
+  needMoreRef.current = onNeedMore;
 
   const chartHtml = useMemo(() => {
     return `
@@ -89,7 +110,27 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
           let lastDataKey = null;
           let lastScan = null;
           let scanPanes = [];
-          
+          let pagerOn = false;
+          let moreAhead = false;
+          let asking = false;
+          let lastHistoryNonce = 0;
+          let lastWindow = [];
+
+          function postApp(message) {
+            try { window.ReactNativeWebView.postMessage(JSON.stringify(message)); } catch (e) {}
+          }
+
+          function toBar(item) {
+            return {
+              timestamp: item.timestamp,
+              open: item.open,
+              high: item.high,
+              low: item.low,
+              close: item.close,
+              volume: item.volume || 0,
+            };
+          }
+
           function showError(msg) {
             document.getElementById('error').style.display = 'block';
             document.getElementById('error').innerHTML = '<p>⚠️ ' + msg + '</p><p style="font-size: 12px; margin-top: 8px; color: #64748b;">Please reload</p>';
@@ -134,6 +175,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               });
 
               registerAtr();
+              watchLeftEdge();
               paintSymbol();
               if (pendingStudies) applyStudies(pendingStudies);
 
@@ -156,6 +198,11 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
           function paintSymbol() {
             if (!chart) return;
             lastDataKey = null;
+            pagerOn = false;
+            moreAhead = false;
+            asking = false;
+            lastHistoryNonce = 0;
+            lastWindow = [];
             try { chart.removeOverlay({ groupId: 'user' }); } catch (e) {}
             try {
               if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
@@ -169,6 +216,50 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               chart.setStyles({ candle: { tooltip: { title: { show: !!pendingSymbol } } } });
             } catch (e) {
               console.error('Symbol error:', e);
+            }
+          }
+
+          // The library reports the bar numbers on screen every time the trader drags or pinches. Asking when
+          // the oldest loaded bar comes near the left edge, rather than after it touches it, is what keeps a
+          // zoom-out from running into a wall; one page is in flight at a time, and a chart the app has not
+          // offered history to never asks at all.
+          const LEAD_BARS = 12;
+
+          function watchLeftEdge() {
+            if (typeof chart.subscribeAction !== 'function') return;
+            try {
+              chart.subscribeAction('onVisibleRangeChange', function (range) {
+                if (!pagerOn || !moreAhead || asking || !range || typeof range.from !== 'number') return;
+                if (range.from > LEAD_BARS) return;
+                const list = chart.getDataList() || [];
+                if (!list.length) return;
+                asking = true;
+                postApp({ type: 'needMore', before: list[0].timestamp });
+              });
+            } catch (e) {
+              console.error('Edge watch error:', e);
+            }
+          }
+
+          // Older sessions go in front of the candles on the canvas, which is the one thing the library does
+          // without moving the view: the chart stays where the trader parked it and fills in behind it. The
+          // bars already there are skipped, so a canvas rebuilt by a theme change is refilled, not doubled.
+          function applyHistory(request) {
+            if (!chart) return;
+            pagerOn = true;
+            moreAhead = !!request.more;
+            asking = false;
+            const list = chart.getDataList() || [];
+            if (!list.length) return;
+            if (request.nonce === lastHistoryNonce) return;
+            lastHistoryNonce = request.nonce;
+            const edge = list[0].timestamp;
+            const page = (request.bars || []).map(toBar).filter(function (item) { return item.timestamp < edge; });
+            if (!page.length) return;
+            try {
+              chart._chartStore._addData(page, 'forward', { forward: moreAhead, backward: false });
+            } catch (e) {
+              console.error('History error:', e);
             }
           }
 
@@ -339,27 +430,33 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
           function updateData(data) {
             if (!chart || !data || !data.length) return;
             try {
-              const first = data[0];
-              const last = data[data.length - 1];
-              const dataKey = data.length + "_" + (first ? first.timestamp : "") + "_" + (last ? last.timestamp + "_" + last.close : "");
+              const bars = data.map(toBar);
+              const first = bars[0];
+              const last = bars[bars.length - 1];
+              const dataKey = bars.length + "_" + (first ? first.timestamp : "") + "_" + (last ? last.timestamp + "_" + last.close : "");
               if (dataKey === lastDataKey) return;
               lastDataKey = dataKey;
-              const klineData = data.map(item => ({
-                timestamp: item.timestamp,
-                open: item.open,
-                high: item.high,
-                low: item.low,
-                close: item.close,
-                volume: item.volume || 0,
-              }));
+              const previous = lastWindow;
+              lastWindow = bars;
+              // A candle closed while the trader was reading sessions behind it. Adding it to the end of the
+              // list keeps the pages they paged in and the place they were looking at; replacing the whole
+              // list would re-anchor the chart to today and throw the pages away. At the right edge the
+              // newest candle is what they want to see, so that case keeps replacing it.
+              if (!rightEdgeVisible() && previous.length > 0 && bars.length > previous.length &&
+                  bars[0].timestamp === previous[0].timestamp &&
+                  chart._chartStore && typeof chart._chartStore._addData === 'function') {
+                chart._chartStore._addData(bars.slice(previous.length), 'backward', { forward: moreAhead, backward: false });
+                if (lastScan) applyScan(lastScan);
+                return;
+              }
               if (typeof chart.applyNewData === 'function') {
-                chart.applyNewData(klineData);
+                chart.applyNewData(bars);
               } else if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
-                chart._chartStore._addData(klineData, 'init');
+                chart._chartStore._addData(bars, 'init');
               } else if (typeof chart.setDataLoader === 'function') {
                 chart.setDataLoader({
-                  getBars: function(params) {
-                    params.callback(klineData);
+                  getBars: function (params) {
+                    params.callback(bars);
                   }
                 });
                 chart.setSymbol('CHART');
@@ -368,6 +465,19 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               if (lastScan) applyScan(lastScan);
             } catch (e) {
               console.error('Update error:', e);
+            }
+          }
+
+          // True when the newest candle is on screen, which is the desk watching a live chart rather than
+          // reading an older session. The library reports bar numbers, and the right margin puts the newest
+          // index at or past the end of the list.
+          function rightEdgeVisible() {
+            try {
+              const range = chart.getVisibleRange();
+              if (!range || typeof range.to !== 'number') return true;
+              return range.to >= chart.getDataList().length - 2;
+            } catch (e) {
+              return true;
             }
           }
 
@@ -400,6 +510,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               else if (message.type === 'symbol') requestSymbol(message.ticker);
               else if (message.type === 'update') updateData(message.data);
               else if (message.type === 'patch') patchBar(message.bar);
+              else if (message.type === 'history') applyHistory(message);
               else if (message.type === 'scan') applyScan(message.scan);
               else if (message.type === 'studies') applyStudies(message.studies);
               else if (message.type === 'draw') applyDraw(message);
@@ -434,6 +545,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     postedSymbolRef.current = null;
     postedScanRef.current = null;
     postedStudiesRef.current = null;
+    postedHistoryRef.current = null;
   }, [chartHtml]);
 
   // The ticker is a message, not part of the page: see the chart's own paintSymbol(). Once the canvas exists
@@ -446,8 +558,25 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     // The canvas is empty now, so the shortcut that sends one bar when only the forming close moved has to
     // be dropped — otherwise the new instrument's candles would never be sent.
     prevLastRef.current = null;
+    // The chart forgot which pages it holds along with the candles, so the history is sent again even if the
+    // screen has not fetched a new one since.
+    postedHistoryRef.current = null;
     webViewRef.current.postMessage(symbolPayload);
   }, [symbolPayload]);
+
+  // Older sessions are one message per change: the screen accumulates them, the chart decides what it lacks.
+  const historyPayload = useMemo(
+    () => (history
+      ? JSON.stringify({ type: "history", bars: history.bars, more: history.more, nonce: history.nonce })
+      : null),
+    [history],
+  );
+  const postedHistoryRef = useRef<string | null>(null);
+  const postHistory = useCallback(() => {
+    if (!historyPayload || !isReady.current || !webViewRef.current || postedHistoryRef.current === historyPayload) return;
+    postedHistoryRef.current = historyPayload;
+    webViewRef.current.postMessage(historyPayload);
+  }, [historyPayload]);
 
   // One string per study set: an identical refetch of the same scan must not redraw every level.
   const scanPayload = useMemo(
@@ -496,6 +625,9 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
         postScan();
         postStudies();
         postDraw();
+        postHistory();
+      } else if (message.type === "needMore") {
+        needMoreRef.current?.(message.before);
       } else if (message.type === "error") {
         setError(message.message);
         setLoading(false);
@@ -503,7 +635,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     } catch (e) {
       console.error("Chart message error:", e);
     }
-  }, [data, postSymbol, postScan, postStudies, postDraw]);
+  }, [data, postSymbol, postScan, postStudies, postDraw, postHistory]);
 
   // Declared before the data effect so a switch that lands both in one commit clears the canvas first.
   useEffect(() => {
@@ -536,6 +668,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
   useEffect(() => {
     postDraw();
   }, [postDraw]);
+
+  // Last, because a page of older sessions is put in front of the candles on the canvas — the canvas has to
+  // hold this instrument's candles first or there is no edge to put them behind.
+  useEffect(() => {
+    postHistory();
+  }, [postHistory]);
 
   return (
     <View style={[styles.container, { height }]}>
