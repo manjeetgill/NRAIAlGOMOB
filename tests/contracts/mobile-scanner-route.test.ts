@@ -51,3 +51,27 @@ it("draws the kind from the event the server actually returns", () => {
   expect(screen).toContain("candleTime(signal.at)");
   expect(screen).not.toContain("{signal.at}");
 });
+
+it("provides stock universe selection (portfolio, fo, cash, large cap, midcap, small cap)", () => {
+  expect(screen).toContain('id: "portfolio", label: "Portfolio"');
+  expect(screen).toContain('id: "fo", label: "F&O"');
+  expect(screen).toContain('id: "cash", label: "Cash"');
+  expect(screen).toContain('id: "large_cap", label: "Large Cap"');
+  expect(screen).toContain('id: "midcap", label: "Midcap"');
+  expect(screen).toContain('id: "small_cap", label: "Small Cap"');
+  expect(screen).toContain("universe === \"portfolio\"");
+  expect(screen).toContain("styles.universeBar");
+  expect(screen).toContain("styles.universeChip");
+});
+
+it("resolves universe names and ICICI codes unpriced without polling watchlists", () => {
+  // Index membership is read once from the built-in lists and never polled
+  expect(screen.match(/useBuiltinWatchlist\("/g)?.length).toBe(2);
+  expect(screen.match(/refetchInterval: false, staleTime: 12 \* 60 \* 60 \* 1000/g)?.length).toBe(2);
+  expect(screen).toContain("page.instruments");
+  expect(screen).not.toContain("MIDCAP_SET");
+  // Reads derivatives master unpriced once
+  expect(screen).toContain("useChainUnderlyings");
+  // Maps broker/ICICI contract codes (e.g. RELIND -> RELIANCE)
+  expect(screen).toContain("useContractUnderlyings");
+});
