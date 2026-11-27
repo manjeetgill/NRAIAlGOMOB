@@ -72,10 +72,78 @@ let alertStreamUsers = 0;
 let orderStream: SseSubscription | null = null;
 let orderStreamUsers = 0;
 const orderStreamHandlers = new Set<(event: string, payload: unknown) => void>();
+/** Which named events the connection opened right now has actually delivered. Cleared the moment it reconnects. */
+let orderStreamEvents = new Set<string>();
 
-/** True while the order stream is delivering, so a screen can drop its timed REST read instead of guessing. */
-export function orderStreamAlive(): boolean {
+/** True while the order stream is delivering any frame, including a keepalive — which is not what a screen gates a read on. */
+function orderStreamAlive(): boolean {
   return orderStream !== null && orderStream.alive();
+}
+
+/**
+ * True while the stream is both up and known to carry this event, which is not the same fact as being up.
+ *
+ * `alive` only means bytes arrived, and a keepalive arrives on a stream whose event the server never sends —
+ * on a build before the GTT frames existed that is every connection. A screen that stops its timer on
+ * `orderStreamAlive` alone therefore freezes the moment it connects, and TanStack re-reads `refetchInterval`
+ * only after a settled fetch, so a `false` here is never picked up again until something else changes. Each
+ * consumer keeps its 60 s timer and skips only the read inside it, which is why the answer has to name the
+ * event rather than the connection.
+ */
+export function orderStreamCarries(event: string): boolean {
+  return orderStreamAlive() && orderStreamEvents.has(event);
+}
+
+function noteOrderStreamEvent(event: string): void {
+  orderStreamEvents.add(event);
+}
+
+/**
+ * Follows the one `/v1/broker-auth/order/stream` every screen that tracks an execution shares, opening it the
+ * first time a screen asks and closing it when the last one lets go. Returns the detach.
+ *
+ * The server answers two named events on it: `order` carries `{intents, asOf}` — the execution rows and their
+ * legs, re-checked once a second and sent only when something moved, with finished intents kept for ten
+ * minutes — and `gtt` carries `{gtts, asOf}`, the same rows `GET /v1/orders/gtt` returns, re-checked every five
+ * seconds with the first frame sent on connect. Each consumer takes the event it reads, so the ticket, the GTT
+ * list and Algo Lab hold one connection between them instead of three.
+ */
+export function subscribeOrderStream(onEvent: (event: string, payload: unknown) => void): () => void {
+  orderStreamHandlers.add(onEvent);
+  orderStreamUsers += 1;
+  if (!orderStream) {
+    orderStreamEvents = new Set();
+    orderStream = subscribeSSEEvents(`${Constants.API.BASE_URL}/v1/broker-auth/order/stream`, (event, data) => {
+      let payload: unknown = null;
+      try {
+        payload = JSON.parse(data) as unknown;
+      } catch {
+        // A keepalive carries no body, so it keeps the connection alive without ever naming an event. That is
+        // the difference between a stream the screens may trust and a stream they must keep polling.
+        return;
+      }
+      noteOrderStreamEvent(event);
+      for (const listener of orderStreamHandlers) listener(event, payload);
+    });
+  }
+  return () => {
+    orderStreamHandlers.delete(onEvent);
+    orderStreamUsers -= 1;
+    if (orderStreamUsers === 0 && orderStream) {
+      orderStream.close();
+      orderStream = null;
+    }
+  };
+}
+
+/** The hook a screen uses. A re-render on every tick never re-arms the connection, only a mount or unmount does. */
+export function useOrderStream(onEvent: (event: string, payload: unknown) => void, wanted = true): void {
+  const latest = useRef(onEvent);
+  latest.current = onEvent;
+  useEffect(() => {
+    if (!wanted) return;
+    return subscribeOrderStream((event, payload) => latest.current(event, payload));
+  }, [wanted]);
 }
 
 /** One leg as the order stream names it: the projection of the server's own execution row. */
@@ -773,46 +841,6 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
   const accountPoll = () => (accountStream?.alive() ? STREAM_SAFETY_POLL_MS : 30 * 1000);
 
-  /**
-   * One `/v1/broker-auth/order/stream` for every screen that follows an execution.
-   *
-   * The server answers two named events on it: `order` carries `{intents, asOf}` — the execution rows and
-   * their legs, re-checked once a second and sent only when something moved, with finished intents kept for
-   * ten minutes — and `gtt` carries `{gtts, asOf}`, the same rows `GET /v1/orders/gtt` returns, re-checked
-   * every five seconds with the first frame sent on connect. Each consumer takes the event it reads, so the
-   * ticket, the GTT list and Algo Lab share one connection instead of holding three.
-   */
-  const useOrderStream = (onEvent: (event: string, payload: unknown) => void, wanted = true) => {
-    // The handler is kept in a ref so a screen re-rendering on every tick never re-arms the connection.
-    const latest = useRef(onEvent);
-    latest.current = onEvent;
-    useEffect(() => {
-      if (!wanted) return;
-      const dispatch = (event: string, payload: unknown) => latest.current(event, payload);
-      orderStreamHandlers.add(dispatch);
-      orderStreamUsers += 1;
-      if (!orderStream) {
-        orderStream = subscribeSSEEvents(`${Constants.API.BASE_URL}/v1/broker-auth/order/stream`, (event, data) => {
-          let payload: unknown = null;
-          try {
-            payload = JSON.parse(data) as unknown;
-          } catch {
-            return; // a frame that is not JSON names nothing, so no consumer can act on it
-          }
-          for (const listener of orderStreamHandlers) listener(event, payload);
-        });
-      }
-      return () => {
-        orderStreamHandlers.delete(dispatch);
-        orderStreamUsers -= 1;
-        if (orderStreamUsers === 0 && orderStream) {
-          orderStream.close();
-          orderStream = null;
-        }
-      };
-    }, [wanted]);
-  };
-
   // ===== POSITIONS =====
   // Prod has no /v1/positions/open. The desk the owner reads on the web is /v1/broker-auth/icici/account:
   // ICICI's own position rows, each carrying average, last price and marked P&L, and it keeps serving them
@@ -1233,13 +1261,19 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 
     return useQuery({
       queryKey: queryKeys.orders.snapshot(clientId),
-      queryFn: () => client.get<OrderSnapshot>(`/v1/orders/${clientId}`),
+      queryFn: async () => {
+        // The stream is the source while it carries this event, so the minute timer costs nothing; the read
+        // stays armed underneath it because a stream that dies for good sends no more frames and the last
+        // state the phone saw was whatever the final frame happened to name.
+        const fed = orderStreamCarries("order");
+        const cached = fed ? queryClient.getQueryData<OrderSnapshot>(queryKeys.orders.snapshot(clientId)) : undefined;
+        return cached ?? client.get<OrderSnapshot>(`/v1/orders/${clientId}`);
+      },
       enabled: wanted && clientId.length > 0,
       staleTime: 0,
-      // While the stream is up it is the source and no timer is needed. This is the disconnected fallback:
-      // one read a minute, and it stops by itself once every leg has settled.
+      // One read a minute for the state the frames do not name (the basket's phase, its cancel flag) and for
+      // a phone that never got the stream up. It stops by itself once every leg has settled.
       refetchInterval: ({ state }) => {
-        if (orderStreamAlive()) return false;
         if (state.data === undefined) return ORDER_POLL_MS;
         return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? ORDER_POLL_MS : false;
       },
@@ -1290,13 +1324,18 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     return useQuery({
       queryKey: queryKeys.orders.gtt(),
       queryFn: async () => {
+        // Same rule as the ticket: the frames are the source only once they actually arrive, so a minute
+        // timer stays armed and only the read inside it is skipped. A server that answers the connection
+        // with keepalives and no `gtt` frame — every build before the GTT event — is exactly the case that
+        // must keep reading, or a trigger that fires never reaches the screen.
+        const cached = orderStreamCarries("gtt") ? qc.getQueryData<GttOrder[]>(queryKeys.orders.gtt()) : undefined;
+        if (cached) return cached;
         const response = await client.get<{ gtts: GttOrder[] }>("/v1/orders/gtt");
         return response.gtts;
       },
       staleTime: 5 * 1000,
-      // Only a phone whose stream is down needs a timer, and it needs two minutes rather than ten seconds.
-      // The screen still reads on focus and on pull-to-refresh either way.
-      refetchInterval: () => (orderStreamAlive() ? false : STREAM_SAFETY_POLL_MS),
+      // The screen still reads on focus and on pull-to-refresh; this is the net under both.
+      refetchInterval: ORDER_POLL_MS,
       ...options,
     });
   };

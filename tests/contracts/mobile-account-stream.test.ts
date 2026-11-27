@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { queryKeys, rereadAccountOnFrame, throttleReread, applyOrderFrame, orderFrameIntents, orderFrameGtts, watchlistPoll } from "../../packages/shared/src/api/hooks.ts";
+import { QueryClient, QueryObserver, environmentManager } from "@tanstack/react-query";
+import { queryKeys, rereadAccountOnFrame, throttleReread, applyOrderFrame, orderFrameIntents, orderFrameGtts, watchlistPoll, subscribeOrderStream, orderStreamCarries } from "../../packages/shared/src/api/hooks.ts";
 
 const hooks = readFileSync(resolve(__dirname, "../../packages/shared/src/api/hooks.ts"), "utf8");
 
@@ -42,10 +42,11 @@ it("repaints a ticket from the order frame instead of re-reading the rows the fr
   const ticket = hooks.slice(hooks.indexOf("const useOrderSnapshot"), hooks.indexOf("const useEquityQuote"));
   expect(ticket).toContain("i.client_id ?? i.clientId");
   expect(ticket).toContain("queryClient.setQueryData(key, applyOrderFrame(cached, intent))");
-  // The frame is the execution row, so the stream is the source: no re-read per frame, and no timer at all
-  // while it is delivering. The 60 s poll below the guard is only for a phone that lost the stream.
+  // The frame is the execution row, so it is the source: no re-read per frame. The minute timer stays armed
+  // underneath and only the read inside it is skipped, and it is gated on the `order` event arriving rather
+  // than on the connection being open.
   expect(ticket).not.toContain("invalidateQueries");
-  expect(ticket).toContain("if (orderStreamAlive()) return false;");
+  expect(ticket).toContain('orderStreamCarries("order")');
   expect(ticket).toContain("return state.data.orders.some(leg => UNSETTLED_LEG_STATES.has(leg.state)) ? ORDER_POLL_MS : false;");
 });
 
@@ -99,13 +100,108 @@ it("reads the two frames' shapes without trusting them", () => {
 });
 
 it("shares one order stream between the ticket, the GTT list and live trades", () => {
-  // Three screens following the same execution used to hold three connections; the consumer list is keyed by
-  // event name so one socket feeds all of them, and it closes when the last screen lets go.
-  const open = hooks.slice(hooks.indexOf("const useOrderStream"), hooks.indexOf("const useOrderStream") + 2000);
+  // Three screens following the same execution used to hold three connections; one is opened for all of them
+  // and closes when the last screen lets go.
+  const open = hooks.slice(hooks.indexOf("export function subscribeOrderStream"), hooks.indexOf("export function subscribeOrderStream") + 1800);
   expect(open.match(/subscribeSSEEvents\(/g)).toHaveLength(1);
-  expect(open).toContain("orderStreamHandlers.add(dispatch)");
+  expect(open).toContain("orderStreamHandlers.add(onEvent)");
   expect(open).toContain("if (orderStreamUsers === 0 && orderStream)");
-  expect((hooks.match(/useOrderStream\(/g) ?? []).length).toBe(3);
+  expect((hooks.match(/^\s+useOrderStream\(/gm) ?? []).length).toBe(3);
+});
+
+/** The piece of `XMLHttpRequest` the SSE client touches, so a test can say what the server sent. */
+class FakeStream {
+  responseText = "";
+  onprogress: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onload: (() => void) | null = null;
+  open() {}
+  setRequestHeader() {}
+  withCredentials = false;
+  abort() { this.onprogress = null; }
+  send() {}
+  /** One SSE frame, exactly as the wire delivers it. */
+  push(frame: string) {
+    this.responseText += frame;
+    this.onprogress?.();
+  }
+}
+
+let streams: FakeStream[] = [];
+function fakeStreams() {
+  streams = [];
+  globalThis.XMLHttpRequest = class extends FakeStream {
+    constructor() { super(); streams.push(this); }
+  } as unknown as typeof XMLHttpRequest;
+}
+afterEach(() => { delete (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest; });
+
+it("does not mistake a live connection for a stream that carries the event it waits for", () => {
+  // The bug this guards: `alive` is true the moment any byte arrives, and prod keeps a connection open with
+  // keepalives. A server that has no GTT frames yet (every build before PR 461) therefore looked like a
+  // source, the screen switched its timer off, and a trigger that fired only reached the phone on a pull.
+  fakeStreams();
+  const seen: string[] = [];
+  const detach = subscribeOrderStream((event) => { seen.push(event); });
+  expect(streams).toHaveLength(1);
+  streams[0].push(": keepalive\n\n");
+  expect(orderStreamCarries("gtt")).toBe(false);
+  expect(seen).toEqual([]);
+  streams[0].push('event: gtt\ndata: {"gtts":[],"asOf":1}\n\n');
+  expect(orderStreamCarries("gtt")).toBe(true);
+  // Carrying one event is not carrying the other; the ticket keeps its own read until `order` arrives.
+  expect(orderStreamCarries("order")).toBe(false);
+  detach();
+});
+
+it("forgets what a connection carried the moment it is replaced", () => {
+  // A reconnect is a fresh stream: the frames it has sent say nothing about the one that died, so a consumer
+  // that had stopped reading has to be able to notice it is behind again.
+  fakeStreams();
+  const first = subscribeOrderStream(() => {});
+  streams[0].push('event: order\ndata: {"intents":[]}\n\n');
+  expect(orderStreamCarries("order")).toBe(true);
+  first();
+  const second = subscribeOrderStream(() => {});
+  expect(streams).toHaveLength(2);
+  expect(orderStreamCarries("order")).toBe(false);
+  second();
+});
+
+it("cannot revive a timer it once switched off, which is why the fallback skips the read instead", async () => {
+  // TanStack reads `refetchInterval` when its timer is (re)armed, which happens after a settled fetch. An
+  // interval that answered false is therefore never asked again until the data changes — and a stream that
+  // dies for good changes nothing. So the ticket and the GTT list keep a 60 s timer and skip only the read.
+  environmentManager.setIsServer(() => false);
+  vi.useFakeTimers();
+  const qc = new QueryClient();
+  let streamUp = true;
+
+  let offReads = 0;
+  const off = new QueryObserver(qc, {
+    queryKey: ["interval-off"],
+    queryFn: async () => { offReads += 1; return offReads; },
+    refetchInterval: () => (streamUp ? false : 60_000),
+  }).subscribe(() => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(offReads).toBe(1);
+  streamUp = false; // the stream is gone for good; nothing tells this observer
+  await vi.advanceTimersByTimeAsync(10 * 60_000);
+  expect(offReads).toBe(1); // frozen: the false it answered once is never asked again
+  off();
+
+  let ticks = 0;
+  const armed = new QueryObserver(qc, {
+    queryKey: ["interval-skip"],
+    queryFn: async () => { ticks += 1; return ticks; },
+    refetchInterval: 60_000,
+  }).subscribe(() => {});
+  await vi.advanceTimersByTimeAsync(0); // the mount read
+  await vi.advanceTimersByTimeAsync(5 * 60_000);
+  // Every tick still fires while the frames are the source; the read inside it is what the hook skips, so a
+  // stream that dies leaves a timer that is already running and reads for real on its next tick.
+  expect(ticks).toBe(6);
+  armed();
 });
 
 it("polls a cold watchlist at the quote TTL for three tries, then lets the socket do the work", () => {

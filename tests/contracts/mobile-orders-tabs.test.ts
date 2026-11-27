@@ -160,15 +160,19 @@ describe("Orders screen shows four tabs", () => {
     expect(screen).toContain("no read time printed");
   });
 
-  it("takes the GTT list from the order stream and polls only a phone that lost it", () => {
+  it("takes the GTT list from the order stream but keeps a read the stream cannot freeze", () => {
     // The server pushes `GET /v1/orders/gtt`'s own rows on the order stream's `gtt` event every five seconds,
-    // so a trigger that fires or gets filled repaints the list without a REST read. A ten-second timer on top
-    // of that asked prod for rows the phone already had.
+    // so a trigger that fires or gets filled repaints the list without a REST read. The timer stays at a minute
+    // either way and only the read inside it is skipped, and that skip needs a `gtt` frame to have actually
+    // arrived: prod today opens the connection and sends none, so a timer switched off on a live connection
+    // froze the list until the trader pulled to refresh.
     const gtt = hooks.slice(hooks.indexOf("const useGttOrders ="), hooks.indexOf("const useOrderInbox ="));
     expect(gtt).toContain('if (event !== "gtt") return;');
     expect(gtt).toContain("qc.setQueryData(queryKeys.orders.gtt(), rows)");
-    expect(gtt).toContain("refetchInterval: () => (orderStreamAlive() ? false : STREAM_SAFETY_POLL_MS)");
-    // The read on foreground and pull-to-refresh is untouched: the timer is the only thing that went.
+    expect(gtt).toContain('orderStreamCarries("gtt")');
+    expect(gtt).toContain("refetchInterval: ORDER_POLL_MS,");
+    expect(gtt).not.toContain("orderStreamAlive");
+    // The read on foreground and pull-to-refresh is untouched.
     expect(gtt).not.toMatch(/refetchInterval:\s*10\s*\*\s*1000/);
   });
 
