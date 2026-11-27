@@ -114,7 +114,9 @@ export default function BasketDesk({ onAdjust }: Props) {
   // silently leaving the list.
   const desk = useMemo(() => {
     const state = iciciAccountSection(account, "portfoliopositions");
-    const answered = state.kind === "ready" || state.kind === "stale" || state.kind === "degraded";
+    // A degraded positions section is a read that partly failed, so its rows are not proof of what the
+    // account holds - `deskList` keeps every basket until the book actually answers.
+    const answered = state.kind === "ready" || state.kind === "stale";
     const { listed, emptied } = deskList(openLiveBaskets(data?.baskets ?? []), positions.data ?? [], answered);
     return { ...withBookMarks(listed, positions.data ?? []), emptied };
   }, [data, positions.data, account]);
