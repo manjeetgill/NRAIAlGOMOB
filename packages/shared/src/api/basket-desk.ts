@@ -105,6 +105,9 @@ const justOpened = (basket: Basket): boolean => {
  * because a book the phone could not read is not evidence that a position is gone. A basket with live
  * orders, one the server still marks as working, or one opened within the grace period is money in motion
  * and is never hidden.
+ *
+ * The comparison is `bookHolds`, not `sameContract`: hiding a card the trader still needs is the worse
+ * failure, so the book may only hide a leg it can actually name.
  */
 export function deskList(baskets: readonly Basket[], positions: readonly OpenPosition[], bookAnswered: boolean): {
   listed: Basket[];
@@ -116,7 +119,7 @@ export function deskList(baskets: readonly Basket[], positions: readonly OpenPos
   for (const basket of baskets) {
     const judged = bookAnswered && ticketBasket(basket) && !justOpened(basket);
     const live = basket.legs.some(leg => leg.pending
-      || (leg.quantity > 0 && (!judged || held.some(row => sameContract(row, leg)))));
+      || (leg.quantity > 0 && (!judged || held.some(row => bookHolds(row, leg)))));
     (basket.working || live ? listed : emptied).push(basket);
   }
   return { listed, emptied };
@@ -150,12 +153,57 @@ export function basketPnl(legs: readonly BasketLeg[], realized: number): {
 }
 
 /**
- * Whether a broker open-position row is this basket leg's contract.
+ * The four facts that name a contract, read out of the two shapes a basket leg arrives in.
+ *
+ * An order leg names itself with the token this app places orders with (`NIFTY_20261229_2200_PE`), whose
+ * first segment is ICICI's scrip code rather than a contract - prod builds it at
+ * `brokers/icici/market_data.py:356` and copies it onto both ticket and manual legs. A leg the phone cannot
+ * put into that shape states no contract here, and `expiry` is only ever what the name itself carried.
+ */
+function legContract(symbol: string): { code: string; strike: number; right: "CE" | "PE"; expiry: string } | null {
+  const parsed = /^([A-Z0-9&-]+)_(\d{8})_([\dP]+)_(CE|PE)$/.exec(symbol);
+  if (!parsed) return null;
+  return {
+    code: parsed[1]!,
+    strike: Number(parsed[3]!.replace("P", ".")),
+    right: parsed[4] as "CE" | "PE",
+    expiry: `${parsed[2]!.slice(0, 4)}-${parsed[2]!.slice(4, 6)}-${parsed[2]!.slice(6, 8)}`,
+  };
+}
+
+/** The same four facts as a book row states them. An unreadable one is null or NaN, never a guessed number. */
+function rowContract(row: OpenPosition): { code: string; strike: number; right: string | null; expiry: string | null } | null {
+  const code = row.symbol.trim().toUpperCase();
+  if (!code || code === "UNAVAILABLE") return null;
+  const stated = String(row.right ?? "").trim().toUpperCase();
+  return {
+    code,
+    strike: Number(row.strike),
+    right: stated === "" ? null : stated.startsWith("C") ? "CE" : stated.startsWith("P") ? "PE" : stated,
+    expiry: expiryKey(row.expiry),
+  };
+}
+
+/**
+ * Finding #8: the complete scrip, not a prefix - "NIFTYIT" must not pass as "NIFTY". In broker codes the
+ * scrip is followed by a date digit (HINLEV26DEC...) or nothing, so only a following letter rejects.
+ */
+function sameScrip(rowCode: string, legCode: string): boolean {
+  if (!rowCode.startsWith(legCode)) return false;
+  return rowCode.length === legCode.length || !/[A-Z]/.test(rowCode[legCode.length]!);
+}
+
+/**
+ * Whether a broker open-position row is this basket leg's exact contract.
  *
  * A leg names itself with the order token (HINLEV_20261229_2200_PE) while the position book names the
  * same contract with its stock code plus separate strike, right and expiry, so both shapes have to be
  * read. A looser test - one symbol containing the other - labelled every NIFTY position, at any strike
  * or expiry, with the newest NIFTY basket, which is how a wrong P&L reaches a trader.
+ *
+ * This is the strict side of the comparison, and it stays strict because `withBookMarks` pays a leg out of
+ * the row matched here: a December leg marked with November's money is a wrong number, not a missing one.
+ * The desk's list asks the softer question - see `bookHolds`.
  */
 export function sameContract(row: OpenPosition, leg: BasketLeg): boolean {
   const rowSymbol = row.symbol.trim().toUpperCase();
@@ -164,33 +212,46 @@ export function sameContract(row: OpenPosition, leg: BasketLeg): boolean {
   // ICICI places and reports the same code, so an order leg is usually already named identically.
   if (rowSymbol === legSymbol) return true;
 
-  // The other shape is an order token (HINLEV_20261229_2200_PE) beside a book row whose code embeds the
-  // underlying (HINLEV26DEC2200CE). The token's strike, right and expiry then have to carry the match.
-  const parsed = /^([A-Z0-9&-]+)_(\d{8})_([\dP]+)_(CE|PE)$/.exec(legSymbol);
-  if (!parsed) return false;
-  // Finding #8: Match the complete underlying, not a prefix. "NIFTYIT" must not pass as "NIFTY".
-  // In broker symbols the underlying is followed by a date digit (HINLEV26DEC...) or nothing,
-  // so only reject when the next character is a letter (a different underlying name).
-  const underlyingPrefix = parsed[1]!;
-  if (!rowSymbol.startsWith(underlyingPrefix)) return false;
-  if (rowSymbol.length > underlyingPrefix.length) {
-    const nextChar = rowSymbol[underlyingPrefix.length];
-    if (nextChar && /[A-Z]/.test(nextChar)) return false;
-  }
-  const legStrike = Number(parsed[3]!.replace("P", "."));
-  const legExpiry = `${parsed[2]!.slice(0, 4)}-${parsed[2]!.slice(4, 6)}-${parsed[2]!.slice(6, 8)}`;
+  const legC = legContract(legSymbol);
+  // Finding #9: a strike either side cannot state as a number is not a match.
+  if (!legC || !Number.isFinite(legC.strike)) return false;
+  const rowC = rowContract(row);
+  if (!rowC || !Number.isFinite(rowC.strike)) return false;
+  if (!sameScrip(rowC.code, legC.code)) return false;
+  if (rowC.right !== legC.right) return false;
+  if (rowC.strike !== legC.strike) return false;
 
-  const rowRight = String(row.right ?? "").trim().toUpperCase();
-  const right = rowRight.startsWith("C") ? "CE" : rowRight.startsWith("P") ? "PE" : rowRight;
-  if (right !== parsed[4]!) return false;
-  // Finding #9: Require valid strikes on both sides. A non-numeric strike on either side must reject.
-  const rowStrike = Number(row.strike);
-  if (!Number.isFinite(legStrike) || !Number.isFinite(rowStrike)) return false;
-  if (rowStrike !== legStrike) return false;
+  // A row whose date the phone cannot read is not established as this contract.
+  return rowC.expiry === legC.expiry;
+}
 
-  // A row whose date the phone cannot read is not established as this contract. Accepting it would price a
-  // December leg with November's money, which is a wrong number rather than a missing one.
-  return expiryKey(row.expiry) === legExpiry;
+/**
+ * Whether the book has a row that could be this leg's contract - the softer test the desk's list uses.
+ *
+ * Hiding a card is the opposite risk from pricing one, and `deskList`'s own comment calls a vanished
+ * position "the one thing a trading screen must never do". So a row that names the same scrip, strike and
+ * right but states no date this phone can read is the book being *silent* about that contract, not the
+ * book proving it gone.
+ *
+ * That is the web desk's `matchesBasketLeg` (frontend/nextjs/app/components/orders/executed-baskets.ts:158),
+ * which compares the expiry only when both sides state one. Without the same rule here the phone drops
+ * every basket whose legs the book cannot name - the desk goes blank while the broker still holds the
+ * legs, the Positions tab still lists them and the web desk still shows the card.
+ */
+export function bookHolds(row: OpenPosition, leg: BasketLeg): boolean {
+  const rowSymbol = row.symbol.trim().toUpperCase();
+  const legSymbol = (leg.symbol ?? "").trim().toUpperCase();
+  if (!rowSymbol || rowSymbol === "UNAVAILABLE" || !legSymbol) return false;
+  if (rowSymbol === legSymbol) return true;
+
+  const legC = legContract(legSymbol);
+  if (!legC || !Number.isFinite(legC.strike)) return false;
+  const rowC = rowContract(row);
+  if (!rowC || !Number.isFinite(rowC.strike)) return false;
+  if (!sameScrip(rowC.code, legC.code)) return false;
+  if (rowC.right !== legC.right) return false;
+  if (rowC.strike !== legC.strike) return false;
+  return rowC.expiry === null || rowC.expiry === legC.expiry;
 }
 
 /**

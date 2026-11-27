@@ -289,6 +289,48 @@ it("recognises a held contract by its token, not only by the broker's own code",
   expect(flat.emptied.map(basket => basket.id)).toEqual(["token"]);
 });
 
+it("keeps a basket the book cannot name rather than blanking the desk", () => {
+  // Breeze names an option position by its scrip in `stock_code` and by three further fields, and prod
+  // forwards one only where the broker's row actually carried it (backend services/portfolio.py:264-267).
+  // So a row that states the contract's strike and right but no date the phone can read is the book being
+  // silent about the leg, not the book proving it gone - and silence may only ever keep a card. The web
+  // desk already reads it that way (matchesBasketLeg compares expiries only when both sides state one),
+  // and a phone that hides instead shows an empty desk while the broker still holds the legs.
+  const token = deskBasket({ id: "token", legs: [brokerLeg({ symbol: "NIFTY_20261127_25600_CE" })] });
+  const undated = bookRow({ symbol: "NIFTY", strike: "25600.00", right: "Call", expiry: null });
+  const kept = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [undated] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(kept.listed.map(basket => basket.id)).toEqual(["token"]);
+  expect(kept.emptied).toEqual([]);
+
+  // The same row is still refused as a price, because a mark is a number and not a card.
+  const unpriced = withBookMarks(
+    [deskBasket({ legs: [brokerLeg({ symbol: "NIFTY_20261127_25600_CE", markPrice: null })] })] as Parameters<typeof withBookMarks>[0],
+    [undated] as Parameters<typeof withBookMarks>[1],
+  );
+  expect(unpriced.marked).toBe(0);
+  expect(unpriced.baskets[0].legs[0].markPrice).toBeNull();
+
+  // Being silent about the date is not the same as naming a different contract: the book holding the scrip
+  // at another strike is still the exit this rule was written for.
+  const otherStrike = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [bookRow({ symbol: "NIFTY", strike: "25800", right: "Call", expiry: null })] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(otherStrike.emptied.map(basket => basket.id)).toEqual(["token"]);
+  // Nor is a date the row does state and that disagrees with the leg.
+  const otherDate = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [bookRow({ symbol: "NIFTY", strike: "25600", right: "Call", expiry: "2026-12-31" })] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(otherDate.emptied.map(basket => basket.id)).toEqual(["token"]);
+});
+
 it("keeps booked and total present even when the open half has no price", () => {
   const booked = basketPnl([brokerLeg({ quantity: 0, exitPrice: 44, bookedPnl: 2150 })], 2150);
   expect(booked.booked).toBe(2150);
@@ -692,6 +734,18 @@ it("names the baskets the book no longer backs instead of dropping them quietly"
   expect(desk).toContain("desk.emptied");
   // The empty desk says why it is empty when the book is the reason.
   expect(desk).toContain("Every basket this app recorded has been exited at the broker");
+});
+
+it("lets only a book that names the contract hide a card", () => {
+  const shared = readFileSync(resolve(root, "packages/shared/src/api/basket-desk.ts"), "utf8");
+  const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
+  // Listing and pricing ask different questions: the list keeps a card the book cannot name, while a leg is
+  // still paid for only out of a row that names the exact contract.
+  expect(shared).toMatch(/deskList[\s\S]{0,900}?held\.some\(row => bookHolds\(row, leg\)\)/);
+  expect(shared).toMatch(/export function withBookMarks[\s\S]{0,900}?sameContract\(item, leg\)/);
+  // And a positions section that only partly answered is not a book that answered, so it hides nothing.
+  expect(desk).toContain('const answered = state.kind === "ready" || state.kind === "stale";');
+  expect(desk).not.toContain('state.kind === "degraded"');
 });
 
 it("puts the two tabs on the spread screen and hands the legs to the builder", () => {
