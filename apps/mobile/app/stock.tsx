@@ -13,13 +13,17 @@
  *
  * The Buy and Sell buttons hand off to the shared order ticket exactly as the watchlist row does, so the
  * ticket stays the one place an instruction is built and nothing places until its own button is pressed.
+ *
+ * A tab is only offered where it has a destination. Option chains exist for the underlyings the exchange lists
+ * contracts on, so the tab is greyed for a stock the derivatives master does not name, with its reason printed
+ * under the tabs, instead of navigating to a screen that fails on a symbol it never had chains for.
  */
 
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useInstrumentTick, useQuoteSubscription, type EquityQuote } from "@nraialgo/shared/api";
+import { bookStamp, depthBook, offersChainTab, queryKeys, quoteProvenance, rangePosition, streamId, useInstrumentTick, useQuoteSubscription, type EquityQuote } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
@@ -42,7 +46,7 @@ const QUOTE_POLL_SETTLED_MS = 15_000;
 export default function StockScreen() {
   const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string; tab?: string }>();
   const router = useRouter();
-  const { useEquityQuote, useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } = useApi();
+  const { useEquityQuote, useChainUnderlyings, useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } = useApi();
   const { resolvedTheme } = useTheme();
   const ticket = useOrderTicket();
 
@@ -66,6 +70,12 @@ export default function StockScreen() {
   const { data: rawQuote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0, {
     refetchInterval: ({ state }) => (state.data?.ltp ? QUOTE_POLL_SETTLED_MS : QUOTE_POLL_FIRST_MS),
   });
+  /**
+   * The same derivatives master the chain screen's own picker reads, cached an hour, so the tab is greyed by the
+   * server's list of underlyings with contracts rather than by a guess about what a symbol's name looks like.
+   */
+  const { data: catalogue } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings() });
+  const chainTab = offersChainTab(catalogue?.underlyings, symbol);
   const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
   useQuoteSubscription(cashId ? [cashId] : [], !!cashId);
   const liveTick = useInstrumentTick(cashId);
@@ -156,6 +166,8 @@ export default function StockScreen() {
     tabOn: { borderBottomWidth: 2, borderBottomColor: colors.amber },
     tabLabel: { fontSize: 13, fontWeight: "600", color: colors.muted },
     tabLabelOn: { color: colors.text },
+    tabLabelOff: { opacity: 0.55 },
+    tabNote: { marginHorizontal: 14, marginTop: 9, fontSize: 11, color: colors.amber, lineHeight: 16 },
     body: { padding: 14, gap: 12, paddingBottom: 22 },
     chips: { flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" },
     chip: {
@@ -330,9 +342,15 @@ export default function StockScreen() {
         <View style={[styles.tab, styles.tabOn]}>
           <Text style={[styles.tabLabel, styles.tabLabelOn]}>Overview</Text>
         </View>
-        <TouchableOpacity style={styles.tab} onPress={() => router.push(`/(tabs)/option-chain?symbol=${encodeURIComponent(symbol)}`)}>
-          <Text style={styles.tabLabel}>Option Chain</Text>
-        </TouchableOpacity>
+        {!chainTab ? (
+          <View style={styles.tab} accessibilityLabel={`Option Chain is not listed for ${symbol}`} accessibilityState={{ disabled: true }}>
+            <Text style={[styles.tabLabel, styles.tabLabelOff]}>Option Chain</Text>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.tab} onPress={() => router.push(`/(tabs)/option-chain?symbol=${encodeURIComponent(symbol)}`)}>
+            <Text style={styles.tabLabel}>Option Chain</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={styles.tab}
           onPress={() => router.push(`/terminal-charts?symbol=${encodeURIComponent(`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`)}`)}
@@ -340,6 +358,12 @@ export default function StockScreen() {
           <Text style={styles.tabLabel}>Chart</Text>
         </TouchableOpacity>
       </View>
+
+      {!chainTab ? (
+        <Text style={styles.tabNote}>
+          {`No listed options for ${exchange}:${symbol}. Option chains cover F&O stocks and indices.`}
+        </Text>
+      ) : null}
 
       {waiting || priced ? null : (
         <View style={styles.notice}>
