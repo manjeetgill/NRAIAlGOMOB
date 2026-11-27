@@ -248,3 +248,29 @@ it("gives the terminal chart a switchable study set that opens empty", () => {
   expect(terminal).toContain("const MAX_PANES = 3");
   expect(terminal).toContain("panesInUse >= MAX_PANES");
 });
+
+it("enables pan scroll to left/right and zoom in/out on scanner chart", () => {
+  // klinecharts keeps one scroll-limit role (the last setter wins), so the PR's distance limits never applied
+  // and the library defaults already allow panning; the buttons use the public bar width.
+  expect(webView).not.toContain("setMaxOffsetLeftDistance");
+  expect(webView).not.toContain("chart._chartStore.getBarSpace");
+  expect(webView).toContain("chart.getBarSpace().bar");
+  expect(webView).toContain("chart.zoomAtCoordinate");
+  expect(webView).toContain("chart.scrollByDistance");
+  expect(webView).toContain("chart.scrollToRealTime");
+  expect(webView).toContain("type === 'action'");
+
+  // Scanner chart mounts interactive pan & zoom buttons
+  expect(chart).toContain("action={chartAction}");
+  expect(chart).toContain("dispatchAction(\"scroll_left\")");
+  expect(chart).toContain("dispatchAction(\"scroll_right\")");
+  expect(chart).toContain("dispatchAction(\"zoom_in\")");
+  expect(chart).toContain("dispatchAction(\"zoom_out\")");
+  expect(chart).toContain("dispatchAction(\"reset\")");
+
+  // A finger on the chart stops the page scrolling, or the ScrollView takes the sideways drag.
+  expect(webView).toContain("onTouchStart={onTouchActive ? () => onTouchActive(true) : undefined}");
+  expect(webView).toContain("onTouchCancel={onTouchActive ? () => onTouchActive(false) : undefined}");
+  expect(chart).toContain("onTouchActive={setChartTouched}");
+  expect(chart).toContain("scrollEnabled={!chartTouched}");
+});

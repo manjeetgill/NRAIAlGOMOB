@@ -1417,12 +1417,20 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
 export type ApiHooks = ReturnType<typeof createApiHooks>;
 
 // Type definitions (mirror backend schemas)
+/**
+ * Exactly what `/v1/auth/me` answers in prod. A screen can only show what the server sends, so the shape
+ * carries the two flags the desks gate on instead of a plan or a broker list the route never returns.
+ */
 export interface User {
   id: string;
   email: string;
-  name: string;
-  tier: "free" | "pro" | "enterprise";
-  brokers: string[];
+  /** Only for a phone-registered account, whose email is a placeholder nobody reads. */
+  displayName?: string;
+  mfaRequired?: boolean;
+  adminRole?: string | null;
+  /** Broker credentials saved on the server - not proof that a broker session is still alive. */
+  hasBroker?: boolean;
+  visualDirection?: string;
 }
 
 export interface BrokerStatus {

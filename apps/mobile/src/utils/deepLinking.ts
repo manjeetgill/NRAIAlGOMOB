@@ -31,8 +31,11 @@ const ROUTE_MAP: Record<string, (params: Record<string, string>) => string> = {
   "/stock": (params) => `/stock?exchange=${encodeURIComponent(params.exchange ?? "NSE")}&symbol=${encodeURIComponent(params.symbol ?? "")}`,
   // The chart desk is a top-level screen; the link predates it and must not point at a route that no longer exists.
   "/terminal": () => "/terminal-charts",
-  "/basket": (params) => `/basket/${params.id}`,
-  "/order": (params) => `/order/${params.id}`,
+  // Neither the basket record nor the order desk has a single-item screen on the phone, so these land on
+  // the list that holds the row. Pointing them at /basket/:id and /order/:id pushed routes the app never
+  // had, which opened nothing and left the trader on a blank stack.
+  "/basket": () => "/trade-history",
+  "/order": () => "/(tabs)/orders",
   "/login": () => "/login",
   "/settings": () => "/(tabs)/more",
 };
