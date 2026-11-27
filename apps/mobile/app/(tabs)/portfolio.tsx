@@ -10,13 +10,18 @@
  * the day's percentage moved into the line under the numbers they describe - and a tap on a column
  * heading puts the largest or the worst of that figure at the top.
  *
+ * A small search icon beside those two headings opens a field that narrows the rows on screen to the ones
+ * whose symbol, strike, expiry or side contains what was typed. It filters the book the broker already
+ * sent and asks prod for nothing, so the sums above the rows stay the whole account's - and the line that
+ * appears while a filter is running says so rather than letting a narrowed list read as a narrowed P&L.
+ *
  * The sums of the book sit above the rows rather than below them, so the trader reads the account's
  * P&L before scrolling. Both are followed by the row counts that produced them: a figure that adds
  * only the rows carrying one would otherwise read as the whole book.
  */
 
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
+import { View, Text, RefreshControl, StyleSheet, ActivityIndicator, TextInput, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
@@ -31,6 +36,7 @@ import { useQuoteMemory } from "@/hooks/useQuoteMemory";
 import { useAuthStore } from "@nraialgo/shared/stores";
 import {
   derivativeCodes,
+  filterRows,
   iciciAccountSection,
   iciciHoldings,
   LAST_KNOWN,
@@ -206,8 +212,21 @@ export default function PortfolioScreen() {
   // order, so reading a sorted book never reorders the other one behind the trader's back.
   const [positionSort, setPositionSort] = useState<SortState | null>(null);
   const [holdingSort, setHoldingSort] = useState<SortState | null>(null);
-  const positionRows = useMemo(() => sortRows(positions, POSITION_COLUMNS, positionSort), [positions, positionSort]);
-  const holdingRows = useMemo(() => sortRows(holdings, HOLDING_COLUMNS, holdingSort), [holdings, holdingSort]);
+  // The book runs to dozens of rows on a phone, so the symbol the trader is looking for is often below the
+  // fold. This narrows the rows the broker already sent - it asks prod for nothing - and it is only ever
+  // open or cleared together with the words in it, so a count on this screen is always the count of what
+  // is visible rather than of a book hidden behind a filter nobody remembers applying.
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const positionMatches = useMemo(() => filterRows(positions, query, (row) => [
+    row.symbol, underlyings[row.symbol.trim().toUpperCase()] ?? "", row.strike, row.right, row.expiry, row.side,
+  ]), [positions, query, underlyings]);
+  const holdingMatches = useMemo(() => filterRows(holdings, query, (row) => [row.symbol, row.name]), [holdings, query]);
+  const positionRows = useMemo(() => sortRows(positionMatches, POSITION_COLUMNS, positionSort), [positionMatches, positionSort]);
+  const holdingRows = useMemo(() => sortRows(holdingMatches, HOLDING_COLUMNS, holdingSort), [holdingMatches, holdingSort]);
+  // The field counts the tab it sits under, so the number beside the words is the number of rows below them.
+  const shownCount = tab === "positions" ? positionRows.length : holdingRows.length;
+  const bookCount = tab === "positions" ? positions.length : holdings.length;
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", live: "#22c55e", accent: "#38bdf8", brand: { "600": "#38bdf8" } }
@@ -217,7 +236,25 @@ export default function PortfolioScreen() {
   const styles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg },
     subtitle: { fontSize: 13, color: colors.muted, paddingHorizontal: 12, paddingTop: 10 },
-    tabContainer: { flexDirection: "row", backgroundColor: colors.card, marginHorizontal: 16, marginTop: 16, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
+    // The two tabs and the search keep one row: the book's name is what the trader is narrowing, so the
+    // control belongs beside it rather than in a band of its own above it.
+    headerRow: { flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, marginTop: 16 },
+    searchButton: {
+      width: 34, height: 34, borderRadius: 8, borderWidth: 1, borderColor: colors.border,
+      backgroundColor: colors.card, alignItems: "center", justifyContent: "center",
+    },
+    searchButtonOn: { backgroundColor: colors.accent, borderColor: colors.accent },
+    filterRow: {
+      flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, marginTop: 8,
+      paddingHorizontal: 10, height: 38, borderRadius: 8, borderWidth: 1, borderColor: colors.border,
+      backgroundColor: colors.card,
+    },
+    filterInput: { flex: 1, fontSize: 13, color: colors.text, paddingVertical: 0 },
+    filterCount: { fontSize: 11, fontWeight: "600", color: colors.muted },
+    // A filtered book still shows the account's own sums, so the line says which rows are on screen and
+    // that the figures above them were not narrowed with them.
+    filterNote: { paddingHorizontal: 16, paddingTop: 8, fontSize: 11, fontWeight: "600", color: colors.accent },
+    tabContainer: { flexDirection: "row", flex: 1, backgroundColor: colors.card, borderRadius: 8, padding: 4, borderWidth: 1, borderColor: colors.border },
     tabButton: { flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 6 },
     tabButtonActive: { backgroundColor: colors.accent },
     tabLabel: { fontSize: 12, fontWeight: "600", color: colors.muted },
@@ -291,6 +328,20 @@ export default function PortfolioScreen() {
       </Text>
       <TouchableOpacity style={styles.retry} onPress={() => { refetch(); refetchAccount(); }}>
         <Text style={styles.retryText}>Tap to try again</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  /** A filter that matched nothing says so with the words that were typed and the rows it searched, so a
+   *  narrowed book never reads as a flat one. Nothing here changes the broker's book; only the view did. */
+  const noMatch = (noun: string, searched: number) => (
+    <View style={[styles.empty, { flex: 1 }]}>
+      <Text style={styles.emptyText}>
+        {`No ${noun} in this book matches “${query.trim()}”.`}
+        {`\n${searched} ${noun}${searched === 1 ? "" : "s"} searched · the book at the broker is unchanged.`}
+      </Text>
+      <TouchableOpacity style={styles.retry} onPress={() => setQuery("")}>
+        <Text style={styles.retryText}>Clear the filter</Text>
       </TouchableOpacity>
     </View>
   );
@@ -409,10 +460,17 @@ export default function PortfolioScreen() {
       );
     }
 
+    if (positionRows.length === 0) return noMatch("position", positions.length);
+
     return (
       <>
         {copyLine(positionCopy)}
         {totalsCard(positionTotals)}
+        {positionRows.length < positions.length ? (
+          <Text style={styles.filterNote}>
+            {`Showing ${positionRows.length} of ${positions.length} positions · the sums above are the whole book`}
+          </Text>
+        ) : null}
         <SortableTable
           rows={positionRows}
           columns={POSITION_COLUMNS}
@@ -457,10 +515,17 @@ export default function PortfolioScreen() {
       );
     }
 
+    if (holdingRows.length === 0) return noMatch("holding", holdings.length);
+
     return (
       <>
         {copyLine(holdingCopy)}
         {totalsCard(holdingTotals)}
+        {holdingRows.length < holdings.length ? (
+          <Text style={styles.filterNote}>
+            {`Showing ${holdingRows.length} of ${holdings.length} holdings · the sums above are the whole book`}
+          </Text>
+        ) : null}
         <SortableTable
           rows={holdingRows}
           columns={HOLDING_COLUMNS}
@@ -480,17 +545,51 @@ export default function PortfolioScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.tabContainer}>
-        {TABS.map((entry) => (
-          <TouchableOpacity
-            key={entry.id}
-            style={[styles.tabButton, tab === entry.id && styles.tabButtonActive]}
-            onPress={() => setTab(entry.id)}
-          >
-            <Text style={[styles.tabLabel, tab === entry.id && styles.tabLabelActive]}>{entry.label}</Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.headerRow}>
+        <View style={styles.tabContainer}>
+          {TABS.map((entry) => (
+            <TouchableOpacity
+              key={entry.id}
+              style={[styles.tabButton, tab === entry.id && styles.tabButtonActive]}
+              onPress={() => setTab(entry.id)}
+            >
+              <Text style={[styles.tabLabel, tab === entry.id && styles.tabLabelActive]}>{entry.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        {/* One small icon, and it doubles as the way out: while the field is open the same press closes it
+            and drops the words, so a filtered book can never be left running unseen. */}
+        <TouchableOpacity
+          style={[styles.searchButton, searching && styles.searchButtonOn]}
+          onPress={() => { if (searching) { setSearching(false); setQuery(""); } else setSearching(true); }}
+          accessibilityRole="button"
+          accessibilityLabel={searching ? "Close the symbol filter" : "Search this book by symbol"}
+        >
+          <Ionicons name={searching ? "close" : "search"} size={17} color={searching ? "#ffffff" : colors.muted} />
+        </TouchableOpacity>
       </View>
+
+      {searching ? (
+        <View style={styles.filterRow}>
+          <Ionicons name="search" size={16} color={colors.muted} />
+          <TextInput
+            style={styles.filterInput}
+            placeholder={tab === "positions" ? "Symbol, strike, expiry or side" : "Symbol or company name"}
+            placeholderTextColor={colors.muted}
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            returnKeyType="search"
+          />
+          {query ? (
+            <TouchableOpacity onPress={() => setQuery("")} accessibilityRole="button" accessibilityLabel="Clear the words">
+              <Ionicons name="close-circle" size={16} color={colors.muted} />
+            </TouchableOpacity>
+          ) : null}
+          <Text style={styles.filterCount}>{`${shownCount}/${bookCount}`}</Text>
+        </View>
+      ) : null}
 
       {tab === "positions" ? renderPositions() : renderHoldings()}
 

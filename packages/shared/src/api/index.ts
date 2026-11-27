@@ -277,6 +277,7 @@ export {
 } from "./quote-memory";
 
 export {
+  filterRows,
   nextSort,
   sortRows,
   type SortColumn,

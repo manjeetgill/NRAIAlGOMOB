@@ -79,8 +79,9 @@ it("leaves the broker's own order alone until a column is tapped", () => {
 const screen = readFileSync(resolve("apps/mobile/app/(tabs)/portfolio.tsx"), "utf8");
 
 it("sorts each tab on its own state, so sorting positions never reorders holdings", () => {
-  expect(screen).toContain("sortRows(positions, POSITION_COLUMNS, positionSort)");
-  expect(screen).toContain("sortRows(holdings, HOLDING_COLUMNS, holdingSort)");
+  // Each tab sorts the rows it is showing, which the search narrows first; the two orders stay separate.
+  expect(screen).toContain("sortRows(positionMatches, POSITION_COLUMNS, positionSort)");
+  expect(screen).toContain("sortRows(holdingMatches, HOLDING_COLUMNS, holdingSort)");
   expect(screen).toContain("setPositionSort(nextSort(column, positionSort))");
   expect(screen).toContain("setHoldingSort(nextSort(column, holdingSort))");
 });
