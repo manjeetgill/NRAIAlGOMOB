@@ -147,6 +147,7 @@ export {
 export {
   useQuotesStream,
   useQuoteFeed,
+  useQuoteSubscription,
   watchQuotes,
   pauseQuoteDispatch,
   resumeQuoteDispatch,
@@ -159,6 +160,8 @@ export {
   type UseQuotesStreamOptions,
   type UseQuotesStreamReturn,
 } from "./websocket";
+
+export { useQuoteStore, useInstrumentTick } from "./quote-store";
 
 export {
   useLiveCandles,

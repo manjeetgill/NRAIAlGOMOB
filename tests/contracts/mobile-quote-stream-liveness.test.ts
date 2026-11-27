@@ -231,9 +231,9 @@ it("replaces an open stream when the app comes back to the foreground", async ()
 
 it("restarts the stream on the two signals a phone changes without asking", () => {
   const client = readFileSync(resolve(root, "apps/mobile/src/utils/queryClient.ts"), "utf8");
-  expect(client).toContain('import { configureApi, recoverQuoteStream } from "@nraialgo/shared/api"');
+  expect(client).toContain('import { configureApi, quoteStreamConnected, recoverQuoteStream } from "@nraialgo/shared/api"');
   expect(client).toMatch(/if \(connected && !streamWasOnline\) recoverQuoteStream\(\);/);
-  expect(client).toMatch(/if \(status === "active"\) recoverQuoteStream\(\);/);
+  expect(client).toMatch(/if \(status === "active" && !quoteStreamConnected\(\)\)/);
 });
 
 // ===== the address it dials =====

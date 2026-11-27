@@ -11,7 +11,7 @@ import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from "reac
 import { Ionicons } from "@expo/vector-icons";
 import type { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatNumber, formatQuantity } from "@nraialgo/shared/utils";
-import { streamId, useQuoteFeed } from "@nraialgo/shared/api";
+import { streamId, useInstrumentTick, useQuoteSubscription } from "@nraialgo/shared/api";
 import { useApi } from "@/hooks/useApi";
 import { useTheme } from "./ThemeProvider";
 
@@ -33,8 +33,8 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
   const fromChain = !!config?.book;
   const { data: quote } = useEquityQuote(localState.exchange, localState.symbol, !fromChain);
   const streamInstrumentId = config?.instrumentId || (!fromChain && localState.exchange === "NSE" ? streamId(localState.symbol) : null);
-  const feed = useQuoteFeed(streamInstrumentId ? [streamInstrumentId] : [], !!streamInstrumentId);
-  const liveTick = feed.quotes[0];
+  useQuoteSubscription(streamInstrumentId ? [streamInstrumentId] : [], !!streamInstrumentId);
+  const liveTick = useInstrumentTick(streamInstrumentId);
   const livePrice = liveTick?.fresh && liveTick.price > 0 ? liveTick.price : null;
   const liveAsk = liveTick?.fresh && (liveTick.ask ?? 0) > 0 ? liveTick.ask : null;
   const liveBid = liveTick?.fresh && (liveTick.bid ?? 0) > 0 ? liveTick.bid : null;
@@ -82,8 +82,8 @@ export function BuySheet({ ticket, onRemove, isRemoving = false }: BuySheetProps
     toggleTextOn: { color: "#ffffff" },
     side: { flex: 1, backgroundColor: colors.card, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12 },
     sideName: { fontSize: 12, fontWeight: "700", color: colors.muted, marginBottom: 4 },
-    figure: { fontSize: 17, fontWeight: "700", color: colors.text },
-    size: { fontSize: 12, color: colors.muted, marginTop: 2 },
+    figure: { fontSize: 17, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"] },
+    size: { fontSize: 12, color: colors.muted, marginTop: 2, fontVariant: ["tabular-nums"] },
     note: { fontSize: 12, color: colors.muted, paddingHorizontal: 16, paddingTop: 14, lineHeight: 18 },
     error: { fontSize: 13, color: colors.danger, paddingHorizontal: 16, paddingTop: 12 },
     submit: { marginHorizontal: 16, marginTop: 18, borderRadius: 10, paddingVertical: 15, alignItems: "center" },

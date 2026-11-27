@@ -27,6 +27,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Constants } from "../constants";
+import { useQuoteStore } from "./quote-store";
 
 /** One published price. `at` is the exchange timestamp in ms epoch, null when the broker sent none. */
 export interface QuoteTick {
@@ -106,6 +107,8 @@ interface Watcher {
 const watchers = new Set<Watcher>();
 /** The composite key the server deltas against: [broker, accountId, subscriptionId] as JSON. */
 let published = new Map<string, QuoteTick>();
+/** Off-React conflation buffer keyed by canonical instrument id for O(dirty) store flushes. */
+const dirtyBuffer = new Map<string, QuoteTick>();
 let states: Record<string, string> = {};
 let asOf: string | null = null;
 let connected = false;
@@ -220,6 +223,13 @@ function discardBuffered() {
 
 function publishImmediate(changedIds?: Set<string>) {
   lastPublishTime = Date.now();
+  if (dirtyBuffer.size > 0) {
+    const batch = new Map(dirtyBuffer);
+    dirtyBuffer.clear();
+    useQuoteStore.getState().applyBatch(batch, connected, reason);
+  } else {
+    useQuoteStore.getState().setConnection(connected, reason);
+  }
   for (const watcher of watchers) {
     if (changedIds && watcher.ids.length > 0) {
       const affectsWatcher = watcher.ids.some((id) => changedIds.has(id));
@@ -269,21 +279,27 @@ function openSocket(url: string): WebSocket {
 function accept(frame: WireFrame) {
   const quotes = Array.isArray(frame.quotes) ? frame.quotes : [];
   const changedIds = new Set<string>();
-  if (frame.mode !== "delta") published = new Map();
+  const now = Date.now();
+  if (frame.mode !== "delta") {
+    published = new Map();
+    dirtyBuffer.clear();
+  }
   for (const quote of quotes) {
     const id = typeof quote.id === "string" && quote.id ? quote.id : quote.subscriptionId ?? "";
     const price = Number(quote.price);
     if (!id || !(price > 0) || !Number.isFinite(price)) continue;
+    const key = quoteKey(quote);
     const tick = toTick(quote, id);
-    const seen = published.get(quoteKey(quote));
+    const seen = published.get(key);
     // A session's previous close is a constant, but only a snapshot frame names it - the deltas that follow
     // carry the price alone. Without carrying it forward, a day figure measured from the tick would appear
     // and disappear between frames of the same session.
     if (tick.previousClose === null && (seen?.previousClose ?? null) !== null) tick.previousClose = seen?.previousClose ?? null;
-    published.set(quoteKey(quote), tick);
+    published.set(key, tick);
+    dirtyBuffer.set(id, tick);
     if (tick.fresh) {
-      lastFreshTickAt = Date.now();
-      lastFreshById.set(id, lastFreshTickAt);
+      lastFreshTickAt = now;
+      lastFreshById.set(id, now);
     }
     changedIds.add(id);
   }
@@ -292,6 +308,7 @@ function accept(frame: WireFrame) {
     if (existing) {
       changedIds.add(existing.id);
       lastFreshById.delete(existing.id);
+      dirtyBuffer.delete(existing.id);
     }
     published.delete(key);
     changedIds.add(key);
@@ -398,10 +415,12 @@ function connect() {
     clearSilence();
     if (socket === ws) socket = null;
     published = new Map();
+    dirtyBuffer.clear();
     lastFreshById = new Map();
     // 1008 is a policy close: the origin, the sign-in, the edition or the price provider gate refused us.
     // 1013 means this workspace already holds its three tabs, which a retry at the slow cadence outlasts.
     reason = event.code === 1008 ? "policy" : event.code === 1013 ? "capacity" : "closed";
+    useQuoteStore.getState().clear();
     publish();
     if (watchers.size) scheduleConnect();
   };
@@ -432,8 +451,10 @@ function disconnect() {
   }
   connected = false;
   published = new Map();
+  dirtyBuffer.clear();
   lastFreshById = new Map();
   reason = "closed";
+  useQuoteStore.getState().clear();
 }
 
 /**
@@ -597,5 +618,20 @@ export function quoteStreamCarries(ids: readonly string[] | null | undefined): b
 /** Screens that only need the feed itself (latest prices and connection state), not per-tick callbacks. */
 export function useQuoteFeed(symbols: readonly string[], enabled = true) {
   return useRegistration(symbols, enabled).feed;
+}
+
+const NOOP_WATCHER = () => {};
+
+/**
+ * Registers canonical instrument ids on the shared WebSocket without subscribing the calling
+ * component to tick re-renders. Pair with `useInstrumentTick(id)` in leaf cells/widgets.
+ */
+export function useQuoteSubscription(symbols: readonly string[], enabled = true): void {
+  const key = useMemo(() => [...new Set(symbols)].sort().join(","), [symbols]);
+  useEffect(() => {
+    if (!enabled) return;
+    const instruments = key ? key.split(",") : [];
+    return watchQuotes(instruments, NOOP_WATCHER);
+  }, [enabled, key]);
 }
 

@@ -14,7 +14,7 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useQuoteFeed } from "@nraialgo/shared/api";
+import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useInstrumentTick, useQuoteSubscription } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
@@ -51,8 +51,8 @@ export default function StockScreen() {
 
   const { data: rawQuote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0);
   const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
-  const feed = useQuoteFeed(cashId ? [cashId] : [], !!cashId);
-  const liveTick = feed.quotes[0];
+  useQuoteSubscription(cashId ? [cashId] : [], !!cashId);
+  const liveTick = useInstrumentTick(cashId);
   const quote = useMemo(() => {
     if (!rawQuote) return rawQuote;
     if (!liveTick || !liveTick.fresh) return rawQuote;
@@ -103,8 +103,8 @@ export default function StockScreen() {
     meta: { fontSize: 11, color: colors.muted, marginTop: 2 },
     name: { fontSize: 11, color: colors.muted, marginTop: 3 },
     priceBox: { alignItems: "flex-end" },
-    ltp: { fontSize: 19, fontWeight: "700", color: colors.text },
-    change: { fontSize: 13, marginTop: 2 },
+    ltp: { fontSize: 19, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"] },
+    change: { fontSize: 13, marginTop: 2, fontVariant: ["tabular-nums"] },
     badge: {
       marginTop: 5, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5, borderWidth: 1,
       borderColor: colors.border, flexDirection: "row", alignItems: "center", gap: 5, alignSelf: "flex-end",
@@ -130,8 +130,8 @@ export default function StockScreen() {
     ladderHeadQty: { width: 66, fontSize: 10, color: colors.muted },
     ladderHeadPx: { flex: 1, fontSize: 10, color: colors.muted, textAlign: "center" },
     ladderRow: { flexDirection: "row", alignItems: "center", paddingVertical: 3 },
-    ladderQty: { width: 66, fontSize: 13 },
-    ladderPx: { flex: 1, fontSize: 13, textAlign: "center" },
+    ladderQty: { width: 66, fontSize: 13, fontVariant: ["tabular-nums"] },
+    ladderPx: { flex: 1, fontSize: 13, textAlign: "center", fontVariant: ["tabular-nums"] },
     split: { flexDirection: "row", justifyContent: "space-between", marginTop: 10, marginBottom: 5 },
     splitText: { fontSize: 11, color: colors.muted },
     meter: { flexDirection: "row", height: 16, borderRadius: 4, overflow: "hidden", backgroundColor: colors.track },

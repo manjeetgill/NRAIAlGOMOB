@@ -13,11 +13,13 @@ import { formatISTDate, formatISTTime, isTodayIST } from "../utils";
 import type { QuoteTick } from "./websocket";
 import { optionStreamId } from "./account-quotes";
 
+const RUPEE_FORMATTER = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 /** Prod's money in rupees arrives as floats on legs and decimal strings on payoff legs and curves. */
 export function rupees(value: number | string | null | undefined, signed = false): string | null {
   const parsed = typeof value === "string" ? Number(value) : value;
   if (parsed === null || parsed === undefined || !Number.isFinite(parsed)) return null;
-  const abs = Math.abs(parsed).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const abs = RUPEE_FORMATTER.format(Math.abs(parsed));
   return `${parsed < 0 ? "−" : signed ? "+" : ""}₹${abs}`;
 }
 

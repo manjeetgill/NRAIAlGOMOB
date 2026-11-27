@@ -7,7 +7,7 @@
 import { AppState, AppStateStatus, Platform } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { configureApi, recoverQuoteStream } from "@nraialgo/shared/api";
+import { configureApi, quoteStreamConnected, recoverQuoteStream } from "@nraialgo/shared/api";
 import { getApiClient, initializeApiClient } from "./apiClient";
 import { QUERY_CONFIG } from "@nraialgo/shared/constants";
 
@@ -34,7 +34,9 @@ onlineManager.setEventListener((setOnline) => {
 function onAppStateChange(status: AppStateStatus) {
   if (Platform.OS !== "web") {
     focusManager.setFocused(status === "active");
-    if (status === "active") recoverQuoteStream();
+    if (status === "active" && !quoteStreamConnected()) {
+      recoverQuoteStream();
+    }
   }
 }
 
