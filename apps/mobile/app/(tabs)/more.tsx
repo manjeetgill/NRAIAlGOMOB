@@ -17,6 +17,7 @@ import { useApi } from "@/hooks/useApi";
 import { router } from "expo-router";
 import { prefetchAlgoLab, prefetchScanner, prefetchSpreadBuilder } from "@/utils/prefetch";
 import { forgetLastKnown } from "@/hooks/useLastKnown";
+import { forgetDeviceUnlock } from "@/utils/deviceUnlock";
 
 const THEMES = [
   { id: "system", label: "System" },
@@ -124,9 +125,12 @@ export default function MoreScreen() {
           style: "destructive",
           onPress: () => {
             logoutMutation.mutate(undefined, {
-              onSettled: () => {
+              onSettled: async () => {
                 logoutStore();
                 forgetLastKnown();
+                // Sign-out is the trader saying "this phone is not mine anymore", so the fingerprint unlock and
+                // the prefilled email both go with the session — it never comes back by itself.
+                await forgetDeviceUnlock();
                 router.replace("/login");
               },
             });

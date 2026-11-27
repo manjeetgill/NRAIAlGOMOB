@@ -16,6 +16,7 @@ import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
 import { queryClient, initializeQueryClient } from "@/utils/queryClient";
 import { useAuthStore } from "@nraialgo/shared/stores";
 import { initializeApiClient, hydrateCachedUser } from "@/utils/apiClient";
+import { unlockPlan } from "@/utils/deviceUnlock";
 import * as SplashScreen from "expo-splash-screen";
 import { useDeepLinking } from "@/utils/deepLinking";
 
@@ -36,10 +37,13 @@ function Shell() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const bg = resolvedTheme === "dark" ? "#0f172a" : "#f8fafc";
+  // Neither pre-session screen has anything to read quotes with, and the unlock screen stays bare on purpose:
+  // a market strip above a fingerprint prompt would advertise data the trader cannot see yet.
+  const chromeless = pathname === "/login" || pathname === "/unlock";
   return (
     <View style={{ flex: 1, backgroundColor: bg, paddingTop: insets.top }}>
-      {pathname !== "/login" ? <IndexStrip /> : null}
-      {pathname !== "/login" && pathname !== "/search" ? <SearchBar /> : null}
+      {chromeless ? null : <IndexStrip />}
+      {!chromeless && pathname !== "/search" ? <SearchBar /> : null}
       <View style={{ flex: 1 }}>
         <Slot />
       </View>
@@ -66,8 +70,12 @@ export default function RootLayout() {
         setLoading(false);
         setInitialized(true);
         SplashScreen.hideAsync();
-        // Revalidate session cookie in background
-        void initializeApiClient();
+        // With a session stored behind the fingerprint, the identity probe belongs after that prompt. Run
+        // now, it would reach the server with no cookie at all, and its 401 would delete the cached user and
+        // books the trader is about to unlock.
+        void unlockPlan()
+          .then((plan) => (plan.canUnlock ? null : initializeApiClient()))
+          .catch(() => initializeApiClient());
       }
     }
 
