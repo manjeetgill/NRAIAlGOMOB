@@ -6,6 +6,11 @@
  * estimated to fill a gap. A field the server omitted reads "not sent", and the read carries its own
  * provenance badge, because a blank the trader cannot explain is worse than a short screen.
  *
+ * A symbol tapped out of the catalogue is not in any leased watchlist page, so its first priced frame can
+ * arrive seconds after the screen opened. The read therefore asks again until a price lands, the socket's own
+ * trade paints the header when the REST read has not answered, and a read that came back short draws the
+ * snapshot with its stated reason instead of replacing the whole screen with an error.
+ *
  * The Buy and Sell buttons hand off to the shared order ticket exactly as the watchlist row does, so the
  * ticket stays the one place an instruction is built and nothing places until its own button is pressed.
  */
@@ -14,7 +19,7 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useInstrumentTick, useQuoteSubscription } from "@nraialgo/shared/api";
+import { bookStamp, depthBook, queryKeys, quoteProvenance, rangePosition, streamId, useInstrumentTick, useQuoteSubscription, type EquityQuote } from "@nraialgo/shared/api";
 import { useOrderTicket } from "@nraialgo/shared/hooks";
 import { formatISTDate, formatNumber, formatQuantity } from "@nraialgo/shared/utils";
 import { BuySheet } from "@/components/BuySheet";
@@ -24,6 +29,15 @@ import { useApi } from "@/hooks/useApi";
 
 /** Breeze shows five levels; a shallower book is drawn as the levels the socket actually filled. */
 const LADDER_ROWS = 5;
+
+/**
+ * How often the read is asked again. A symbol the trader tapped out of the catalogue is not in any leased
+ * watchlist page, so its first priced frame can arrive a few seconds after the screen opened; asking again
+ * quickly is what turns "does not open" into a snapshot. Once a price has landed, the socket carries the
+ * screen and the read has no reason to repeat at that pace.
+ */
+const QUOTE_POLL_FIRST_MS = 3_000;
+const QUOTE_POLL_SETTLED_MS = 15_000;
 
 export default function StockScreen() {
   const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string; tab?: string }>();
@@ -49,13 +63,39 @@ export default function StockScreen() {
   // The other venue is the same endpoint asked with the other exchange, which is how Breeze's own switch works.
   const other = exchange === "NSE" ? "BSE" : exchange === "BSE" ? "NSE" : null;
 
-  const { data: rawQuote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0);
+  const { data: rawQuote, isLoading, error, refetch, isFetching } = useEquityQuote(exchange, symbol, symbol.length > 0, {
+    refetchInterval: ({ state }) => (state.data?.ltp ? QUOTE_POLL_SETTLED_MS : QUOTE_POLL_FIRST_MS),
+  });
   const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
   useQuoteSubscription(cashId ? [cashId] : [], !!cashId);
   const liveTick = useInstrumentTick(cashId);
-  const quote = useMemo(() => {
-    if (!rawQuote) return rawQuote;
+  const quote = useMemo<EquityQuote | undefined>(() => {
     if (!liveTick || !liveTick.fresh) return rawQuote;
+    if (!rawQuote) {
+      // The read has not answered -- or refused -- while this device's own subscription is already carrying
+      // the stock's trade. The tick is the better source of the two, so it paints the frame and the trader
+      // gets a snapshot with its stamp instead of a screen that says the symbol cannot be opened.
+      const stamp = liveTick.at ? new Date(liveTick.at).toISOString() : null;
+      const price = liveTick.price > 0 ? liveTick.price : null;
+      const prev = liveTick.previousClose ?? null;
+      const change = price !== null && prev && prev > 0 ? price - prev : null;
+      return {
+        exchange,
+        symbol,
+        ltp: price,
+        close: prev,
+        change,
+        changePct: change !== null && prev ? (change / prev) * 100 : null,
+        bid: liveTick.bid ?? null,
+        ask: liveTick.ask ?? null,
+        bidQuantity: liveTick.bidQty ?? null,
+        askQuantity: liveTick.askQty ?? null,
+        at: stamp,
+        priceDate: stamp,
+        source: liveTick.broker,
+        quality: "live",
+      };
+    }
     const ltp = liveTick.price > 0 ? liveTick.price : rawQuote.ltp;
     const prev = liveTick.previousClose ?? rawQuote.close;
     const change = prev && prev > 0 && ltp ? ltp - prev : rawQuote.change;
@@ -73,7 +113,7 @@ export default function StockScreen() {
       bidQuantity: hasLiveBidAsk ? liveTick.bidQty ?? rawQuote.bidQuantity : rawQuote.bidQuantity,
       askQuantity: hasLiveBidAsk ? liveTick.askQty ?? rawQuote.askQuantity : rawQuote.askQuantity,
     };
-  }, [rawQuote, liveTick]);
+  }, [rawQuote, liveTick, exchange, symbol]);
   const { data: cross } = useEquityQuote(other ?? "NSE", symbol, !!other && symbol.length > 0);
   // Membership only decides one chip's label, so the list is read once and left alone; the add and remove
   // mutations write their own page back into this cache.
@@ -165,11 +205,18 @@ export default function StockScreen() {
     empty: { fontSize: 14, color: colors.muted, textAlign: "center", lineHeight: 21 },
     retry: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.brand },
     retryText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
+    notice: {
+      marginHorizontal: 14, marginTop: 12, padding: 12, gap: 6, borderRadius: 10,
+      borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.card,
+    },
+    noticeText: { fontSize: 13, fontWeight: "600", color: colors.text },
+    noticeReason: { fontSize: 12, color: colors.muted, lineHeight: 17 },
+    noticeAction: { alignSelf: "flex-start", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 7, borderWidth: 1, borderColor: colors.amber },
+    noticeActionText: { fontSize: 13, fontWeight: "700", color: colors.amber },
   }), [colors]);
 
   const book = depthBook(quote ?? null);
   const stamp = bookStamp(quote ?? null);
-  const provenance = quoteProvenance(quote ?? null);
   const inList = (saved?.items ?? []).some(row => row.symbol === symbol && row.exchange === exchange);
   const busy = add.isPending || drop.isPending;
 
@@ -181,6 +228,18 @@ export default function StockScreen() {
 
   const shown = (value: number | null | undefined, decimals = 2) =>
     typeof value === "number" && Number.isFinite(value) ? formatNumber(value, decimals) : null;
+
+  /** Whether the frame has a number to put where a price belongs. Everything else is drawn from what did
+   *  arrive, so a read that came back short is a short screen rather than one that was refused. */
+  const priced = shown(quote?.ltp) !== null;
+  /** Why there is no price, in the words the account supplied: the read's own error, else the book's reason. */
+  const refusal = (error?.message ?? quote?.depthMessage ?? "").trim() || null;
+  /** A read still on its first attempt gets a spinner; one that answered is drawn however little it holds. */
+  const waiting = isLoading && !priced;
+  /** A frame with nothing priced cannot carry the server's "Today": the badge says what the screen holds. */
+  const provenance = priced
+    ? quoteProvenance(quote ?? null)
+    : { word: "No price", live: false, date: quote?.priceDate ?? null };
 
   const openTicket = (side: "BUY" | "SELL") => {
     ticket.open({
@@ -282,16 +341,21 @@ export default function StockScreen() {
         </TouchableOpacity>
       </View>
 
-      {isLoading && !quote ? (
+      {waiting || priced ? null : (
+        <View style={styles.notice}>
+          <Text style={styles.noticeText}>No price on this read yet.</Text>
+          <Text style={styles.noticeReason}>
+            {refusal ?? "Neither the paced quote read nor this account's feed has priced this stock."}
+          </Text>
+          <TouchableOpacity style={styles.noticeAction} onPress={() => refetch()} disabled={isFetching}>
+            <Text style={styles.noticeActionText}>{isFetching ? "Trying…" : "Try again"}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {waiting ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} />
-        </View>
-      ) : error && !quote ? (
-        <View style={styles.center}>
-          <Text style={styles.empty}>{error.message}</Text>
-          <TouchableOpacity style={styles.retry} onPress={() => refetch()}>
-            <Text style={styles.retryText}>Tap to try again</Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.body}>
