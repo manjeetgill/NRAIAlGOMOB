@@ -63,3 +63,12 @@ it("provides stock universe selection (portfolio, fo, cash, large cap, midcap, s
   expect(screen).toContain("styles.universeBar");
   expect(screen).toContain("styles.universeChip");
 });
+
+it("resolves universe names and ICICI codes unpriced without polling watchlists", () => {
+  // Must NOT poll priced watchlists
+  expect(screen).not.toContain("useBuiltinWatchlist");
+  // Reads derivatives master unpriced once
+  expect(screen).toContain("useChainUnderlyings");
+  // Maps broker/ICICI contract codes (e.g. RELIND -> RELIANCE)
+  expect(screen).toContain("useContractUnderlyings");
+});

@@ -99,78 +99,89 @@ const SIGNAL_LABELS: Record<ScannerSignalType, string> = {
 };
 
 export default function ScannerScreen() {
-  const { useTechnicalEvents, useOpenPositions, useIciciAccount, useChainUnderlyings, useBuiltinWatchlist } = useApi();
+  const { useTechnicalEvents, useOpenPositions, useIciciAccount, useChainUnderlyings, useContractUnderlyings } = useApi();
   const { resolvedTheme } = useTheme();
   const router = useRouter();
   const [universe, setUniverse] = useState<UniverseFilter>("all");
   const [filter, setFilter] = useState<SignalFilter>("all");
   const focused = useScreenFocused();
 
+  // Technical events scanner data
   const { data, isLoading, isError, refetch } = useTechnicalEvents({ enabled: focused });
+
+  // Open positions and ICICI account snapshot for portfolio matching
   const { data: openPositions } = useOpenPositions({ enabled: focused, refetchInterval: false });
   const { data: iciciAccount } = useIciciAccount({ queryKey: queryKeys.brokerAccount.icici(), subscribed: focused, gcTime: Infinity });
-  const { data: chainUnderlyings } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings(), enabled: focused });
-  const { data: nifty50Page } = useBuiltinWatchlist("nifty_50", 0, { queryKey: queryKeys.watchlist.builtin("nifty_50", 0), enabled: focused });
-  const { data: midcapPage } = useBuiltinWatchlist("nifty_midcap_150", 0, { queryKey: queryKeys.watchlist.builtin("nifty_midcap_150", 0), enabled: focused });
-  const { data: foPage } = useBuiltinWatchlist("fo", 0, { queryKey: queryKeys.watchlist.builtin("fo", 0), enabled: focused });
 
-  // Extract portfolio symbols from positions and holdings
+  // Read full derivatives master statically once (unpriced, cached 1h)
+  const { data: chainUnderlyings } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings(), enabled: focused });
+
+  // Collect raw codes from positions and holdings that need broker-to-exchange underlying mapping
+  const candidateCodes = useMemo(() => {
+    const list: string[] = [];
+    (openPositions ?? []).forEach((pos: any) => {
+      const sym = (pos.symbol ?? pos.tradingsymbol ?? "").trim().toUpperCase();
+      if (sym) list.push(sym);
+    });
+    if (iciciAccount) {
+      const holdings = iciciHoldings(iciciAccount);
+      holdings.forEach((h: any) => {
+        const sym = (h.symbol ?? h.stock_code ?? "").trim().toUpperCase();
+        if (sym) list.push(sym);
+      });
+    }
+    return [...new Set(list)].filter((c) => /^[A-Z0-9&_-]+$/.test(c));
+  }, [openPositions, iciciAccount]);
+
+  // Resolve ICICI broker codes (e.g., RELIND -> RELIANCE) via prod's unpriced derivatives master
+  const { data: resolvedContractUnderlyings } = useContractUnderlyings(candidateCodes);
+
+  // Extract portfolio symbols from positions and holdings with mapped underlying names
   const portfolioSymbols = useMemo(() => {
     const set = new Set<string>();
+    const resolved = resolvedContractUnderlyings ?? {};
+
     // From broker open positions
     (openPositions ?? []).forEach((pos: any) => {
-      const sym = (pos.symbol ?? pos.tradingsymbol ?? "").toUpperCase();
+      const sym = (pos.symbol ?? pos.tradingsymbol ?? "").toUpperCase().trim();
       if (sym) {
         set.add(sym);
-        // Also strip standard suffixes like -EQ, -BE
         set.add(sym.replace(/-(EQ|BE|SM)$/, ""));
+        const mapped = resolved[sym];
+        if (mapped) set.add(mapped.toUpperCase());
       }
     });
+
     // From ICICI account holdings & positions
     if (iciciAccount) {
       const holdings = iciciHoldings(iciciAccount);
       holdings.forEach((h: any) => {
-        const sym = (h.symbol ?? h.stock_code ?? "").toUpperCase();
+        const sym = (h.symbol ?? h.stock_code ?? "").toUpperCase().trim();
         if (sym) {
           set.add(sym);
           set.add(sym.replace(/-(EQ|BE|SM)$/, ""));
+          const mapped = resolved[sym];
+          if (mapped) set.add(mapped.toUpperCase());
         }
       });
     }
     return set;
-  }, [openPositions, iciciAccount]);
+  }, [openPositions, iciciAccount, resolvedContractUnderlyings]);
 
-  // Extract F&O symbols from derivatives catalogue and fo builtin watchlist
+  // Extract F&O symbols once from derivatives master (all ~180+ F&O stocks & indices)
   const foSymbols = useMemo(() => {
-    const set = new Set<string>();
-    (chainUnderlyings?.underlyings ?? []).forEach((u) => {
-      if (u.name) set.add(u.name.toUpperCase());
-    });
-    (foPage?.items ?? []).forEach((item) => {
-      if (item.symbol) set.add(item.symbol.toUpperCase());
-    });
-    // Add default major F&O index & stock names if catalogue still loading
-    NIFTY_50_SET.forEach((sym) => set.add(sym));
-    return set;
-  }, [chainUnderlyings, foPage]);
-
-  // Extract Large Cap symbols (NIFTY 50)
-  const largeCapSymbols = useMemo(() => {
     const set = new Set<string>(NIFTY_50_SET);
-    (nifty50Page?.items ?? []).forEach((item) => {
-      if (item.symbol) set.add(item.symbol.toUpperCase());
+    (chainUnderlyings?.underlyings ?? []).forEach((u) => {
+      if (u.name) set.add(u.name.toUpperCase().trim());
     });
     return set;
-  }, [nifty50Page]);
+  }, [chainUnderlyings]);
 
-  // Extract Midcap symbols (NIFTY Midcap 150)
-  const midcapSymbols = useMemo(() => {
-    const set = new Set<string>(MIDCAP_SET);
-    (midcapPage?.items ?? []).forEach((item) => {
-      if (item.symbol) set.add(item.symbol.toUpperCase());
-    });
-    return set;
-  }, [midcapPage]);
+  // Large Cap symbols (NIFTY 50 canonical constituent universe)
+  const largeCapSymbols = useMemo(() => NIFTY_50_SET, []);
+
+  // Midcap symbols (NIFTY Midcap canonical constituent universe)
+  const midcapSymbols = useMemo(() => MIDCAP_SET, []);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444", universeChip: "#0e7490", universeChipBg: "#164e63" }
