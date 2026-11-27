@@ -240,6 +240,7 @@ export function useLiveCandles(
   const tick = useInstrumentTick(enabled ? id : null) ?? null;
   const connected = useQuoteStore((s) => s.connected);
   const reason = useQuoteStore((s) => s.reason);
+  const states = useQuoteStore((s) => s.states);
 
   // Only a price the server published as fresh, with a positive value and an exchange stamp, may move a bar.
   const usable = tickBarInput(tick ?? undefined);
@@ -287,7 +288,7 @@ export function useLiveCandles(
     at,
     connected,
     reason,
-    states: {},
+    states,
     unavailable: id
       ? null
       : `${chartInstrument(name)} is not on the live price stream: only NSE cash symbols and NSE indices are published tick by tick.`,

@@ -36,6 +36,7 @@ import {
   strikeIds,
   streamId,
   tickBeats,
+  tickEntries,
   tickWord,
   todayIST,
   useInstrumentTick,
@@ -47,6 +48,7 @@ import {
   type OptionChainData,
   type OptionQuote,
   type OptionRow,
+  type QuoteEntry,
   type RememberedQuote,
   type UnderlyingInfo,
 } from "@nraialgo/shared/api";
@@ -128,6 +130,7 @@ interface OptionLegCellProps {
   saved?: RememberedQuote | null;
   styles: Record<string, any>;
   onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
 }
 
 const OptionLegCell = React.memo(function OptionLegCell({
@@ -138,8 +141,12 @@ const OptionLegCell = React.memo(function OptionLegCell({
   saved,
   styles,
   onTrade,
+  onRemember,
 }: OptionLegCellProps) {
   const liveTick = useInstrumentTick(quote?.instrumentId);
+  useEffect(() => {
+    if (liveTick) onRemember(tickEntries([liveTick]));
+  }, [liveTick, onRemember]);
   const priceObj = quote ? (liveSide(quote, liveTick) ?? rememberedSide(saved)) : null;
   const oiChange = quote?.oiChangePct;
   const handlePress = useCallback(() => onTrade(expiry, row, right), [onTrade, expiry, row, right]);
@@ -182,12 +189,17 @@ const OptionLegCell = React.memo(function OptionLegCell({
 const SpotDisplay = React.memo(function SpotDisplay({
   chain,
   styles,
+  onRemember,
 }: {
   chain: OptionChainData;
   styles: Record<string, any>;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
 }) {
   const spotId = useMemo(() => streamId(chain.underlying), [chain.underlying]);
   const spotTick = useInstrumentTick(spotId);
+  useEffect(() => {
+    if (spotTick) onRemember(tickEntries([spotTick]));
+  }, [spotTick, onRemember]);
   const spot = amount(chain.spot?.price);
   const currentSpot = spotTick && tickBeats(spotTick, chain.spot?.at) ? spotTick : null;
   const shownSpot = currentSpot ? currentSpot.price : spot;
@@ -216,6 +228,7 @@ interface OptionRowItemProps {
   savedCall?: RememberedQuote | null;
   savedPut?: RememberedQuote | null;
   onTrade: (onExpiry: string, row: OptionRow, right: "CE" | "PE") => void;
+  onRemember: (entries: readonly QuoteEntry[]) => void;
 }
 
 const OptionRowItem = React.memo(
@@ -226,6 +239,7 @@ const OptionRowItem = React.memo(
     savedCall,
     savedPut,
     onTrade,
+    onRemember,
   }: OptionRowItemProps) {
     return (
       <View style={[styles.tableRow, row.isAtTheMoney && styles.tableRowAtm]}>
@@ -238,6 +252,7 @@ const OptionRowItem = React.memo(
             saved={savedCall}
             styles={styles}
             onTrade={onTrade}
+            onRemember={onRemember}
           />
         </View>
 
@@ -255,6 +270,7 @@ const OptionRowItem = React.memo(
             saved={savedPut}
             styles={styles}
             onTrade={onTrade}
+            onRemember={onRemember}
           />
         </View>
       </View>
@@ -265,6 +281,7 @@ const OptionRowItem = React.memo(
     prev.expiry === next.expiry &&
     prev.styles === next.styles &&
     prev.onTrade === next.onTrade &&
+    prev.onRemember === next.onRemember &&
     prev.savedCall === next.savedCall &&
     prev.savedPut === next.savedPut
 );
@@ -766,7 +783,7 @@ export default function OptionChainScreen() {
 
         {underlyingPicker}
 
-        <SpotDisplay chain={chain} styles={styles} />
+        <SpotDisplay chain={chain} styles={styles} onRemember={quotes.remember} />
 
         {/* The server answers a cold read with the last frame it kept so the ladder appears at once, and while
             that frame is on the screen the session dot beside it says live — so the frame says its own age,
@@ -840,6 +857,7 @@ export default function OptionChainScreen() {
                 savedCall={quotes.seen(item.row.call?.instrumentId)}
                 savedPut={quotes.seen(item.row.put?.instrumentId)}
                 onTrade={openTicket}
+                onRemember={quotes.remember}
               />
             );
           }}

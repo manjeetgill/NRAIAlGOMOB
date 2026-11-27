@@ -333,7 +333,9 @@ export default function PayoffChart({
             : quote.ask || quote.bid || fallbackPrice || quote.ltp;
 
           const currentSpot = Number(c.spot.price);
-          const spotVal = Number.isFinite(currentSpot) && currentSpot > 0 ? String(currentSpot) : "0";
+          const spotVal = Number.isFinite(currentSpot) && currentSpot > 0
+            ? String(currentSpot)
+            : throttledSpot ? String(throttledSpot) : "0";
 
           return {
             ...quote,
@@ -354,7 +356,7 @@ export default function PayoffChart({
         };
       }),
     })) as unknown as readonly OptionChainData[];
-  }, [chains, legs]);
+  }, [chains, legs, throttledSpot]);
 
   // 3. Build Analysis payload for backend model & planning margin
   const built = useMemo(

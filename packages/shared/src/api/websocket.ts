@@ -109,6 +109,8 @@ const watchers = new Set<Watcher>();
 let published = new Map<string, QuoteTick>();
 /** Off-React conflation buffer keyed by canonical instrument id for O(dirty) store flushes. */
 const dirtyBuffer = new Map<string, QuoteTick>();
+const removedBuffer = new Set<string>();
+let pendingSnapshot = false;
 let states: Record<string, string> = {};
 let asOf: string | null = null;
 let connected = false;
@@ -223,12 +225,16 @@ function discardBuffered() {
 
 function publishImmediate(changedIds?: Set<string>) {
   lastPublishTime = Date.now();
-  if (dirtyBuffer.size > 0) {
+  if (dirtyBuffer.size > 0 || removedBuffer.size > 0 || pendingSnapshot) {
     const batch = new Map(dirtyBuffer);
+    const removed = new Set(removedBuffer);
+    const isSnapshot = pendingSnapshot;
     dirtyBuffer.clear();
-    useQuoteStore.getState().applyBatch(batch, connected, reason);
+    removedBuffer.clear();
+    pendingSnapshot = false;
+    useQuoteStore.getState().applyBatch(batch, removed, isSnapshot, connected, reason, states);
   } else {
-    useQuoteStore.getState().setConnection(connected, reason);
+    useQuoteStore.getState().setConnection(connected, reason, states);
   }
   for (const watcher of watchers) {
     if (changedIds && watcher.ids.length > 0) {
@@ -283,6 +289,8 @@ function accept(frame: WireFrame) {
   if (frame.mode !== "delta") {
     published = new Map();
     dirtyBuffer.clear();
+    removedBuffer.clear();
+    pendingSnapshot = true;
   }
   for (const quote of quotes) {
     const id = typeof quote.id === "string" && quote.id ? quote.id : quote.subscriptionId ?? "";
@@ -297,6 +305,7 @@ function accept(frame: WireFrame) {
     if (tick.previousClose === null && (seen?.previousClose ?? null) !== null) tick.previousClose = seen?.previousClose ?? null;
     published.set(key, tick);
     dirtyBuffer.set(id, tick);
+    removedBuffer.delete(id);
     if (tick.fresh) {
       lastFreshTickAt = now;
       lastFreshById.set(id, now);
@@ -309,6 +318,9 @@ function accept(frame: WireFrame) {
       changedIds.add(existing.id);
       lastFreshById.delete(existing.id);
       dirtyBuffer.delete(existing.id);
+      removedBuffer.add(existing.id);
+    } else {
+      removedBuffer.add(key);
     }
     published.delete(key);
     changedIds.add(key);
@@ -416,6 +428,8 @@ function connect() {
     if (socket === ws) socket = null;
     published = new Map();
     dirtyBuffer.clear();
+    removedBuffer.clear();
+    pendingSnapshot = false;
     lastFreshById = new Map();
     // 1008 is a policy close: the origin, the sign-in, the edition or the price provider gate refused us.
     // 1013 means this workspace already holds its three tabs, which a retry at the slow cadence outlasts.
@@ -452,6 +466,8 @@ function disconnect() {
   connected = false;
   published = new Map();
   dirtyBuffer.clear();
+  removedBuffer.clear();
+  pendingSnapshot = false;
   lastFreshById = new Map();
   reason = "closed";
   useQuoteStore.getState().clear();

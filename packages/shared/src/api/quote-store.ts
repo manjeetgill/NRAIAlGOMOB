@@ -12,35 +12,73 @@ import type { FeedReason, QuoteTick } from "./websocket";
 interface QuoteStoreState {
   connected: boolean;
   reason: FeedReason;
+  states: Record<string, string>;
   ticks: Record<string, QuoteTick>;
-  applyBatch: (dirty: Map<string, QuoteTick>, connected: boolean, reason: FeedReason) => void;
-  setConnection: (connected: boolean, reason: FeedReason) => void;
+  applyBatch: (
+    dirty: Map<string, QuoteTick>,
+    removed: Set<string>,
+    isSnapshot: boolean,
+    connected: boolean,
+    reason: FeedReason,
+    states?: Record<string, string>,
+  ) => void;
+  setConnection: (connected: boolean, reason: FeedReason, states?: Record<string, string>) => void;
   clear: () => void;
 }
 
 export const useQuoteStore = create<QuoteStoreState>((set) => ({
   connected: false,
   reason: null,
+  states: {},
   ticks: Object.create(null) as Record<string, QuoteTick>,
 
-  applyBatch: (dirty, connected, reason) =>
+  applyBatch: (dirty, removed, isSnapshot, connected, reason, states) =>
     set((state) => {
-      if (dirty.size === 0 && state.connected === connected && state.reason === reason) {
+      if (
+        !isSnapshot &&
+        dirty.size === 0 &&
+        removed.size === 0 &&
+        state.connected === connected &&
+        state.reason === reason &&
+        (states === undefined || state.states === states)
+      ) {
         return state;
       }
-      const nextTicks = { ...state.ticks };
+      const nextTicks = isSnapshot
+        ? (Object.create(null) as Record<string, QuoteTick>)
+        : { ...state.ticks };
+      if (!isSnapshot) {
+        for (const id of removed) {
+          delete nextTicks[id];
+        }
+      }
       for (const [id, tick] of dirty) {
         nextTicks[id] = tick;
       }
-      return { ticks: nextTicks, connected, reason };
+      return {
+        ticks: nextTicks,
+        connected,
+        reason,
+        states: states ?? state.states,
+      };
     }),
 
-  setConnection: (connected, reason) =>
+  setConnection: (connected, reason, states) =>
     set((state) =>
-      state.connected === connected && state.reason === reason ? state : { connected, reason },
+      state.connected === connected &&
+      state.reason === reason &&
+      (states === undefined || state.states === states)
+        ? state
+        : { connected, reason, states: states ?? state.states },
     ),
 
-  clear: () => set({ ticks: Object.create(null) as Record<string, QuoteTick>, connected: false, reason: null }),
+  clear: () =>
+    set({
+      ticks: Object.create(null) as Record<string, QuoteTick>,
+      states: {},
+      connected: false,
+      reason: null,
+    }),
 }));
 
 /**
