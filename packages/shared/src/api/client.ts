@@ -18,6 +18,14 @@ export interface ApiConfig {
   getToken: () => Promise<string | null>;
   setToken: (token: string | null) => Promise<void>;
   clearToken: () => Promise<void>;
+  /**
+   * Native cookie plumbing. React Native's cookie jar lives and dies with the app process, so a phone that
+   * unlocks with a fingerprint has to carry the session itself: `getCookieHeader` supplies what a passed
+   * biometric prompt released, and `storeCookies` is handed every `Set-Cookie` the server sends.
+   * Left unset on web, where the browser owns cookies and a manual `Cookie` header is forbidden anyway.
+   */
+  getCookieHeader?: () => Promise<string | null>;
+  storeCookies?: (values: string[]) => Promise<void>;
 }
 
 export interface RequestOptions extends RequestInit {
@@ -56,6 +64,18 @@ function isApiError(error: unknown): error is ApiError {
   return error instanceof Error && "status" in error;
 }
 
+/**
+ * `Set-Cookie` comes back in two shapes. A browser hides it, whatwg-style polyfills expose `getSetCookie()`
+ * with one entry per cookie, and React Native folds every cookie into a single comma-joined string. The raw
+ * values are handed over as they arrive — deciding which cookies are worth keeping belongs to the app.
+ */
+function setCookieValues(headers: Headers): string[] {
+  const getSetCookie = (headers as { getSetCookie?: () => string[] }).getSetCookie;
+  if (typeof getSetCookie === "function") return getSetCookie.call(headers) ?? [];
+  const joined = headers.get("set-cookie");
+  return joined ? [joined] : [];
+}
+
 export function createApiClient(config: ApiConfig) {
   async function getAuthHeader(): Promise<Record<string, string>> {
     const token = await config.getToken();
@@ -88,6 +108,7 @@ export function createApiClient(config: ApiConfig) {
 
     try {
       const authHeaders = await getAuthHeader();
+      const cookieHeader = config.getCookieHeader ? await config.getCookieHeader() : null;
       const url = buildUrl(config.baseUrl, path, params);
 
       const response = await fetch(url, {
@@ -96,12 +117,18 @@ export function createApiClient(config: ApiConfig) {
         headers: {
           "Content-Type": "application/json",
           ...authHeaders,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           ...headers,
         },
         // myalgodesk.in keeps identity in a session cookie, so the native cookie jars
         // must store and replay it; "omit" makes every native request sign-out.
         credentials: "include",
       });
+
+      if (config.storeCookies) {
+        const cookies = setCookieValues(response.headers);
+        if (cookies.length) await config.storeCookies(cookies);
+      }
 
       if (!response.ok) {
         // One read of the body, parsed when it happens to be JSON. `json()` consumes the stream, so the

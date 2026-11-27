@@ -363,6 +363,32 @@ export function getPlatform(): "web" | "ios" | "android" | "unknown" {
   return "web";
 }
 
+// ===== SESSION COOKIES =====
+/**
+ * React Native folds several `Set-Cookie` headers into one comma-joined string. A cookie's own expiry comma
+ * is followed by a weekday, never by `name=`, so that lookahead is the only safe split point.
+ */
+export function splitSetCookies(values: string[]): string[] {
+  return values.flatMap((value) => value.split(/,\s*(?=[A-Za-z0-9!#$%&'*+.^_`|~-]+=)/));
+}
+
+/**
+ * The `name=value` pairs worth replaying to the server, and nothing else — a CDN or analytics cookie that
+ * rides along with the response is not this app's identity. An emptied cookie is a sign-out, so a blank
+ * value discards the whole set rather than leaving a stale session behind.
+ */
+export function keptCookiePairs(values: string[], keep: string[]): string[] {
+  const pairs: string[] = [];
+  for (const segment of splitSetCookies(values)) {
+    const pair = segment.split(";")[0].trim();
+    const name = pair.split("=")[0];
+    if (!keep.includes(name)) continue;
+    if (!pair.slice(name.length + 1)) return [];
+    pairs.push(pair);
+  }
+  return pairs;
+}
+
 // ===== EXPORTS =====
 export const DateUtils = {
   toIST,

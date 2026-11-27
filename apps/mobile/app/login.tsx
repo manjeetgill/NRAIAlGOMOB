@@ -5,7 +5,7 @@
  * authenticator-code step the server only reveals after a correct password.
  */
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -16,7 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { LoginRequest, LoginResponse } from "@nraialgo/shared/api";
 import type { User } from "@nraialgo/shared/api";
@@ -24,11 +24,29 @@ import { useAuthStore } from "@nraialgo/shared/stores";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
 import { getApiClient } from "@/utils/apiClient";
+import {
+  armCookieCapture,
+  disarmCookieCapture,
+  markUnlocked,
+  readAccount,
+  readBiometry,
+  readOptOut,
+  saveAccount,
+  setOptOut,
+} from "@/utils/deviceUnlock";
 
 const SIGN_IN_FAILED = "Sign-in was not confirmed. Check your connection and try again.";
 
 // myalgodesk.in sends no Access-Control-Allow-* headers, so only a native client may call it.
 const BROWSER_BUILD = "Sign-in cannot work in a browser build. Open this app in Expo Go on the phone.";
+
+/** Why the fingerprint did not open the app, said before the fields so the ask does not read as a failure. */
+const REASONS: Record<string, string> = {
+  new_day: "It is a new day, so the password is asked for again. Fingerprint unlock comes back after this sign-in.",
+  expired: "This phone's sign-in expired. Enter your password to continue.",
+  no_biometry:
+    "This phone has no fingerprint or face set up, so the password is asked for each time. Add one in the phone's settings and it will be used from the next sign-in.",
+};
 
 /** The server explains refusals in `message`; a transport failure has nothing to say. */
 function reasonFor(caught: unknown): string {
@@ -50,6 +68,7 @@ export default function LoginScreen() {
   const { resolvedTheme } = useTheme();
   const { useLogin } = useApi();
   const login = useLogin({ retry: 0 });
+  const { reason } = useLocalSearchParams<{ reason?: string }>();
   const inFlight = useRef(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -59,6 +78,26 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [biometryLabel, setBiometryLabel] = useState("fingerprint");
+  const [canBiometry, setCanBiometry] = useState(false);
+  const [keepBiometry, setKeepBiometry] = useState(true);
+
+  // One read of the phone at entry: whose account to prefill, whether a finger is possible here, and
+  // whether the last sign-in asked not to be.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const [account, biometry, optedOut] = await Promise.all([readAccount(), readBiometry(), readOptOut()]);
+      if (!live) return;
+      if (account?.email) setEmail((current) => current || account.email);
+      setBiometryLabel(biometry.label);
+      setCanBiometry(biometry.available && Platform.OS !== "web");
+      setKeepBiometry(!optedOut);
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const dark = resolvedTheme === "dark";
   const colors = dark
@@ -103,6 +142,7 @@ export default function LoginScreen() {
     errorText: { fontSize: 13, color: colors.errorText },
     note: { fontSize: 12, color: colors.note, marginTop: 20, borderTopWidth: 1,
       borderTopColor: colors.border, paddingTop: 12 },
+    reason: { fontSize: 13, color: colors.muted, lineHeight: 18, marginTop: -14, marginBottom: 18 },
   });
 
   const codeReady = otp.trim().length >= 6;
@@ -122,6 +162,8 @@ export default function LoginScreen() {
       ...(otp.trim() ? { otp: otp.trim(), remember } : {}),
     };
     let signedIn = false;
+    // Only the cookie this one sign-in earns is worth keeping, so capture is open for its length alone.
+    armCookieCapture();
 
     try {
       const result: LoginResponse = await login.mutateAsync(body);
@@ -145,6 +187,13 @@ export default function LoginScreen() {
       useAuthStore.getState().setUser(me);
       setPassword("");
       setOtp("");
+      // No password is written down anywhere. What this switch decides is whether the session just issued
+      // may be replayed for the rest of the day behind the phone's own biometric prompt.
+      await setOptOut(!keepBiometry);
+      if (keepBiometry) {
+        markUnlocked();
+        await saveAccount(email.trim());
+      }
       signedIn = true;
       router.replace("/(tabs)/portfolio");
     } catch (caught) {
@@ -152,6 +201,7 @@ export default function LoginScreen() {
       setOtp("");
       setError(reasonFor(caught));
     } finally {
+      disarmCookieCapture();
       inFlight.current = false;
       if (!signedIn) setBusy(false);
     }
@@ -165,6 +215,8 @@ export default function LoginScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.brand}>MyAlgoDesk</Text>
         <Text style={styles.sub}>Sign in</Text>
+
+        {!!reason && !!REASONS[reason] && <Text style={styles.reason}>{REASONS[reason]}</Text>}
 
         <View style={styles.field}>
           <Text style={styles.label}>Email</Text>
@@ -259,6 +311,20 @@ export default function LoginScreen() {
             </Text>
           )}
         </TouchableOpacity>
+
+        {canBiometry && (
+          <TouchableOpacity
+            style={styles.checkRow}
+            onPress={() => setKeepBiometry((current) => !current)}
+            disabled={busy}
+            hitSlop={8}
+          >
+            <View style={styles.checkBox}>
+              {keepBiometry && <Ionicons name="checkmark" size={12} color={colors.accent} />}
+            </View>
+            <Text style={styles.checkText}>Use {biometryLabel} on this phone until tomorrow.</Text>
+          </TouchableOpacity>
+        )}
 
         <Text style={styles.note}>
           Broker credentials are connected separately after sign-in. Never enter your broker password here.

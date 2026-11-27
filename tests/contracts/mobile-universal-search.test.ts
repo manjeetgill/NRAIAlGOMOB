@@ -21,8 +21,10 @@ it("asks the equities catalogue and never the index list", () => {
   expect(screen).not.toContain("alert_search");
 });
 
-it("is reached from every screen but the sign-in and the search itself", () => {
-  expect(shell).toContain("{pathname !== \"/login\" && pathname !== \"/search\" ? <SearchBar /> : null}");
+it("is reached from every screen but the sign-in, the fingerprint unlock and the search itself", () => {
+  // The two screens a phone shows before it has a session have no quotes to strip above them.
+  expect(shell).toContain('const chromeless = pathname === "/login" || pathname === "/unlock"');
+  expect(shell).toContain('{!chromeless && pathname !== "/search" ? <SearchBar /> : null}');
   expect(bar).toContain('router.push(`/search?tab=${encodeURIComponent(pathname)}`)');
 });
 

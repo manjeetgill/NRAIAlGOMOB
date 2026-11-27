@@ -11,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Constants } from "@nraialgo/shared/constants";
 import { useAuthStore } from "@nraialgo/shared/stores";
 import { forgetLastKnown } from "@/hooks/useLastKnown";
+import { cookieHeader, storeCookies } from "@/utils/deviceUnlock";
 
 // SecureStore adapter for tokens
 const secureStorage = {
@@ -67,6 +68,10 @@ export function getApiClient(): ApiClient {
       await secureStorage.removeItem(TOKEN_KEYS.REFRESH);
       useAuthStore.getState().setTokens(null, null);
     },
+    // The session lives in a cookie the OS keeps in memory, so it is gone when the process is. Replay the
+    // stored one only after a biometric prompt has passed, and keep whatever the server hands back.
+    getCookieHeader: cookieHeader,
+    storeCookies,
   };
 
   apiClientInstance = createApiClient(config);
@@ -82,6 +87,25 @@ getApiClient();
 let initInFlight: Promise<boolean> | null = null;
 
 const CACHED_USER_KEY = "nraialgo.cached_user";
+
+/** `refused` is the server saying no; `unreachable` says nothing, and must not be treated as a sign-out. */
+export type SessionCheck = "ok" | "refused" | "unreachable";
+
+/**
+ * Ask the server who this session belongs to, and — this is the part the unlock screen needs — say which
+ * kind of failure it was. A refusal ends the session; a phone with no signal has proved nothing.
+ */
+export async function verifySession(): Promise<SessionCheck> {
+  try {
+    const user = await getApiClient().get<User>("/v1/auth/me");
+    useAuthStore.getState().setUser(user);
+    AsyncStorage.setItem(CACHED_USER_KEY, JSON.stringify(user)).catch(() => {});
+    return "ok";
+  } catch (error) {
+    const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : null;
+    return status === 401 || status === 403 ? "refused" : "unreachable";
+  }
+}
 
 export async function hydrateCachedUser(): Promise<boolean> {
   try {

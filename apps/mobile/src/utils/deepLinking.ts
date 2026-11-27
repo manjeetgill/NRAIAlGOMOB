@@ -36,7 +36,7 @@ const ROUTE_MAP: Record<string, (params: Record<string, string>) => string> = {
   // had, which opened nothing and left the trader on a blank stack.
   "/basket": () => "/trade-history",
   "/order": () => "/(tabs)/orders",
-  "/login": () => "/login",
+  "/login": (params) => `/login${params.reason ? `?reason=${encodeURIComponent(params.reason)}` : ""}`,
   "/settings": () => "/(tabs)/more",
 };
 
