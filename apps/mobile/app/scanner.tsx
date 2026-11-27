@@ -38,36 +38,22 @@ const UNIVERSES: UniverseOption[] = [
   { id: "small_cap", label: "Small Cap" },
 ];
 
-/** Standard NIFTY 50 large cap constituent symbols */
-const NIFTY_50_SET = new Set([
-  "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
-  "BAJAJFINSV", "BEL", "BPCL", "BHARTIARTL", "BRITANNIA", "CIPLA", "COALINDIA", "DRREDDY",
-  "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO", "HINDALCO",
-  "HINDUNILVR", "ICICIBANK", "INDUSINDBK", "INFY", "ITC", "JSWSTEEL", "KOTAKBANK", "LT",
-  "M&M", "MARUTI", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SHRIRAMFIN",
-  "SBIN", "SUNPHARMA", "TCS", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TECHM", "TITAN",
-  "TRENT", "ULTRACEMCO", "WIPRO",
-  // Common index names themselves
-  "NIFTY", "NIFTY50", "NIFTY 50", "BANKNIFTY", "NIFTY BANK", "FINNIFTY", "MIDCPNIFTY",
-]);
+/** Index names the scanner may list; they are never a large, mid or small cap stock. */
+const INDEX_NAMES = new Set(["NIFTY", "NIFTY50", "NIFTY 50", "BANKNIFTY", "NIFTY BANK", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]);
 
-/** Standard NIFTY Midcap 100/150 prominent constituents */
-const MIDCAP_SET = new Set([
-  "AUBANK", "ABCAPITAL", "ABFRL", "ACC", "AMBUJACEM", "ASHOKLEY", "ASTRAL", "ATUL",
-  "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BANKBARODA", "BATAINDIA", "BERGEPAINT",
-  "BHARATFORG", "BHEL", "BIOCON", "CANFINHOME", "CANBK", "CHAMBLFERT", "CHOLAFIN",
-  "COFORGE", "CONCOR", "COROMANDEL", "CROMPTON", "CUMMINSIND", "DALBHARAT", "DEEPAKNTR",
-  "DELHIVERY", "DIXON", "ESCORTS", "EXIDEIND", "FEDERALBNK", "GLENMARK", "GMRINFRA",
-  "GNFC", "GODREJPROP", "GUJGASLTD", "HAL", "HAVELLS", "HDFCAMC", "HINDPETRO",
-  "IBULHSGFIN", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", "INDIACEM", "INDIAMART",
-  "INDUSTOWER", "IPCALAB", "JINDALSTEL", "JUBLFOOD", "LALPATHLAB", "LICHSGFIN",
-  "LTIM", "LTTS", "LUPIN", "M&MFIN", "MANAPPURAM", "MARICO", "METROPOLIS", "MFSL",
-  "MPHASIS", "MUTHOOTFIN", "NATIONALUM", "NAUKRI", "NAVINFLUOR", "OBEROIRLTY",
-  "OFSS", "PAGEIND", "PERSISTENT", "PETRONET", "PFC", "PIDILITIND", "PIIND", "PNB",
-  "POLYCAB", "PVRINOX", "RAMCOCEM", "RBLBANK", "RECLTD", "SAIL", "SBICARD",
-  "SRF", "SUNTV", "SYNGENE", "TATACHEM", "TATACOMM", "TATAPOWER", "TORNTPHARM",
-  "TORNTPOWER", "TVSMOTOR", "UBL", "VOLTAS", "ZEEL", "ZYDUSLIFE",
-]);
+/**
+ * Full index membership from prod's built-in list. Page 0 already carries every member in `instruments`
+ * (instrument:v1:NSE:EQ:<SYMBOL>:CASH); only page 0's rows are priced. Read once and kept: no polling.
+ */
+function membership(page: { instruments?: (string | null)[] } | undefined): Set<string> | null {
+  if (!page?.instruments) return null;
+  const set = new Set<string>();
+  for (const id of page.instruments) {
+    const parts = (id ?? "").split(":");
+    if (parts.length >= 6 && parts[0] === "instrument" && parts[4]) set.add(decodeURIComponent(parts[4]).toUpperCase());
+  }
+  return set;
+}
 
 const FILTERS: { id: SignalFilter; label: string; kinds: Set<string> }[] = [
   { id: "all", label: "All", kinds: new Set(["breakout", "breakdown", "support_touch", "resistance_touch", "breakout_retest", "breakdown_retest", "hm_rsi_supertrend_buy", "hm_rsi_supertrend_sell"]) },
@@ -99,7 +85,7 @@ const SIGNAL_LABELS: Record<ScannerSignalType, string> = {
 };
 
 export default function ScannerScreen() {
-  const { useTechnicalEvents, useOpenPositions, useIciciAccount, useChainUnderlyings, useContractUnderlyings } = useApi();
+  const { useTechnicalEvents, useOpenPositions, useIciciAccount, useChainUnderlyings, useContractUnderlyings, useBuiltinWatchlist } = useApi();
   const { resolvedTheme } = useTheme();
   const router = useRouter();
   const [universe, setUniverse] = useState<UniverseFilter>("all");
@@ -115,6 +101,10 @@ export default function ScannerScreen() {
 
   // Read full derivatives master statically once (unpriced, cached 1h)
   const { data: chainUnderlyings } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings(), enabled: focused });
+
+  // Nifty 50 and Midcap 150 members: one read each, no polling (same cache as the Watchlist tab).
+  const { data: nifty50Page } = useBuiltinWatchlist("nifty_50", 0, { queryKey: queryKeys.watchlist.builtin("nifty_50", 0), enabled: focused, refetchInterval: false, staleTime: 12 * 60 * 60 * 1000, gcTime: Infinity });
+  const { data: midcapPage } = useBuiltinWatchlist("nifty_midcap_150", 0, { queryKey: queryKeys.watchlist.builtin("nifty_midcap_150", 0), enabled: focused, refetchInterval: false, staleTime: 12 * 60 * 60 * 1000, gcTime: Infinity });
 
   // Collect raw codes from positions and holdings that need broker-to-exchange underlying mapping
   const candidateCodes = useMemo(() => {
@@ -170,18 +160,16 @@ export default function ScannerScreen() {
 
   // Extract F&O symbols once from derivatives master (all ~180+ F&O stocks & indices)
   const foSymbols = useMemo(() => {
-    const set = new Set<string>(NIFTY_50_SET);
+    const set = new Set<string>();
     (chainUnderlyings?.underlyings ?? []).forEach((u) => {
       if (u.name) set.add(u.name.toUpperCase().trim());
     });
     return set;
   }, [chainUnderlyings]);
 
-  // Large Cap symbols (NIFTY 50 canonical constituent universe)
-  const largeCapSymbols = useMemo(() => NIFTY_50_SET, []);
-
-  // Midcap symbols (NIFTY Midcap canonical constituent universe)
-  const midcapSymbols = useMemo(() => MIDCAP_SET, []);
+  // Large Cap = Nifty 50 members, Midcap = Nifty Midcap 150 members (null until the list has loaded)
+  const largeCapSymbols = useMemo(() => membership(nifty50Page), [nifty50Page]);
+  const midcapSymbols = useMemo(() => membership(midcapPage), [midcapPage]);
 
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#64748b", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444", universeChip: "#0e7490", universeChipBg: "#164e63" }
@@ -300,12 +288,14 @@ export default function ScannerScreen() {
       // Cash stocks are non-F&O equities
       list = list.filter((s) => !foSymbols.has(s.rawSymbol));
     } else if (universe === "large_cap") {
-      list = list.filter((s) => largeCapSymbols.has(s.rawSymbol));
+      list = largeCapSymbols ? list.filter((s) => largeCapSymbols.has(s.rawSymbol)) : [];
     } else if (universe === "midcap") {
-      list = list.filter((s) => midcapSymbols.has(s.rawSymbol));
+      list = midcapSymbols ? list.filter((s) => midcapSymbols.has(s.rawSymbol)) : [];
     } else if (universe === "small_cap") {
-      // Small cap: stocks that are not in Large Cap or Midcap
-      list = list.filter((s) => !largeCapSymbols.has(s.rawSymbol) && !midcapSymbols.has(s.rawSymbol));
+      // Small cap: stocks outside Nifty 50 and Midcap 150 (and not an index); empty until both lists load
+      list = largeCapSymbols && midcapSymbols
+        ? list.filter((s) => !INDEX_NAMES.has(s.rawSymbol) && !largeCapSymbols.has(s.rawSymbol) && !midcapSymbols.has(s.rawSymbol))
+        : [];
     }
 
     // 2. Technical signal kind filter

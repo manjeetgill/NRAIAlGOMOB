@@ -1924,6 +1924,8 @@ export interface WatchlistPage {
   page?: number;
   pageSize?: number;
   membershipSource?: string;
+  /** Every member of a built-in list as canonical instrument ids (page 0 carries the whole list). */
+  instruments?: (string | null)[];
 }
 
 export type BuiltinListName = "nifty_50" | "nifty_bank" | "nifty_midcap_150" | "fo";

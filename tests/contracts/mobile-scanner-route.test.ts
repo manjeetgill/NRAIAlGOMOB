@@ -65,8 +65,11 @@ it("provides stock universe selection (portfolio, fo, cash, large cap, midcap, s
 });
 
 it("resolves universe names and ICICI codes unpriced without polling watchlists", () => {
-  // Must NOT poll priced watchlists
-  expect(screen).not.toContain("useBuiltinWatchlist");
+  // Index membership is read once from the built-in lists and never polled
+  expect(screen.match(/useBuiltinWatchlist\("/g)?.length).toBe(2);
+  expect(screen.match(/refetchInterval: false, staleTime: 12 \* 60 \* 60 \* 1000/g)?.length).toBe(2);
+  expect(screen).toContain("page.instruments");
+  expect(screen).not.toContain("MIDCAP_SET");
   // Reads derivatives master unpriced once
   expect(screen).toContain("useChainUnderlyings");
   // Maps broker/ICICI contract codes (e.g. RELIND -> RELIANCE)
