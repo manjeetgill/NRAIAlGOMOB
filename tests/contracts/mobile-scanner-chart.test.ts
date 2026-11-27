@@ -248,3 +248,23 @@ it("gives the terminal chart a switchable study set that opens empty", () => {
   expect(terminal).toContain("const MAX_PANES = 3");
   expect(terminal).toContain("panesInUse >= MAX_PANES");
 });
+
+it("enables pan scroll to left/right and zoom in/out on scanner chart", () => {
+  // Chart component receives programmatic action prop and configures pan/zoom bounds
+  expect(webView).toContain("setMaxOffsetLeftDistance");
+  expect(webView).toContain("setMaxOffsetRightDistance");
+  expect(webView).toContain("setLeftMinVisibleBarCount");
+  expect(webView).toContain("setRightMinVisibleBarCount");
+  expect(webView).toContain("chart.zoomAtCoordinate");
+  expect(webView).toContain("chart.scrollByDistance");
+  expect(webView).toContain("chart.scrollToRealTime");
+  expect(webView).toContain("type === 'action'");
+
+  // Scanner chart mounts interactive pan & zoom buttons
+  expect(chart).toContain("action={chartAction}");
+  expect(chart).toContain("dispatchAction(\"scroll_left\")");
+  expect(chart).toContain("dispatchAction(\"scroll_right\")");
+  expect(chart).toContain("dispatchAction(\"zoom_in\")");
+  expect(chart).toContain("dispatchAction(\"zoom_out\")");
+  expect(chart).toContain("dispatchAction(\"reset\")");
+});

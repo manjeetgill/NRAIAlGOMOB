@@ -34,6 +34,12 @@ export interface ChartDraw {
   nonce: number;
 }
 
+/** Action dispatched to control chart pan and zoom programmatically */
+export interface ChartAction {
+  type: "zoom_in" | "zoom_out" | "scroll_left" | "scroll_right" | "reset";
+  nonce: number;
+}
+
 interface KLineChartProps {
   data: Candle[];
   height?: number;
@@ -50,13 +56,15 @@ interface KLineChartProps {
   studies?: ChartStudy[];
   /** `name: null` erases every line drawn from the screen. */
   draw?: ChartDraw | null;
+  /** Programmatic pan and zoom actions (e.g. from zoom/scroll buttons) */
+  action?: ChartAction | null;
 }
 
 type ChartMessage =
   | { type: "ready" }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw, action }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
@@ -132,6 +140,18 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
                 },
                 toolbar: { visible: 'always' },
               });
+
+              // Ensure maximum scroll & pan flexibility on mobile touch devices
+              try {
+                if (typeof chart.setScrollEnabled === 'function') chart.setScrollEnabled(true);
+                if (typeof chart.setZoomEnabled === 'function') chart.setZoomEnabled(true);
+                if (typeof chart.setMaxOffsetLeftDistance === 'function') chart.setMaxOffsetLeftDistance(500);
+                if (typeof chart.setMaxOffsetRightDistance === 'function') chart.setMaxOffsetRightDistance(300);
+                if (typeof chart.setLeftMinVisibleBarCount === 'function') chart.setLeftMinVisibleBarCount(1);
+                if (typeof chart.setRightMinVisibleBarCount === 'function') chart.setRightMinVisibleBarCount(1);
+              } catch (e) {
+                console.error('Scroll/zoom config error:', e);
+              }
 
               registerAtr();
               paintSymbol();
@@ -365,6 +385,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
                 chart.setSymbol('CHART');
                 chart.setPeriod({ multiplier: 1, timespan: 'day' });
               }
+              try {
+                if (typeof chart.setMaxOffsetLeftDistance === 'function') chart.setMaxOffsetLeftDistance(500);
+                if (typeof chart.setMaxOffsetRightDistance === 'function') chart.setMaxOffsetRightDistance(300);
+                if (typeof chart.setLeftMinVisibleBarCount === 'function') chart.setLeftMinVisibleBarCount(1);
+                if (typeof chart.setRightMinVisibleBarCount === 'function') chart.setRightMinVisibleBarCount(1);
+              } catch (e) {}
               if (lastScan) applyScan(lastScan);
             } catch (e) {
               console.error('Update error:', e);
@@ -392,6 +418,28 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
             }
           }
 
+          function applyAction(act) {
+            if (!chart || !act) return;
+            try {
+              const barSpace = (chart._chartStore && chart._chartStore.getBarSpace && chart._chartStore.getBarSpace().bar) || 10;
+              if (act.type === 'zoom_in') {
+                if (typeof chart.zoomAtCoordinate === 'function') chart.zoomAtCoordinate(1.25);
+              } else if (act.type === 'zoom_out') {
+                if (typeof chart.zoomAtCoordinate === 'function') chart.zoomAtCoordinate(0.8);
+              } else if (act.type === 'scroll_left') {
+                // Scroll backwards in time (towards earlier bars on left)
+                if (typeof chart.scrollByDistance === 'function') chart.scrollByDistance(barSpace * 5);
+              } else if (act.type === 'scroll_right') {
+                // Scroll forwards in time (towards latest bars on right)
+                if (typeof chart.scrollByDistance === 'function') chart.scrollByDistance(-barSpace * 5);
+              } else if (act.type === 'reset') {
+                if (typeof chart.scrollToRealTime === 'function') chart.scrollToRealTime();
+              }
+            } catch (e) {
+              console.error('Action error:', e);
+            }
+          }
+
           function handleRawMessage(event) {
             try {
               const rawData = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
@@ -403,6 +451,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               else if (message.type === 'scan') applyScan(message.scan);
               else if (message.type === 'studies') applyStudies(message.studies);
               else if (message.type === 'draw') applyDraw(message);
+              else if (message.type === 'action') applyAction(message.action);
             } catch (e) { 
               console.error('Message error:', e);
             }
@@ -536,6 +585,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
   useEffect(() => {
     postDraw();
   }, [postDraw]);
+
+  // Dispatch pan/zoom action when nonce updates
+  useEffect(() => {
+    if (!isReady.current || !webViewRef.current || !action) return;
+    webViewRef.current.postMessage(JSON.stringify({ type: "action", action }));
+  }, [action]);
 
   return (
     <View style={[styles.container, { height }]}>
