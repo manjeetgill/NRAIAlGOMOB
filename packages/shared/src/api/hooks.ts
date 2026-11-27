@@ -927,6 +927,47 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
   };
 
   /**
+   * Ask prod to stop the unfilled half of one instruction this app placed.
+   *
+   * The command is the server's own: it journals a cancel per leg that has not settled, the execution worker
+   * sends each one to the broker and verifies the outcome, and a fill is never reversed - an order that is
+   * half done leaves half of it in the positions book. The body is empty because the active, MFA-verified
+   * session is the authorisation, and prod answers with the instruction's projection, which is what the row
+   * is re-painted from. A request that never answered is not proof nothing was sent, so the caller keeps the
+   * row and the broker's own book stays the last word.
+   *
+   * Caches are invalidated inside `mutationFn` rather than `onSuccess`, so a screen's own handler cannot
+   * replace them by spreading its options over the mutation.
+   */
+  const useCancelOrder = (options?: UseMutationOptions<OrderSnapshot, ApiError, string>) => {
+    return useMutation({
+      mutationFn: async (clientId: string) => {
+        const snapshot = await client.post<OrderSnapshot>(`/v1/orders/${encodeURIComponent(clientId)}/cancel`, {});
+        qc.invalidateQueries({ queryKey: queryKeys.orders.intents() });
+        qc.invalidateQueries({ queryKey: queryKeys.orders.snapshot(clientId) });
+        return snapshot;
+      },
+      ...options,
+    });
+  };
+
+  /**
+   * Take back a GTT this app created. Prod either cancels it in its own journal, when the trigger was never
+   * sent, or queues the delete for the broker and answers `cancel_requested` until the pump confirms it -
+   * which is why the caller reads the reply as a request, never as a closed order.
+   */
+  const useCancelGtt = (options?: UseMutationOptions<GttOrder, ApiError, string>) => {
+    return useMutation({
+      mutationFn: async (id: string) => {
+        const row = await client.post<GttOrder>(`/v1/orders/gtt/${encodeURIComponent(id)}/cancel`, {});
+        qc.invalidateQueries({ queryKey: queryKeys.orders.gtt() });
+        return row;
+      },
+      ...options,
+    });
+  };
+
+  /**
    * Prod's contract resolver for a staged basket: it turns 1-8 legs of expiry/strike/right/side/lots
    * into the six-key lines `/v1/orders` takes, and refuses a leg whose contract, lot or expiry does not
    * exist. It creates nothing, so building a strategy costs sends only when the trader presses execute.
@@ -1299,6 +1340,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useOrderIntents,
     useBrokerLiveOrders,
     usePlaceOrder,
+    useCancelOrder,
+    useCancelGtt,
     useOptionDrafts,
     useOrderSnapshot,
     useEquityQuote,
@@ -2115,7 +2158,16 @@ export interface OrderIntent {
   createdAt: string;
   updatedAt?: string | null;
   orders: OrderLine[];
-  status: "queued" | "working" | "unknown" | "filled" | "partial" | "cancelled" | "failed";
+  /**
+   * Prod's own words for what became of the instruction. `needs_manual` is the worker parking a row it can
+   * no longer settle and `blocked` an instruction that was never sent; both are states the phone has to name
+   * and refuse an action on, so the union lists them rather than narrowing what the server can answer with.
+   */
+  status: "queued" | "working" | "unknown" | "filled" | "partial" | "cancelled" | "failed" | "blocked" | "needs_manual";
+  /** Prod's own flag once a cancellation has been asked for; a repeat request is a no-op, so a screen
+   *  that offers the button again would be showing a dead control. Other states the server tracks -
+   *  `needs_manual`, where automatic cancellation has stopped - arrive as this same string. */
+  cancelRequested?: boolean;
   message?: string | null;
 }
 
