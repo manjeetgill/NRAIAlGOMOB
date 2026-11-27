@@ -943,3 +943,539 @@ follow that same pattern — take the event, then spend exactly one REST read �
 - Whether `EquityQuote` (`hooks.ts:656-667`) maps field-for-field onto a socket tick (§8.3 item 3). **[D]**
 
 Answering those four needs either a live connection or a log read — which is why §7 exists. I took neither.
+
+---
+
+## 9. Live-price freeze across four surfaces — option chain, bid/ask book, live chart, payoff diagram
+
+Added 2026-11-27 on request: *"during live market hours, whenever prices update, the entire application hangs,
+lags severely, or completely freezes — specifically across the Option Chain, Bid/Ask Order Book, Live Chart and
+Strategy Payoff Diagram."* Reviewed as a low-latency problem: ingestion → state → options math → render, one
+tick at a time, with the line numbers read out of the tree rather than inferred.
+
+**Tree.** The pass was taken against `origin/main` at `37b1056`, frozen in its own worktree (`wt-perf-audit`,
+clean) before a single citation was read. PR #51 (`fix/low-latency-tick-pipeline`) merged into that main as
+`c93996f` on 2026-11-27 while §9 was being written, so **every line number below was re-read against merged
+main `c93996f`** — the tree a reviewer checks out — and every finding says what #51 did to it. §9.6 is the
+per-finding before/after. Where a sentence describes code #51 removed, it says "before #51".
+
+**Rails.** Read-only. No build, no install, no device, no emulator, no dev server. No endpoint called, no
+websocket opened, no SSE consumed. **No order placed, cancelled, amended, previewed or dry-run; no strategy
+executed or deployed; no production configuration touched.** No secret, token or session value read or printed.
+Market was closed while this ran, so nothing here is a live-market measurement — every rate below is a constant
+in source or arithmetic on one, labelled **[D]**.
+
+**Labels.** **[V]** read by me at the cited line this pass. **[D]** arithmetic on values written in source.
+**[A]** attributed from a delegated read, then re-checked by me in the file.
+
+### 9.1 Four premises the request brought, and what the source says instead
+
+Getting these wrong sends the whole fix to the wrong layer, so they are answered first.
+
+| Assumed in the request | Actual state | Citation |
+|---|---|---|
+| Ticks arrive on the platform main/UI thread and block it | There is no app-written Kotlin/Java — `android/app/src` holds only the Expo-generated shell, and `android/gradle.properties` sets `newArchEnabled=true`. On Hermes + Fabric the socket callback runs on the JS thread, so the stall is **JS-thread saturation**, not UI-thread blocking. The UI thread only suffers when it is asked to mount what the JS thread produced. | **[V]** tree state |
+| Frames are Protobuf/binary and need binary decoding | The transport is JSON text, decoded synchronously: `JSON.parse(String(event.data))`. | `websocket.ts:415-424` (`JSON.parse` at `:418`) **[V]** |
+| The ingestion queue is unbounded and needs backpressure / conflation | Conflation already exists and is correct: a 100 ms publish window (`THROTTLE_MS = 100`), a latest-wins map keyed by `[broker, accountId, subscriptionId]`, and a coalesced dirty-id set that merges frames rather than queuing them. `published` cannot grow past the subscribed id count, so there is no stale-tick backlog to drain. **The dispatcher does not need conflation; it needs less work per frame and a release path for its suspend switch.** | `websocket.ts:179`, `:197-211`, `:248-263`, `:285-331` **[V]** |
+| Lists are not virtualized and keys are unstable; subscriptions leak | The chain ladder is a `FlatList` with `getItemLayout`, a padded viewability band and a stable `item.key`; `SortableTable` is virtualized too. A watcher's cleanup exists and every subscribe message is a full replace, so an id cannot go ghost on expiry or symbol switch. **The real subscription defect is the opposite: hidden screens never release theirs** (§9.2 H1). | `option-chain.tsx:810-823`, `SortableTable.tsx:132-146`, `websocket.ts:265-273`, `:513-531` **[V]** |
+
+### 9.2 Ranked bottleneck summary
+
+Ranked by work forced per unit of price movement, which is what the complaint is about. Severity is as scored
+against merged main `c93996f`, i.e. after PR #51; the before/after per row is §9.6.
+
+| # | Sev | Defect | Where | Rate forced **[D]** |
+|---|---|---|---|---|
+| C1 | **Critical** | The live spot is inside the `/v1/strategy-analysis` request body, and the query key **is** the body → a price move is a new cache entry plus a POST | `PayoffChart.tsx:246` → `:308` → `:359` → `:362` → `:368` → `:378`; key `hooks.ts:312`, query `hooks.ts:1130-1139` | ≤4 POST/s and ≤4 new query entries/s while the payoff is on screen (the 250 ms spot throttle at `:246`; 10/s before #51) |
+| C2 | **Critical** | `pauseQuoteDispatch()` is a module boolean with no owner count, no unmount release and no watchdog; the lists set it on drag-start | `websocket.ts:166`, `:182-191`; `SortableTable.tsx:143-144`; `option-chain.tsx:817-818` | one lost `onScrollEndDrag` = **0 publishes/s, forever**, on every screen |
+| C3 | **High** (Critical before #51) | A chain screen render still repaints the whole visible window: `renderItem` is a fresh closure on every render, `useOrderTicket` hands back a new object literal so `ticket` — and `openTicket`, whose deps are `[underlying, ticket]` — change identity, and the row comparator compares exactly those props. #51 removed the *per-tick* half: the screen no longer re-renders on publish, and each cell subscribes to its own instrument | `useOrderTicket.tsx:374`; `option-chain.tsx:594`, `:824`, `:859`, comparator `:281-289`, row memo `:234`; cell memo `:136` with `useInstrumentTick` at `:146` | every visible strike row re-renders per screen render (ladder read, expiry tap, store write); a tick repaints only the cells whose own price moved |
+| H1 | High | Hidden tabs keep their socket subscriptions and keep re-rendering: the enable flags ignore the `focused` the same screens compute | `option-chain.tsx:327` vs `:445`; `watchlist.tsx:235` vs `:421`; union `websocket.ts:265-267`; fan-out `:239-247` | subscription set = all mounted screens; `accept()` cost and every frame's fan-out scale with it |
+| H2 | High | Per-frame synchronous cost in the ingest path: one `JSON.stringify` per quote (#51 collapsed the two it used to make), a `Set` + `flatMap` + sort over every subscribed id per message, and a copy of the whole published map per watcher per publish | `websocket.ts:128-130` used once at `:299`; `:351-353` called at `:412` and `:422`; `:156-162`; `:239-247` | a 250-id set ≈ 250 stringify + ≈ 250 sort keys + several hundred map reads **per frame** **[D]** |
+| H3 | High | Quote memory rewritten on live prices, by every consumer that takes a tick: `rememberQuotes` is copy-on-write over the whole ≤600-key memory, and the cell effect, the watchlist effect and the strip effect each feed it a fresh tick per publish | `option-chain.tsx:147-149` → `quote-memory.ts:113`, `:129`, `:137` (`QUOTE_MEMORY_MAX = 600` `:57`); `watchlist.tsx:430`; `IndexStrip.tsx:81-88`; whole-ladder pass `option-chain.tsx:454-457` | ≈600-key clone per cell that moved: a 12-row window with both legs live is ≤24 clones per publish, ≈14,400 property copies per publish, ≤144,000/s at the 10 Hz ceiling; the watchlist adds one full clone per publish **[D]** |
+| H4 | High | The book screen re-derives everything per tick with nothing memoized, and the ladder is not virtualized | `stock.tsx:54`, `:55`, `:56-64`, `:170`, `:171`, `:172` (`quoteProvenance` → `isTodayIST` allocates 2 `Date` + 2 strings, `utils/index.ts:47-51`), `:173`, `:326-337` | one screen render + 4 derivations + 20 inline rows per tick for that symbol |
+| M1 | Med | No `gcTime` cap anywhere, so C1's dead keys are retained for the library default (5 min) | `queryClient.ts:46-58` | up to ≈1,200 retained entries during a fast patch at 4 POST/s **[D]**; matches the 471–497 MB PSS and GC every 2–4 s in `PERFORMANCE_AUDIT_REPORT.md` |
+| M2 | Med | `SortableTable` recomputes column widths — with a synchronous `Dimensions.get` — outside any memo, which defeats both of its own memos and has no `extraData` | `SortableTable.tsx:50`, `:74`, `:95`, `:134` | new `renderItem` identity per render → in-window rows reconcile even for a sort tap |
+| M3 | Med | The chart series is rebuilt end-to-end per publish even though the WebView only ever needs the one forming bar | `live-candles.ts:265-280` → `terminal-charts.tsx:500-510`; patch path already exists at `KLineChart.tsx:789-802` | ≈150 fresh objects per publish per chart |
+| M4 | Med | Foreground/reconnect is a burst, not a resume: all three refetch flags are on *and* the stream re-snapshots every watcher in the same event | `queryClient.ts:52-54`, `:34-38`, `:24-31`; snapshot publish `websocket.ts:407-413`, `:289-294`; teardown `:446-472` | one app-restore = full re-read of every stale query + full repaint of every watcher |
+| M5 | Med | `tickByInstrument` allocates a `Map`, spreads it and compares every entry on each publish | `chain-ticks.ts:71-83`; call site `spread-builder.tsx:481` (the chain's call site was removed by #51) | O(band) per publish; deliberate (the comment says holding it in state repaints forever) |
+
+Nothing in the four named surfaces has a synchronous lock, a mutex or a blocking call — there is no such
+primitive in single-threaded JS. Every "lock" in §9.4 is a function that does not return until the work is done,
+which is the same effect and a different fix.
+
+### 9.3 Per-surface root cause
+
+**Option chain.** After #51 the tick no longer enters through the screen: `option-chain.tsx:445` subscribes with
+`useQuoteSubscription` (`websocket.ts:645-652`, a `NOOP_WATCHER` at `:639`), so a publish does not rebuild the
+render body. What it does cost is one render per cell whose own price moved — `OptionLegCell` reads
+`useInstrumentTick` (`:146`), re-derives `priceObj` (`:150`) and pushes the tick through the memory clone
+(`:147-149`, H3). The row memo (`:234`) and its comparator (`:281-289`) are what keep the rest of the row still,
+and they hold for ticks but not for screen renders: `renderItem` (`:824`) is a fresh closure each render and
+`onTrade` (`:859`) comes from `openTicket` (`:583-594`, deps `[underlying, ticket]`), which is new because
+`useOrderTicket` returns a fresh literal (`useOrderTicket.tsx:374`). Before #51 that chain fired ≤10 times a
+second on price alone; it now fires on ladder reads, expiry taps and store writes (C3). The rows are where the
+pixels are: each is a nested `View`/`Text` tree, so a screen render is roughly a dozen row renders.
+
+**Bid/ask book.** `stock.tsx` subscribes the screen, not the cell. `useQuoteSubscription` (`:54`) keeps the whole
+feed out of React, but `useInstrumentTick(cashId)` (`:55`) puts this symbol's own tick straight into the screen's
+render, so a tick re-runs the `quote` merge (`:56-64`, a spread of the REST quote), then `depthBook` (`:170`),
+`bookStamp` (`:171`), `quoteProvenance` (`:172`) and a watchlist scan (`:173`), and re-creates the inline
+five-level ladder (`:326-337`) with index keys, inside a plain `ScrollView` (`:297`). Five levels deep is cheap
+per pass; the pass is just never skipped.
+
+**Live chart.** This is the best-behaved of the four and the least suspicious: the WebView already patches one
+bar instead of resending the series (`KLineChart.tsx:789-802`, `patchBar` `:605-624`). What is left is on this
+side of the bridge — `useLiveCandles` folds a new bar object per tick (`live-candles.ts:265-274`), which rebuilds
+the visible array from that index (`:276-280`), which `terminal-charts.tsx:500-510` maps into fresh objects, which
+re-runs the `[data]` effect (`KLineChart.tsx:789`). Hundreds of allocations per publish, and one `postMessage` of a
+small string. It contributes to the pile; it is not the boulder.
+
+**Payoff diagram.** C1. `spot` is a prop (`:172`), and two memo dependency lists contain the throttled copy of it
+(`:308`, `:359`), and the body of a POST is built from them (`:362`, `:368`), and the query key of that POST *is*
+the body (`hooks.ts:312`). Then the response's own spot comes back through `liveSpot` (`:394`) and drives the local
+Black-Scholes again (`:415` → `:475` → `:486` → `:525` → `:589`), which rewrites three SVG path strings
+(`:672-674`) and the OI bars (`:737`) — so one tick is two render passes and one network round trip. The
+local math is `spots × legs` `bsm()` calls plus a density integral: for a 4-leg spread over the 61-point grid
+that is ≈300 `bsm` evaluations per pass, ≈1,200/s at the throttled 4 Hz; for a 32-leg basket ≈2,000 per pass,
+≈7,800/s **[D]** (grid at `:397-411`, math at `:529-530`, `:537-545`, `:552-560`, `bsm` at `:58-91`).
+
+### 9.4 Data-flow diagnosis: one tick, end to end
+
+A fresh price for one strike, arriving on the shared socket, with the Option Chain tab open and Watchlist
+mounted behind it. "Sync" = this does not return before the work is done.
+
+| Step | File:line | Sync work | Cascade it starts |
+|---|---|---|---|
+| 1 | `websocket.ts:415-424` `ws.onmessage` | `JSON.parse` of the whole frame (`:418`) | — |
+| 2 | `:422` → `armSilence` `:351-353` | `desiredInstruments()` (`:265-267`) → `Set` + `flatMap` + `sort` over every subscribed id, then a `clearTimeout`/`setTimeout` | — |
+| 3 | `accept` `:289-294` | if not a delta: `published = new Map()` (`:290`) — a snapshot frame throws the whole price book away | — |
+| 4 | `accept` `:299` and `:300` | `quoteKey` = one `JSON.stringify` per quote (two before #51), plus `toTick` (`:137-154`: `Date.parse`, 4 × `positiveNumber`) | — |
+| 5 | `accept` `:330` | `publish(changedIds)` → `bufferPublish` (`:197-204`) | **if `isSuspended`, stop here** (`:250`) — nothing below runs until someone calls `resumeQuoteDispatch` (C2) |
+| 6 | `publish` `:248-263` | `Date.now()`, timer bookkeeping | — |
+| 7 | `publishImmediate` `:226-247` | for **each** watcher (`:239`): id intersection scan, then `snapshotFor` (`:156-162`) which copies every published tick | one `setFeed` per interested screen |
+| 8 | `useRegistration` `:546-548` | `{...next, reason}` — a new object identity even when nothing this screen owns moved | React schedules a render of every screen still on `useQuoteFeed`/`useQuotesStream`, on every mounted tab (H1) |
+| 9a | chain `option-chain.tsx:146` | `useInstrumentTick` per cell — the render only runs for cells whose own id moved | — |
+| 9b | chain `:147-149`, whole ladder at `:454-457` | `tickEntries` → `rememberQuotes` clone (`quote-memory.ts:129`) + sort/slice (`:137`) | async AsyncStorage write, throttled to 10 s (`useQuoteMemory.ts:47`, `:57-62`) |
+| 9c | chain `:824-860` | new `renderItem` closure; `onTrade` new (`:583-594`) | **the memo at `:234` fails on a screen render → every visible row re-renders** (C3) |
+| 9d | watchlist `watchlist.tsx:422`, `:430`, `:432`, `:435` | `markWatchlist` clone-all + `remember` of the whole feed + `paintWatchlist` clone-all + `sortRows` | hidden tab reconciles its list |
+| 9e | `IndexStrip.tsx:52`, `:57-75`, `:81-88` | strip memo + `remember` of the index ticks | global chrome above the router re-renders on every screen |
+| 10 | payoff, if mounted: `spread-builder.tsx:477`, `:480-482` | a **second** state update per publish (`setTicks(new Map(...))`) | another render pass |
+| 11 | `PayoffChart.tsx:268`, `:311` | `virtualBasket` + whole-chain `prepareQuote` clone | — |
+| 12 | `:362` → `:368` → `:378` → `hooks.ts:312`/`:1132` | `buildAnalysis` and a **new query key** | **POST `/v1/strategy-analysis`** + a new retained cache entry (C1, M1) |
+| 13 | `:415` → `:475` → `:486` → `:525` → `:589` | ≈300–2,000 `bsm` per pass, 3 path strings, OI bars | SVG diff + native redraw |
+| 14 | the POST's response, ~1 round trip later | `model` `:387`, `liveSpot` `:394` | **steps 11-13 again for the same tick** |
+
+That is the whole answer to "why does everything lag when prices move": step 5's guard, the fan-out at 7-8 that
+reaches screens nobody is looking at, and steps 11-14 turning a price change into a network request and two
+render passes. On the emulator this showed up as jank 90.74-98.33 %, p50 frame times of 117-150 ms, 8-15 FPS and
+GC every 2-4 s (`PERFORMANCE_AUDIT_REPORT.md`, n=5, AVD `sdk_gphone64_x86_64`) — which is the shape of
+§9.2, measured.
+
+### 9.5 Production-ready refactoring plan
+
+Three commits, in this order, because each one is a behaviour and the owner lands one behaviour per branch.
+Client items are **M17–M27** in `MOBILE_CODE_FIXES.md` §F.
+
+#### (a) Tick conflation and batch dispatcher — keep the window, cut the work per frame, make the suspend switch releasable
+
+The 100 ms window is right; leave `THROTTLE_MS` alone. Four changes, all in `packages/shared/src/api/websocket.ts`.
+
+**a1. One composite key per quote, allocated without JSON** (`:128-130`, computed once per quote at `:299`):
+
+```ts
+/**
+ * The composite key the server deltas against: [broker, accountId, subscriptionId]. Joined with NUL rather
+ * than serialised, because `accept` builds it for every quote of every frame and the frame rate is the reason
+ * this file exists.
+ */
+function quoteKey(quote: WireQuote): string {
+  return `${quote.broker ?? ""}\u0000${quote.accountId ?? ""}\u0000${quote.subscriptionId ?? ""}`;
+}
+```
+
+`accept` already computes it once (`:299` — it did so twice before #51), so what is left is the allocation:
+
+```ts
+const key = quoteKey(quote);
+const seen = published.get(key);
+// …previousClose carry-forward unchanged…
+published.set(key, tick);
+```
+
+**a2. Stop rebuilding the subscription set on every frame.** `armSilence` (`:351-353`) and `sendSubscriptions`
+(`:269-273`) both call `desiredInstruments()` (`:265-267`), which allocates a `Set`, a `flatMap` array and a sort
+over every id — and `armSilence` runs on `ws.onopen` (`:412`) and again on every message (`:422`), which is not
+when the answer can have changed. Cache it against watcher churn instead:
+
+```ts
+/** The subscription set only changes when a screen registers or releases, so the sort is not per-frame work. */
+let desiredCache: string[] | null = null;
+
+function desiredInstruments(): string[] {
+  if (desiredCache === null) {
+    desiredCache = [...new Set([...watchers].flatMap((watcher) => watcher.ids))].sort();
+  }
+  return desiredCache;
+}
+
+function invalidateDesired() {
+  desiredCache = null;
+}
+```
+
+Call `invalidateDesired()` at both mutation points in `watchQuotes` — immediately after `watchers.add(watcher)`
+(`:515`) and inside the returned cleanup before the `!watchers.size` test (`:527-528`). `armSilence` then
+reads a cached array and allocates nothing.
+
+**a3. Give `snapshotFor` an index instead of a copy.** `:156-162` copies the entire published map per watcher per
+publish, which is O(watchers × all ids) to answer a question about ≤100 ids. Maintain the id index in the same
+loop that writes `published`:
+
+```ts
+/** id → the live entries for it, kept beside `published` so a watcher's snapshot reads its own ids. */
+const byId = new Map<string, QuoteTick[]>();
+
+function snapshotFor(ids: readonly string[]): FeedSnapshot {
+  const quotes: QuoteTick[] = [];
+  if (ids.length === 0) {
+    for (const tick of published.values()) quotes.push(tick);
+  } else {
+    for (const id of ids) {
+      const hit = byId.get(id);
+      if (hit) for (const tick of hit) quotes.push(tick);
+    }
+  }
+  return { quotes, states, connected, asOf };
+}
+```
+
+Maintain it in `accept`: clear `byId` wherever `published` is cleared (`:290`, `:364`, `:429`, `:467`), push on
+`published.set(key, tick)`, and remove on the `removed` path (which already has `existing.id` at `:318`). An array
+per id, not a single entry, because two accounts on one broker legitimately price the same canonical id and today
+both survive the filter at `:159`.
+
+**a4. A suspend switch that cannot outlive the hand that set it.** This is C2 and it is the one defect that makes
+the whole app stop rather than stutter: `isSuspended` is a bare boolean (`:166`), `pauseQuoteDispatch` is
+idempotent-but-never-released-by-anybody-except-the-list (`:182-184`), and the two lists that use it pass it
+straight to `onScrollBeginDrag` with no unmount release (`SortableTable.tsx:143-144`,
+`option-chain.tsx:817-818`). A drag interrupted by a navigation, a list remount or a re-render that recycles the
+`FlatList` leaves `onScrollEndDrag` unspent, and then **no screen ever publishes again** until the app is
+backgrounded.
+
+```ts
+/** A scroll holds the dispatch; nothing holds it longer than this, because a lost end-drag is not an outage. */
+const SUSPEND_MAX_MS = 1_500;
+
+let suspendHolds = 0;
+let suspendWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Counts the holders instead of setting a flag, and lets the watchdog release them all.
+ *
+ * A list is the only reason to hold the dispatch — the frames that land mid-drag are the ones that make the
+ * drag stutter — so the hold belongs to that list. Unmount it mid-drag, or take a gesture that never reports
+ * an end, and an uncounted flag would keep every screen in the app silent on prices with a socket that is
+ * still open, still subscribed and still carrying. The watchdog is the floor under that: a hold is a
+ * rendering preference, never a reason to stop telling the trader what the prices are.
+ */
+export function pauseQuoteDispatch() {
+  suspendHolds += 1;
+  isSuspended = true;
+  if (suspendWatchdog) return;
+  suspendWatchdog = setTimeout(() => {
+    suspendWatchdog = null;
+    suspendHolds = 0;
+    releaseQuoteDispatch();
+  }, SUSPEND_MAX_MS);
+}
+
+/** Resumes only the last holder, and flushes whatever the window buffered. */
+export function resumeQuoteDispatch() {
+  if (suspendHolds > 0) suspendHolds -= 1;
+  if (suspendHolds > 0) return;
+  if (suspendWatchdog) {
+    clearTimeout(suspendWatchdog);
+    suspendWatchdog = null;
+  }
+  releaseQuoteDispatch();
+}
+
+function releaseQuoteDispatch() {
+  if (!isSuspended) return;
+  isSuspended = false;
+  if (hasBuffered()) publishImmediate(takeBuffered());
+}
+
+/**
+ * For a list that can be unmounted mid-drag: give these to `onScrollBeginDrag` / `onScrollEndDrag`.
+ * Unmounting releases the hold, so a screen that leaves while the finger is down cannot take the app's
+ * prices with it.
+ */
+export function useQuoteDispatchHold() {
+  const onBegin = useCallback(pauseQuoteDispatch, []);
+  const onEnd = useCallback(resumeQuoteDispatch, []);
+  useEffect(() => resumeQuoteDispatch, []);
+  return { onBegin, onEnd };
+}
+```
+
+`disconnect` (`:446-472`) should also clear the hold state (`suspendHolds = 0`, watchdog cleared) so a dropped
+socket cannot be resurrected already-suspended.
+
+**a5. Hidden screens release their ids (H1).** `option-chain.tsx:445` and `watchlist.tsx:421` pass enable flags
+that never mention `focused`, while `option-chain.tsx:327` and `watchlist.tsx:235` already compute it for
+polling. Add it:
+
+```ts
+// option-chain.tsx:445
+useQuoteSubscription(ids, focused && !!chain?.marketOpen && ids.length > 0);
+// watchlist.tsx:421
+const feed = useQuoteFeed(instruments, authenticated && focused && instruments.length > 0);
+```
+
+The server allows three tabs per workspace and the phone holds one socket for all of them; asking it to price the
+chain of a tab that is not on screen is the load, not the fix. Coming back to the tab re-registers, which already
+resets the refusal and the retry budget (`websocket.ts:486-507`).
+
+#### (b) Granular cell-level reactivity
+
+**b1. Make the ticket object stable, once, for every screen.** `useOrderTicket` memoizes all thirteen actions
+(`:126`, `:151`, `:171`, `:235-352`) and then hands back a new container literal at `:374`. That single line is
+why `openTicket` (`option-chain.tsx:583-594`) is new on every render and why the row memo at `:234` never
+returns early. The fix is at the source, so all four consumers (`option-chain`, `portfolio`, `watchlist`,
+`stock`) get it at once:
+
+```ts
+  // The actions are memoized above; the container has to be too, or every screen that holds this object
+  // hands its children a new `onTrade` on every render and no row memo can ever bail out.
+  return useMemo(() => ({
+    visible, config, localState, isSubmitting, validationError, setLocalState,
+    open, close, submit, validate,
+    quickBuy, quickSell, quickLimitBuy, quickLimitSell, quickStopLossBuy, quickStopLossSell,
+    fromOptionChain, fromGlobalSearch, fromBasket, fromPosition,
+  }), [
+    visible, config, localState, isSubmitting, validationError,
+    open, close, submit, validate,
+    quickBuy, quickSell, quickLimitBuy, quickLimitSell, quickStopLossBuy, quickStopLossSell,
+    fromOptionChain, fromGlobalSearch, fromBasket, fromPosition,
+  ]);
+```
+
+Keep `setLocalState` out of the deps (it is a stable `useState` setter). `localState` and `config` still change
+on a press, which is correct: a ticket that opened must re-render the sheet that shows it.
+
+**b2. Price the cell, not the screen.** One store, one selector per cell, so a publish re-renders the rows whose
+own instrument moved and nothing else. PR #51 ships this and it is on main (`packages/shared/src/api/quote-store.ts`,
+`useInstrumentTick` at `:88-90`, `OptionLegCell` at `option-chain.tsx:136`) and it is the right shape; two
+hardening points remain — the batch flush must not copy the whole record more often than the publish window (it
+does not: one `set` per publish, `websocket.ts:226-247`), and a subscriber must not read a tick the connection no
+longer owns, which #51 handles by gating on `state.connected`.
+
+The consumer change is the part that buys the frame time — hoist the row out of the render body and let it
+subscribe itself:
+
+```tsx
+// option-chain.tsx:824 — today the renderItem prop is a fresh arrow on every render.
+const renderItem = useCallback(({ item }: { item: ChainItem }) => {
+  if (item.kind === "section") return <SectionRow item={item} styles={styles} />;
+  if (item.kind === "pending") return <PendingRow expiry={item.expiry} styles={styles} />;
+  if (item.kind === "failed") return <FailedRow expiry={item.expiry} message={item.message} styles={styles} />;
+  return <OptionRowItem row={item.row} expiry={item.expiry} styles={styles} onTrade={openTicket} />;
+}, [styles, openTicket]);
+```
+
+with the two live figures pulled out of the row's props and into hooks inside it:
+
+```tsx
+const OptionRowItem = React.memo(function OptionRowItem({ row, expiry, styles, onTrade }: OptionRowItemProps) {
+  const liveCall = useInstrumentTick(row.call?.instrumentId);
+  const livePut = useInstrumentTick(row.put?.instrumentId);
+  // …
+});
+```
+
+Then `savedCall` and `savedPut` leave the prop list at `option-chain.tsx:853-860`. #51 already moved the live tick
+into the cell (`:146`), so these two are the remaining values a row is handed that it could read itself — and every
+one of them is in the comparator (`:281-289`), so each is a reason a screen render repaints the window.
+
+**b3. Stop rewriting quote memory per tick (H3).** Before #51 the effect at `option-chain.tsx:409-412` depended on
+`feed.quotes`, which was new every publish, so every publish cloned and sorted up to 600 keys
+(`quote-memory.ts:129`, `:137`) to remember prices the ladder had not changed. #51 moved that to the ladder
+(`:454-457`):
+
+```ts
+  useEffect(() => {
+    const legs = items.flatMap(item => (item.kind === "row" ? [item.row.call, item.row.put] : []));
+    quotes.remember(legEntries(legs));
+  }, [quotes, items]);
+```
+
+What is left of H3 after #51 is the other three writers, each of which still runs on a live tick: the cell effect
+at `option-chain.tsx:147-149` (one whole-memory clone per cell whose price moved), `watchlist.tsx:430` (one per
+publish, for the entire feed) and `IndexStrip.tsx:81-88` (one per publish for the indices). Do it where the ticks
+already are — inside the store's batch flush, once per publish window, on `dirtyBuffer` rather than a rebuilt
+array — and leave the ladder re-reads as the effect's only trigger.
+
+**b4. Memoize the table's own geometry (M2).** `SortableTable.tsx:50`:
+
+```ts
+  const width = useWindowWidth();            // Dimensions.addEventListener("change"), not a get per render
+  const widths = useMemo(() => scaleWidths(columns, PADDING, width), [columns, width]);
+```
+
+**b5. Memoize the book screen (H4).** `stock.tsx:170-173` → one memo keyed on what it actually reads:
+
+```ts
+  const book = useMemo(() => depthBook(quote ?? null), [quote]);
+  const stamp = useMemo(() => bookStamp(quote ?? null), [quote]);
+  const provenance = useMemo(() => quoteProvenance(quote ?? null), [quote]);
+```
+
+and lift the five rungs at `:326-337` into a `React.memo`'d `DepthRow` keyed on `side+price` rather than index.
+Five levels do not need virtualization; they do need to survive the case #51 left open — `useInstrumentTick(cashId)`
+at `:55` re-renders this whole screen on its own symbol's tick, which is the only tick it can get, so every
+derivation and every rung rebuilds at 10 Hz whether or not the depth changed.
+
+#### (c) Payoff and Greeks: off the tick path, then capped
+
+**c1. Break C1 first — it is a network request caused by a price change.** The server read is not what draws the
+line: `PayoffChart.tsx:381-386` says so in its own comment, and the local curve at `:462-585` is what paints while
+the model is out. So the model read should run on the cadence of a *decision* (a leg added, a date changed, a
+shock slider moved) and not on the cadence of the market.
+
+```ts
+  // 4. The server read is the refinement, not the drawing: POP, the model's own Greeks and planning margin,
+  //    asked again when the basket changed and at most every couple of seconds after that. Feeding it the
+  //    live spot made every tick a POST and a cache entry the phone keeps for five minutes.
+  const analysisBody = useMemo(() => {
+    if (!built.body) return null;
+    return { ...built.body, spotShockPct, ivShiftPoints };
+  }, [built.body, spotShockPct, ivShiftPoints]);
+
+  const steadyBody = useSteadyValue(analysisBody, 2_000, sameAnalysisRequest);
+  const analysis = useStrategyAnalysis(steadyBody);
+```
+
+```ts
+/** What makes this a different question to /v1/strategy-analysis: a leg, a date, a premium that moved. */
+function sameAnalysisRequest(a: StrategyAnalysisRequest | null, b: StrategyAnalysisRequest | null): boolean {
+  if (!a || !b || a.legs.length !== b.legs.length) return false;
+  const tick = (v: number) => Math.round(v * 20) / 20;                 // a 5-paise move is not a new analysis
+  for (let i = 0; i < a.legs.length; i++) {
+    const x = a.legs[i]!;
+    const y = b.legs[i]!;
+    if (x.strike !== y.strike || x.expiry !== y.expiry || x.right !== y.right || x.action !== y.action) return false;
+    if (tick(Number(x.price)) !== tick(Number(y.price))) return false;
+  }
+  return tick(Number(a.spot)) === tick(Number(b.spot));
+}
+```
+
+and stop putting the tick in the body at all, which is the smaller and better version of the same fix: price the
+legs from the ladder read (`quote.price`, `basket-desk.ts:440`), not from the socket, and let the spot in the
+request be the ladder's own — `PayoffChart.tsx:268` and `:311` then lose `spot` from their dependency lists
+(`:308`, `:359`) and C1 disappears without a throttle. PR #51 chose the throttle (`useThrottledValue(spot, 250)`
+at `:246`, still in `virtualBasket` deps at `:308` and `preparedChains` deps at `:359`), which turns 10 POST/s
+into 4 POST/s. That is the difference between a stutter and a stall, not a fix.
+
+**c2. Cap the retention that C1 was filling (M1).** `queryClient.ts:46-58` sets no `gcTime`:
+
+```ts
+    queries: {
+      staleTime: QUERY_CONFIG.STALE_TIME_NORMAL,
+      // A screen that moved on should not carry its old reads for five minutes: the analysis key is a whole
+      // request body, so a fast patch used to add an entry every publish window.
+      gcTime: 60_000,
+      retry: QUERY_CONFIG.RETRY_COUNT,
+```
+
+**c3. Rate-cap the drawing, then the math (payoff target 10-15 FPS, not 60).** `liveSpot` (`:394`) feeds the
+61-point grid math (`:529-530`), the integral (`:552-560`) and the three path strings (`:672-674`). Put one
+throttle in front of that chain rather than three:
+
+```ts
+  const curveSpot = useThrottledValue(liveSpot, 100, (a, b) => Math.abs(a - b) < 0.05);
+```
+
+The hook at `:200` takes `(value, intervalMs)` only, so the deadband is a new third argument, not a call-site
+change. A deadband matters more than the interval here: an axis that jitters by 5 paise recomputes ≈300 `bsm`
+calls to draw the same line.
+
+**c4. On "off-main-thread options math" — the honest answer for this runtime.** Hermes has no JS worker threads,
+and the only off-thread compute surface actually installed in this app is the chart's WebView
+(`react-native-webview` 14.0.1), which would cost a JSON `postMessage` and one to two frames of latency to save
+the ≈300 `bsm` calls of a four-leg spread. That is the wrong trade: `bsm` (`:58-91`) is ~10 arithmetic ops plus
+two transcendentals, so the four-leg curve is a sub-millisecond job on this class of phone; it only *looks* like
+a heavy-math problem because C1 makes it run four times a second and then re-runs it when the response lands. So:
+**cut the rate (c1-c3), keep the math on the JS thread, and do not add a worker, a worklet or a WebView
+compute path for it.** If a 32-leg basket ever needs the full grid at speed, the fix is the grid — `:407` samples
+61 points and `:529` evaluates every leg at every point, so a piecewise-linear expiry line with BSM only near the
+strikes is an order-of-magnitude saving with no new runtime.
+
+**c5. The chart's own series rebuild (M3)** is worth three lines in `live-candles.ts:276-280`: return the previous
+array when the folded bar matches the last bar it holds, so a tick that only re-prices an already-drawn bar stops
+rebuilding ≈150 objects per publish. The `terminal-charts.tsx:500-510` map then stops running, and
+`KLineChart.tsx:789-802` already patches the one bar that moved.
+
+**Target rates after (a)-(c),** which is the honest ceiling for these surfaces on this runtime:
+chain and payoff **6-10 Hz** (100-150 ms window, unchanged), the server analysis **≤0.5 Hz**, the chart
+**tick-for-tick on the patch path** with no full-series rebuild, the book **per tick for its own symbol only**.
+
+### 9.6 What PR #51 already repairs, and what survives it
+
+Scored against the merged tip `c93996f`. The PR head was `533df0e`; the branch moved mid-pass and this table was
+re-read from it after the merge.
+
+| Finding | In #51? | Evidence |
+|---|---|---|
+| C3 chain cells all repaint | **Fixed on the tick path, open on the render path** | `option-chain.tsx:445` subscribes without re-rendering (`useQuoteSubscription` + `NOOP_WATCHER`, `websocket.ts:639`, `:645-652`); `OptionLegCell`/`SpotDisplay` take their own tick (`option-chain.tsx:146`, `:199`, `quote-store.ts:88-90`), so a publish no longer repaints rows whose strike did not move. `renderItem` (`:824`) and `openTicket` (`:583-594`, from `useOrderTicket.tsx:374`) are still new on every screen render |
+| H4 book screen | **Not fixed** | `stock.tsx:54` keeps the feed out of React, but `:55` renders the whole screen on its own symbol's tick and `:56-64`, `:170-173`, `:326-337` are still unmemoized |
+| H3 memory rewritten | **Attenuated on the chain, untouched elsewhere** | the ladder effect now depends on `[quotes, items]` (`option-chain.tsx:454-457`), not `feed.quotes`; the cell effect (`:147-149`), `watchlist.tsx:430` and `IndexStrip.tsx:81-88` each still clone the whole memory on a live tick |
+| M3 chart series rebuilt per publish | **Partly** | `live-candles.ts:276-280` checks the last bar's timestamp before rebuilding; `terminal-charts.tsx:500-510` still maps the whole array when it does |
+| C1 tick → POST | **Attenuated, not removed** | `PayoffChart.tsx:246` throttles to 250 ms but `:308` and `:359` still carry `throttledSpot` into the body → ≤4 POST/s with ≤4 new cache entries/s; `:394` still re-enters the local math from the response |
+| C2 unguarded suspend | **Survives** | `option-chain.tsx:817` still passes bare `pauseQuoteDispatch`; no hold count, no unmount release, no watchdog in `websocket.ts` |
+| H1 hidden-tab subscriptions | **Survives** | `option-chain.tsx:445` and `watchlist.tsx:421` enable flags still ignore `focused` |
+| H2 per-frame ingest cost | **Survives, halved** | `quoteKey` is still `JSON.stringify` at `websocket.ts:129`, now computed once per quote (`:299`); `armSilence` still calls `desiredInstruments()` per message (`:353`, from `:412` and `:422`); `snapshotFor` still copies the whole map (`:159`) |
+| M1 no `gcTime` | **Survives** | `queryClient.ts:47-55` still has no `gcTime` |
+| M2 table geometry | **Survives** | `SortableTable.tsx` is not in the PR's file list |
+| M5 `tickByInstrument` per publish | **Chain call site removed** | the chain no longer calls it; `spread-builder.tsx:481` still does, on every publish |
+
+So the PR fixes the per-tick re-render storm on the chain, and leaves the request storm, the suspend switch, the
+hidden-tab ids, the book screen's own per-tick render and the retention cap. Those are what makes "the whole app
+freezes" happen rather than merely look bad for a second, which is why §9.5 is ordered (a4) → (c1) → (a5) → (c2)
+rather than by file.
+
+### 9.7 Corrections to what this repository already says
+
+| Where | Said | True state now |
+|---|---|---|
+| `MOBILE_CODE_FIXES.md` M5 | "`queryClient.ts:37` is `refetchOnWindowFocus: false`" | It is **`true`** — `queryClient.ts:52`, with the comment "Tied to AppState active status via focusManager". The consequence flips: the focus signal is honoured, so a foreground is a refetch burst (M4 in §9.2). **[V]** |
+| `MOBILE_CODE_FIXES.md` M1/M2 | the per-frame cascade and the full-series replace | Both are the same territory as §9.2 C3/M3; #51 has since taken the cascade. Do not re-do them. **[V]** |
+| `MOBILE_CODE_FIXES.md` M13 | `useOrderIntents` is an unconsumed 10 s poller at `hooks.ts:588-594`, `useBrokerLiveOrders` polls at `:599-607` | Both are now `refetchInterval: false` (`hooks.ts:1166`, `:1179`, each with a comment naming M13), `useOrderIntents` is consumed by `apps/mobile/app/(tabs)/orders.tsx:198`, and `useRealtimeQuotes.ts` is not in the tree. `/v1/orders/broker-live` still has no backend route. **[V]** |
+| `MOBILE_CODE_FIXES.md` M14 | the 30-strike and full-ladder chain reads share one cache key | They do not: `queryKeys.optionChain.chain` takes the window into the key (`hooks.ts:308`), so `CHAIN_WINDOW = 30` (`:386`, `:401-402`, `:1021`) and `FULL_WINDOW = 400` (`:235`, `:1070-1072`) are separate entries. **[V]** |
+| `PERFORMANCE_OPTIMIZATION_ROADMAP.md` | RN 0.74.5 / SDK 51 | The tree is Expo SDK 58 / RN 0.88.1 / React 19.3.0 (`package.json`, `android/gradle.properties` `newArchEnabled=true`). Any advice in that file premised on the old architecture — bridge thresholds, `InteractionManager`, turbo-module offloading — does not apply. **[V]** |
+| `PERFORMANCE_AUDIT.md`, `AUDIT_LIVE_PRICES_AND_ORDER_SPEED.md` | vendor-feed assumptions | Superseded by §1 and §4 of this document. |
+
+`react-native-svg` 15.16.0 is the only renderer in the payoff path and `@shopify/flash-list` is **not** a
+dependency — so "switch the chain to FlashList" is not an available fix, and the chain's `FlatList`
+(`option-chain.tsx:810-823`) is already configured about as well as it can be. Any recommendation that assumes
+either of those two things is not from this tree.
+
+### 9.8 What this pass could not determine without running something
+
+- Whether the 10 Hz ceiling is actually reached in prod, i.e. how many frames/s Breeze publishes per
+  subscription, and therefore what share of §9.2's rates is real rather than worst-case. Needs a live socket.
+- Whether a mid-drag unmount actually drops `onScrollEndDrag` on this RN version (C2's reachability). The
+  defect — an uncounted, unreleased, unwatched flag — is **[V]**; the frequency is not established.
+- How many ids `desiredInstruments()` typically holds, which sets H2's constant. It is the union over every
+  mounted screen, and the band at `option-chain.tsx:434`, `:440-442` bounds only the chain's share of it. **[D]**
+- The share of the reported GC pressure contributed by C1's retained query entries versus H3's clones. Needs a
+  heap profile.
+
+I ran none of those, so they stay questions. The one command this pass did run is the typecheck gate:
+`npx tsc --noEmit -p apps/mobile/tsconfig.json` → exit 0, no output, 20:46:48 IST on this branch, whose source
+tree is byte-identical to `c93996f` — every commit here touches only the two documents. That says §9's citations sit in a tree that compiles. It says nothing about frame times, and no
+frame time in this section was measured on this tree.
+
+Everything in §9.2 to §9.6 is a reading of merged main `c93996f`;
+the code #51 replaced was read at `37b1056` and is marked "before #51" wherever it still matters.
