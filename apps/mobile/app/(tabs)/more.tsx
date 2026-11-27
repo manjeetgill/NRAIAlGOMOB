@@ -168,13 +168,18 @@ export default function MoreScreen() {
             <Text style={styles.value} numberOfLines={1}>{broker}</Text>
             <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
           </TouchableOpacity>
-          <View style={styles.row}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/security")}
+            accessibilityRole="button"
+          >
             <View style={styles.labelRow}>
               <Ionicons name="lock-closed-outline" size={24} color={colors.muted} style={styles.icon} />
               <Text style={styles.label}>Two-factor</Text>
             </View>
-            <Text style={styles.value}>{lines.mfa}</Text>
-          </View>
+            <Text style={styles.value} numberOfLines={1}>{lines.mfa}</Text>
+            <Ionicons name="chevron-forward-outline" size={20} color={colors.muted} />
+          </TouchableOpacity>
           <Text style={styles.note}>
             Connecting a broker and changing two-factor settings happens on {host}. The app shows the
             account the broker reports.
