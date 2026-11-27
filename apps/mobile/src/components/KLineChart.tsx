@@ -34,6 +34,12 @@ export interface ChartDraw {
   nonce: number;
 }
 
+/** Action dispatched to control chart pan and zoom programmatically */
+export interface ChartAction {
+  type: "zoom_in" | "zoom_out" | "scroll_left" | "scroll_right" | "reset";
+  nonce: number;
+}
+
 interface KLineChartProps {
   data: Candle[];
   height?: number;
@@ -50,13 +56,21 @@ interface KLineChartProps {
   studies?: ChartStudy[];
   /** `name: null` erases every line drawn from the screen. */
   draw?: ChartDraw | null;
+  /** Programmatic pan and zoom actions (e.g. from zoom/scroll buttons) */
+  action?: ChartAction | null;
+  /**
+   * Called with true while a finger is on the chart and false when it lifts. A screen that puts the chart
+   * inside a ScrollView turns its own scrolling off meanwhile, or the ScrollView takes the drag (Android
+   * hands any slightly vertical move to the parent) and the chart never pans.
+   */
+  onTouchActive?: (active: boolean) => void;
 }
 
 type ChartMessage =
   | { type: "ready" }
   | { type: "error"; message: string };
 
-export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw }: KLineChartProps) {
+export default function KLineChart({ data, height = 400, symbol = "", overlays, markers, panes, studies, draw, action, onTouchActive }: KLineChartProps) {
   const { resolvedTheme } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const isReady = useRef(false);
@@ -392,6 +406,28 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
             }
           }
 
+          function applyAction(act) {
+            if (!chart || !act) return;
+            try {
+              const barSpace = (typeof chart.getBarSpace === 'function' && chart.getBarSpace().bar) || 10;
+              if (act.type === 'zoom_in') {
+                if (typeof chart.zoomAtCoordinate === 'function') chart.zoomAtCoordinate(1.25);
+              } else if (act.type === 'zoom_out') {
+                if (typeof chart.zoomAtCoordinate === 'function') chart.zoomAtCoordinate(0.8);
+              } else if (act.type === 'scroll_left') {
+                // Scroll backwards in time (towards earlier bars on left)
+                if (typeof chart.scrollByDistance === 'function') chart.scrollByDistance(barSpace * 5);
+              } else if (act.type === 'scroll_right') {
+                // Scroll forwards in time (towards latest bars on right)
+                if (typeof chart.scrollByDistance === 'function') chart.scrollByDistance(-barSpace * 5);
+              } else if (act.type === 'reset') {
+                if (typeof chart.scrollToRealTime === 'function') chart.scrollToRealTime();
+              }
+            } catch (e) {
+              console.error('Action error:', e);
+            }
+          }
+
           function handleRawMessage(event) {
             try {
               const rawData = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
@@ -403,6 +439,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
               else if (message.type === 'scan') applyScan(message.scan);
               else if (message.type === 'studies') applyStudies(message.studies);
               else if (message.type === 'draw') applyDraw(message);
+              else if (message.type === 'action') applyAction(message.action);
             } catch (e) { 
               console.error('Message error:', e);
             }
@@ -537,6 +574,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
     postDraw();
   }, [postDraw]);
 
+  // Dispatch pan/zoom action when nonce updates
+  useEffect(() => {
+    if (!isReady.current || !webViewRef.current || !action) return;
+    webViewRef.current.postMessage(JSON.stringify({ type: "action", action }));
+  }, [action]);
+
   return (
     <View style={[styles.container, { height }]}>
       {loading && (
@@ -554,6 +597,12 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
         </View>
       )}
       {chartHtml && (
+        <View
+          style={styles.webview}
+          onTouchStart={onTouchActive ? () => onTouchActive(true) : undefined}
+          onTouchEnd={onTouchActive ? () => onTouchActive(false) : undefined}
+          onTouchCancel={onTouchActive ? () => onTouchActive(false) : undefined}
+        >
         <WebView
           ref={webViewRef as any}
           source={{ html: chartHtml }}
@@ -573,6 +622,7 @@ export default function KLineChart({ data, height = 400, symbol = "", overlays, 
             </View>
           )}
         />
+        </View>
       )}
     </View>
   );

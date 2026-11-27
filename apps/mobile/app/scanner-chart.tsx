@@ -8,7 +8,7 @@
  * server did not file is left off the chart instead of guessed, and the screen says so.
  */
 
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useCanGoBack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,7 +16,7 @@ import { formatISTDate, formatISTTime, formatRupees } from "@nraialgo/shared/uti
 import type { ScannerEvidenceEvent } from "@nraialgo/shared/api";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
-import KLineChart from "@/components/KLineChart";
+import KLineChart, { type ChartAction } from "@/components/KLineChart";
 import { evidenceCandles, scanMarkers, scanOverlays, scanPanes, asMs } from "@/utils/scan-chart";
 
 const SIGNAL_LABELS: Record<string, string> = {
@@ -53,6 +53,36 @@ const makeStyles = (colors: { bg: string; card: string; text: string; muted: str
     cardFocus: { borderColor: colors.accent },
     cardTitle: { fontSize: 12, fontWeight: "600", color: colors.text },
     cardNote: { fontSize: 11, color: colors.muted, marginTop: 2, marginBottom: 8 },
+    chartControls: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginTop: 8,
+      paddingTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+    },
+    controlGroup: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    controlBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.bg,
+    },
+    controlBtnText: {
+      fontSize: 11,
+      fontWeight: "600",
+      color: colors.text,
+      marginLeft: 2,
+    },
     eventHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
     badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, fontSize: 10, fontWeight: "600", backgroundColor: "rgba(56,189,248,0.15)", color: colors.accent },
     row: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
@@ -152,6 +182,14 @@ export default function ScannerChartScreen() {
   const markers = useMemo(() => scanMarkers(evidence), [evidence]);
   const panes = useMemo(() => scanPanes(evidence, focusKind || undefined), [evidence, focusKind]);
 
+  // Chart pan & zoom controls state
+  const [chartAction, setChartAction] = useState<ChartAction | null>(null);
+  // While a finger is on the chart the page stops scrolling, so a sideways drag pans the candles.
+  const [chartTouched, setChartTouched] = useState(false);
+  const dispatchAction = useCallback((type: ChartAction["type"]) => {
+    setChartAction({ type, nonce: Date.now() });
+  }, []);
+
   const colors = useMemo(() => resolvedTheme === "dark"
     ? { bg: "#0f172a", card: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155", accent: "#38bdf8", buy: "#22c55e", sell: "#ef4444" }
     : { bg: "#f8fafc", card: "#ffffff", text: "#0f172a", muted: "#64748b", border: "#e2e8f0", accent: "#0284c7", buy: "#16a34a", sell: "#dc2626" }, [resolvedTheme]);
@@ -218,7 +256,7 @@ export default function ScannerChartScreen() {
         ) : null}
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 24 }} scrollEnabled={!chartTouched}>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{`Saved ${timeframe} chart`}</Text>
           <Text style={styles.cardNote}>
@@ -234,7 +272,58 @@ export default function ScannerChartScreen() {
                 overlays={overlays}
                 markers={markers}
                 panes={panes}
+                action={chartAction}
+                onTouchActive={setChartTouched}
               />
+              <View style={styles.chartControls}>
+                <View style={styles.controlGroup}>
+                  <TouchableOpacity
+                    style={styles.controlBtn}
+                    onPress={() => dispatchAction("scroll_left")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pan left"
+                  >
+                    <Ionicons name="arrow-back" size={14} color={colors.text} />
+                    <Text style={styles.controlBtnText}>Left</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.controlBtn}
+                    onPress={() => dispatchAction("scroll_right")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pan right"
+                  >
+                    <Ionicons name="arrow-forward" size={14} color={colors.text} />
+                    <Text style={styles.controlBtnText}>Right</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.controlBtn}
+                    onPress={() => dispatchAction("reset")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Reset chart position"
+                  >
+                    <Ionicons name="locate-outline" size={14} color={colors.text} />
+                    <Text style={styles.controlBtnText}>Latest</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.controlGroup}>
+                  <TouchableOpacity
+                    style={styles.controlBtn}
+                    onPress={() => dispatchAction("zoom_in")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Zoom in"
+                  >
+                    <Ionicons name="add" size={15} color={colors.text} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.controlBtn}
+                    onPress={() => dispatchAction("zoom_out")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Zoom out"
+                  >
+                    <Ionicons name="remove" size={15} color={colors.text} />
+                  </TouchableOpacity>
+                </View>
+              </View>
               {levelLines ? (
                 <View style={styles.legend}>
                   <Legend swatch="#d97706" text="Rule level" color={colors.muted} />
