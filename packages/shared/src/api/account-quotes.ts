@@ -24,6 +24,8 @@ export interface RowIdentity {
   expiry: string | null;
   strike: string | number | null;
   right: string | null;
+  /** Prod's own answer to "which contract is this row", stamped on every account row it could resolve. */
+  instrumentId?: string | null;
 }
 
 const VENUES: Record<string, string> = { NFO: "NSE", BFO: "BSE", CDS: "NSE", BCD: "BSE" };
@@ -75,9 +77,20 @@ function plainStrike(value: string | number | null): string | null {
 
 /**
  * The canonical id the stream subscribes by, or null when the row does not carry a complete identity.
+ *
+ * A stamped `instrumentId` wins outright: prod resolves the broker's contract code against its own master and
+ * puts the result on the row, which is the only identity the web desk subscribes by. Rebuilding it here needs
+ * expiry, strike, right *and* the underlying name, so a row the broker sent as a bare code produced no id, was
+ * never subscribed, and sat still all session while the same position ticked on the web.
+ *
  * `underlying` is the exchange-facing name from prod's derivatives master; a cash row never needs it.
  */
 export function streamIdFor(row: RowIdentity, underlying?: string | null): string | null {
+  // Only a full canonical id is trusted: the server closes the whole socket on one it cannot parse, and a
+  // truncated or renamed value would take every other row on the screen down with it.
+  const stamped = (row.instrumentId ?? "").trim();
+  if (stamped.startsWith("instrument:v1:")) return stamped;
+
   const exchange = (row.exchange ?? "").trim().toUpperCase();
   const venue = VENUES[exchange] ?? exchange;
   if (!["NSE", "BSE", "MCX"].includes(venue)) return null;
@@ -207,24 +220,29 @@ export function markPositions<T extends RowIdentity & { side: string; quantity: 
 /**
  * Holdings with the stream's prices marked in.
  *
- * Only the figures a current price genuinely re-derives move: the price itself, market value and the gap to the
- * broker's own average. Today's change and the day's percentage stay as the broker reported them, because the
- * stream carries no previous close here and inventing one would print a daily move the exchange never priced.
+ * The price, market value, the gap to the broker's average and the day's figure all come off the same tick,
+ * because while the market is streaming prod blanks the broker's own copies of those four columns - it will not
+ * let a snapshot read as a live price. The tick carries the session's previous close, so the day figure is
+ * derived from it exactly as the web desk derives it, and a row that has not ticked keeps the broker's number
+ * rather than inventing one.
  */
-export function markHoldings<T extends { symbol: string; exchange: string; quantity: number; averagePrice: number | null; currentPrice: number | null; marketValue: number | null; unrealizedPnl: number | null }>(
+export function markHoldings<T extends { symbol: string; exchange: string; instrumentId?: string | null; quantity: number; averagePrice: number | null; currentPrice: number | null; marketValue: number | null; unrealizedPnl: number | null; todayPnl: number | null }>(
   rows: readonly T[],
   quotes: readonly QuoteTick[],
 ): (T & Marked)[] {
   const ticks = byId(quotes);
   return rows.map((row) => {
-    const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null });
-    const price = id ? usable(ticks.get(id)) : null;
+    const id = streamIdFor({ exchange: row.exchange, symbol: row.symbol, product: "CASH", expiry: null, strike: null, right: null, instrumentId: row.instrumentId });
+    const hit = id ? ticks.get(id) : undefined;
+    const price = usable(hit);
     if (price === null) return { ...row, live: false };
+    const previous = typeof hit?.previousClose === "number" && hit.previousClose > 0 ? hit.previousClose : null;
     return {
       ...row,
       currentPrice: price,
       marketValue: price * row.quantity,
       unrealizedPnl: typeof row.averagePrice === "number" ? (price - row.averagePrice) * row.quantity : row.unrealizedPnl,
+      todayPnl: previous === null ? row.todayPnl : Math.round((price - previous) * row.quantity * 100) / 100,
       live: true,
     };
   });

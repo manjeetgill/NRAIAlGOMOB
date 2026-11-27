@@ -1642,6 +1642,9 @@ export interface OpenPosition {
   // name they are what a canonical stream subscription is built from; a cash row carries neither.
   strike: string | null;
   right: string | null;
+  // Prod's resolved contract identity, preferred over rebuilding one from the parts above. Null when the
+  // server could not name the row, which is the only case the phone still has to assemble an id itself.
+  instrumentId: string | null;
 }
 
 interface IciciPositionRow {
@@ -1658,6 +1661,13 @@ interface IciciPositionRow {
   marked_pnl_paise?: string | number | null;
   previous_close?: string | number | null;
   pnl?: string | number | null;
+  // While the vendor feed is healthy and the market is open, prod moves the broker's own price out of `ltp`
+  // and `previous_close` and leaves nulls there, because a broker snapshot must not read as market data. The
+  // web desk reads these names; a screen that only reads `ltp` sees no price at all.
+  broker_reported_ltp?: string | number | null;
+  broker_reported_previous_close?: string | number | null;
+  // The canonical contract prod resolved from the broker's code, and the only id the quote stream accepts.
+  instrument_id?: string | null;
 }
 
 /** One section of the account response. Prod names its own state and its own reason, so a screen
@@ -1683,6 +1693,7 @@ interface IciciHoldingRow {
   today_holding_pnl_estimate?: string | number | null;
   unrealized_holding_pnl?: string | number | null;
   quote_as_of?: string | null;
+  instrument_id?: string | null;
 }
 
 export interface IciciAccountPayload {
@@ -1778,11 +1789,13 @@ export function iciciOpenPositions(payload: IciciAccountPayload): OpenPosition[]
         side,
         quantity,
         entryPrice: iciciPrice(row.average_price),
-        markPrice: iciciPrice(row.ltp),
+        // The broker's own mark is still the price of the row when prod quarantines it from the REST copy, so
+        // it is read from where the server left it. A row with neither shows no figure rather than a zero.
+        markPrice: iciciPrice(row.ltp) ?? iciciPrice(row.broker_reported_ltp),
         // Prod's mark wins when it wrote one; otherwise the broker's own rupee figure is the reported P&L, which
         // is what the web desk reads (overview/icici-model.ts) and this screen used to drop.
         unrealizedPnl: markedPaise === null ? toNumber(row.pnl) : markedPaise / 100,
-        previousClose: iciciPrice(row.previous_close),
+        previousClose: iciciPrice(row.previous_close) ?? iciciPrice(row.broker_reported_previous_close),
         broker: "icici",
         account,
         product: String(row.product_type ?? "Unavailable"),
@@ -1790,6 +1803,7 @@ export function iciciOpenPositions(payload: IciciAccountPayload): OpenPosition[]
         expiry: row.expiry_date == null ? null : String(row.expiry_date),
         strike: row.strike_price == null ? null : String(row.strike_price),
         right: row.right == null ? null : String(row.right),
+        instrumentId: typeof row.instrument_id === "string" ? row.instrument_id.trim() || null : null,
       };
     });
 }
@@ -1800,6 +1814,8 @@ export interface Holding {
   symbol: string;
   name: string | null;
   exchange: string;
+  // Prod's resolved contract identity; a cash row's is the same one the phone would build, and the stream's key.
+  instrumentId: string | null;
   quantity: number;
   averagePrice: number | null;
   currentPrice: number | null;
@@ -1831,6 +1847,7 @@ export function iciciHoldings(payload: IciciAccountPayload): Holding[] {
         symbol: String(row.stock_code ?? "Unavailable"),
         name: row.stock_name == null || String(row.stock_name).trim() === "" ? null : String(row.stock_name),
         exchange: String(row.exchange_code ?? "Unavailable"),
+        instrumentId: typeof row.instrument_id === "string" ? row.instrument_id.trim() || null : null,
         quantity,
         averagePrice: iciciPrice(row.average_price),
         currentPrice: iciciPrice(row.current_market_price),
