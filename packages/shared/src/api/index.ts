@@ -298,6 +298,24 @@ export {
   type Provenance,
 } from "./stock-overview";
 
+export {
+  brokerConnections,
+  connectionState,
+  connectionWord,
+  connectionAdvice,
+  connectionTone,
+  isConnected,
+  brokerSummary,
+  providerName,
+  shortProviderName,
+  clockWord,
+  agoWord,
+  NO_BROKER_WORD,
+  type BrokerConnection,
+  type ConnectionState,
+  type ProviderTimestamps,
+} from "./broker-connection";
+
 // Create default client and hooks for convenience
 let api: ApiHooks | null = null;
 
