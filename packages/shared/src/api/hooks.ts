@@ -8,7 +8,8 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData, UseQueryOptions, UseMutationOptions, QueryClient } from "@tanstack/react-query";
 import { createApiClient, ApiClient, ApiError } from "./client";
-import { subscribeSSE, type SseSubscription } from "./sse";
+import { subscribeSSE, subscribeSSEEvents, type SseSubscription } from "./sse";
+import { liveNotices, type OrderInboxBody, type OrderNotice } from "./order-inbox";
 import { quoteStreamCarries } from "./websocket";
 import { Constants } from "../constants";
 import { formatISTDate } from "../utils";
@@ -58,6 +59,8 @@ export function throttleReread(run: () => void, ms: number) {
 }
 let accountStream: SseSubscription | null = null;
 let accountStreamUsers = 0;
+let alertStream: SseSubscription | null = null;
+let alertStreamUsers = 0;
 
 /** The server's own ceiling, documented as "comfortably the whole ladder", so a read never hides strikes. */
 const FULL_WINDOW = 400;
@@ -149,6 +152,12 @@ export const queryKeys = {
     destinations: () => ["orders", "destinations"] as const,
     snapshot: (clientId: string) => ["orders", "snapshot", clientId] as const,
     gtt: () => ["orders", "gtt"] as const,
+  },
+
+  // The order inbox prod projects for the signed-in owner (GET /v1/alerts/orders). One cache, read by the
+  // banner above every screen, the badge on the Orders tab and the notice list on that tab alike.
+  alerts: {
+    orderInbox: () => ["alerts", "order-inbox"] as const,
   },
 
   // Market Data
@@ -1095,6 +1104,59 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     });
   };
 
+  // ===== ORDER NOTICES =====
+  // The inbox prod builds from committed order evidence (`services/order_notifications`, one pass every five
+  // seconds). Reading it is one indexed SELECT on prod's own database and costs the broker nothing, which is
+  // what makes a notice surface affordable on an ICICI-metered deployment.
+  const useOrderInbox = (options?: Omit<UseQueryOptions<OrderNotice[], ApiError>, "queryKey" | "queryFn">) => {
+    useEffect(() => {
+      alertStreamUsers += 1;
+      if (!alertStream) {
+        // The stream's `changed` event is the only invalidation this route answers to. It is worth taking,
+        // because a stream that opens or reconnects sends one immediately, but it is not the clock: nothing
+        // in prod notifies `nraialgo_alert_updates` when the projector writes an order row, so the write
+        // itself stays silent and the timed read below is what carries a fill to the phone.
+        alertStream = subscribeSSEEvents(`${Constants.API.BASE_URL}/v1/alerts/stream`, (event) => {
+          if (event === "changed") void queryClient.invalidateQueries({ queryKey: queryKeys.alerts.orderInbox(), exact: true });
+        });
+      }
+      return () => {
+        alertStreamUsers -= 1;
+        if (alertStreamUsers === 0 && alertStream) {
+          alertStream.close();
+          alertStream = null;
+        }
+      };
+    }, []);
+
+    return useQuery({
+      queryKey: queryKeys.alerts.orderInbox(),
+      // Live rows only. The server lists paper notices for a workspace that has paper alerts switched on,
+      // and this app is a live-trading app, so the phone drops them instead of relabelling them.
+      queryFn: async () => liveNotices(await client.get<OrderInboxBody>("/v1/alerts/orders")),
+      staleTime: 10 * 1000,
+      // The web desk's own fallback base. Backgrounding the app stops it: TanStack does not run
+      // `refetchInterval` off-screen, and an in-app notice is not a promise about the app being closed.
+      refetchInterval: 30 * 1000,
+      ...options,
+    });
+  };
+
+  /**
+   * Read one notice. Prod answers 204 with no body, so the cached row is marked here rather than fetched
+   * back: a whole inbox GET to confirm a tap the server already took would cost more than the tap is worth.
+   */
+  const useOrderNoticeRead = (options?: UseMutationOptions<void, ApiError, number>) => {
+    return useMutation({
+      mutationFn: (id: number) => client.post<void>(`/v1/alerts/orders/${id}/read`, {}),
+      onSuccess: (_none, id) => {
+        queryClient.setQueryData<OrderNotice[]>(queryKeys.alerts.orderInbox(), (rows) =>
+          rows?.map((row) => (row.id === id ? { ...row, read_at: new Date().toISOString() } : row)));
+      },
+      ...options,
+    });
+  };
+
   // ===== MARKET DATA =====
   const useMarketQuotes = (symbols: string[], options?: UseQueryOptions<MarketQuote[], ApiError>) => {
     return useQuery({
@@ -1386,6 +1448,8 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     useEquityQuote,
     useOrderDestinations,
     useGttOrders,
+    useOrderInbox,
+    useOrderNoticeRead,
     // Market
     useMarketQuotes,
     useIndices,

@@ -10,6 +10,7 @@ import { useScreenFocused } from "@/hooks/useScreenFocused";
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl, Modal } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/components/ThemeProvider";
+import OrderNoticeList from "@/components/OrderNoticeList";
 import { formatRupees, formatNumber } from "@nraialgo/shared/utils";
 import { useApi } from "@/hooks/useApi";
 import {
@@ -681,6 +682,9 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
+      {/* What the badge counted, listed first: the notices are why the trader came here, the book below is
+          what they check afterwards. Renders nothing until prod has a live notice for this account. */}
+      <OrderNoticeList />
       <View style={styles.tabBar}>
         {TABS.map((t) => (
           <TouchableOpacity

@@ -304,6 +304,16 @@ export {
   typedLimit,
 } from "./leg-limit";
 
+export {
+  liveNotices,
+  noticeSummary,
+  noticeTitle,
+  unreadNotices,
+  unshownNotices,
+  type OrderInboxBody,
+  type OrderNotice,
+} from "./order-inbox";
+
 // Create default client and hooks for convenience
 let api: ApiHooks | null = null;
 

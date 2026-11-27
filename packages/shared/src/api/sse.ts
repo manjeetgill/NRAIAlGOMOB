@@ -17,9 +17,31 @@ const SSE_ALIVE_MS = 45_000;
 /** Characters of one response kept before the connection is renewed (see onprogress). */
 const SSE_RECYCLE_CHARS = 4_000_000;
 
+/**
+ * Every signal `/v1/alerts/stream` sends is a named event with an empty body (`event: changed`, `data: {}`),
+ * so the name is the whole message. `subscribeSSE` drops it, which is fine for the streams that carry a real
+ * payload and useless for that one, so the name is parsed here and a caller that wants it asks for it.
+ */
+export function subscribeSSEEvents(
+  url: string,
+  onEvent: (event: string, data: string) => void,
+  onError?: (err: unknown) => void,
+): SseSubscription {
+  return open(url, onEvent, onError);
+}
+
+/** Reads the frames a stream carries a body in, and ignores which event named them. */
 export function subscribeSSE(
   url: string,
   onData: (raw: string) => void,
+  onError?: (err: unknown) => void,
+): SseSubscription {
+  return open(url, (_event, data) => onData(data), onError);
+}
+
+function open(
+  url: string,
+  onFrame: (event: string, data: string) => void,
   onError?: (err: unknown) => void,
 ): SseSubscription {
   let closed = false;
@@ -55,14 +77,18 @@ export function subscribeSSE(
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
         const dataLines: string[] = [];
+        // An SSE frame with no `event:` line is the default event, which the spec names "message".
+        let event = "message";
         for (const line of frame.split("\n")) {
           if (line.startsWith("data:")) {
             dataLines.push(line.slice(5).trimStart());
+          } else if (line.startsWith("event:")) {
+            event = line.slice(6).trim() || "message";
           }
         }
         if (dataLines.length > 0) {
           failures = 0;
-          onData(dataLines.join("\n"));
+          onFrame(event, dataLines.join("\n"));
         }
         boundary = buffer.indexOf("\n\n");
       }

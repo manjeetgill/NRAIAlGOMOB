@@ -12,6 +12,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import IndexStrip from "@/components/IndexStrip";
 import SearchBar from "@/components/SearchBar";
+import OrderNoticeBanner from "@/components/OrderNoticeBanner";
 import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
 import { queryClient, initializeQueryClient } from "@/utils/queryClient";
 import { useAuthStore } from "@nraialgo/shared/stores";
@@ -31,6 +32,11 @@ SplashScreen.preventAutoHideAsync();
  * Under the strip is the universal search. It is here rather than on one tab because a trader who wants a
  * stock should not have to know which screen holds the box - and the search screen itself leaves it out,
  * so the app never shows two fields for the same job.
+ *
+ * Under the search is the order notice line, under the same gate: a fill that happened while the trader was on
+ * the chain, the scanner or the builder has to reach them where they are, and one mount is the only way it
+ * cannot be forgotten on the next screen someone adds. The unlock screen keeps its silence, though - a banner
+ * above a fingerprint prompt describes data the trader has not been let in to read.
  */
 function Shell() {
   const { resolvedTheme } = useTheme();
@@ -44,6 +50,7 @@ function Shell() {
     <View style={{ flex: 1, backgroundColor: bg, paddingTop: insets.top }}>
       {chromeless ? null : <IndexStrip />}
       {!chromeless && pathname !== "/search" ? <SearchBar /> : null}
+      {chromeless ? null : <OrderNoticeBanner />}
       <View style={{ flex: 1 }}>
         <Slot />
       </View>
