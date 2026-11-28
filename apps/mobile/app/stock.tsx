@@ -16,11 +16,7 @@
  *
  * A tab is only offered where it has a destination. Option chains exist for the underlyings the exchange lists
  * contracts on, so the tab is greyed for a stock the derivatives master does not name, with its reason printed
- * under the tabs, instead of opening a body that has no chain for that symbol.
- *
- * The tabs swap this screen's body rather than pushing a route, so the header keeps the stock the trader tapped
- * and Back still names the screen they came from. Each body is mounted on entry and unmounted on exit, which is
- * what lets one instrument carry all three reads without the screens knowing about each other.
+ * under the tabs, instead of navigating to a screen that fails on a symbol it never had chains for.
  */
 
 import React, { useMemo, useState } from "react";
@@ -34,8 +30,6 @@ import { BuySheet } from "@/components/BuySheet";
 import { tabRoute } from "@/utils/tabRoute";
 import { useTheme } from "@/components/ThemeProvider";
 import { useApi } from "@/hooks/useApi";
-import OptionChainScreen from "./(tabs)/option-chain";
-import TerminalChartsScreen from "./terminal-charts";
 
 /** Breeze shows five levels; a shallower book is drawn as the levels the socket actually filled. */
 const LADDER_ROWS = 5;
@@ -48,9 +42,6 @@ const LADDER_ROWS = 5;
  */
 const QUOTE_POLL_FIRST_MS = 3_000;
 const QUOTE_POLL_SETTLED_MS = 15_000;
-
-/** The three bodies offered under one stock header. */
-type Segment = "overview" | "chain" | "charts";
 
 export default function StockScreen() {
   const params = useLocalSearchParams<{ exchange?: string; symbol?: string; held?: string; list?: string; tab?: string }>();
@@ -72,12 +63,6 @@ export default function StockScreen() {
   const listNumber = Math.max(1, Number(params.list ?? 1) || 1);
   const held = Number(params.held);
   const heldQty = Number.isFinite(held) && held !== 0 ? held : null;
-  /**
-   * Which body sits under the tabs. This is local state, not a route: the header, the back destination and the
-   * stack entry stay the same, so a trader who checks the chain and comes back to the price never loses the
-   * screen they were on.
-   */
-  const [segment, setSegment] = useState<Segment>("overview");
 
   // The other venue is the same endpoint asked with the other exchange, which is how Breeze's own switch works.
   const other = exchange === "NSE" ? "BSE" : exchange === "BSE" ? "NSE" : null;
@@ -91,12 +76,6 @@ export default function StockScreen() {
    */
   const { data: catalogue } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings() });
   const chainTab = offersChainTab(catalogue?.underlyings, symbol);
-  /**
-   * The master answers a second after the screen opens, so a trader can already be reading the chain when it
-   * turns out this symbol has no contracts. The tab greys and the snapshot takes the body back, because a
-   * segment nobody can press cannot own the screen.
-   */
-  const body: Segment = segment === "chain" && !chainTab ? "overview" : segment;
   const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
   useQuoteSubscription(cashId ? [cashId] : [], !!cashId);
   const liveTick = useInstrumentTick(cashId);
@@ -360,20 +339,23 @@ export default function StockScreen() {
       </View>
 
       <View style={styles.tabs}>
-        <TouchableOpacity style={[styles.tab, body === "overview" && styles.tabOn]} onPress={() => setSegment("overview")}>
-          <Text style={[styles.tabLabel, body === "overview" && styles.tabLabelOn]}>Overview</Text>
-        </TouchableOpacity>
+        <View style={[styles.tab, styles.tabOn]}>
+          <Text style={[styles.tabLabel, styles.tabLabelOn]}>Overview</Text>
+        </View>
         {!chainTab ? (
           <View style={styles.tab} accessibilityLabel={`Option Chain is not listed for ${symbol}`} accessibilityState={{ disabled: true }}>
             <Text style={[styles.tabLabel, styles.tabLabelOff]}>Option Chain</Text>
           </View>
         ) : (
-          <TouchableOpacity style={[styles.tab, body === "chain" && styles.tabOn]} onPress={() => setSegment("chain")}>
-            <Text style={[styles.tabLabel, body === "chain" && styles.tabLabelOn]}>Option Chain</Text>
+          <TouchableOpacity style={styles.tab} onPress={() => router.push(`/(tabs)/option-chain?symbol=${encodeURIComponent(symbol)}`)}>
+            <Text style={styles.tabLabel}>Option Chain</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity style={[styles.tab, body === "charts" && styles.tabOn]} onPress={() => setSegment("charts")}>
-          <Text style={[styles.tabLabel, body === "charts" && styles.tabLabelOn]}>Chart</Text>
+        <TouchableOpacity
+          style={styles.tab}
+          onPress={() => router.push(`/terminal-charts?symbol=${encodeURIComponent(`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`)}`)}
+        >
+          <Text style={styles.tabLabel}>Chart</Text>
         </TouchableOpacity>
       </View>
 
@@ -383,163 +365,151 @@ export default function StockScreen() {
         </Text>
       ) : null}
 
-      {body === "chain" ? <OptionChainScreen seed={symbol} /> : null}
-      {body === "charts" ? <TerminalChartsScreen seed={`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`} /> : null}
-
-      {body === "overview" ? (
-        <>
-          {waiting || priced ? null : (
-            <View style={styles.notice}>
-              <Text style={styles.noticeText}>No price on this read yet.</Text>
-              <Text style={styles.noticeReason}>
-                {refusal ?? "Neither the paced quote read nor this account's feed has priced this stock."}
-              </Text>
-              <TouchableOpacity style={styles.noticeAction} onPress={() => refetch()} disabled={isFetching}>
-                <Text style={styles.noticeActionText}>{isFetching ? "Trying…" : "Try again"}</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {waiting ? (
-            <View style={styles.center}>
-              <ActivityIndicator color={colors.brand} />
-            </View>
-          ) : (
-            <ScrollView contentContainerStyle={styles.body}>
-              <View style={styles.chips}>
-                <TouchableOpacity style={styles.chip} onPress={toggleList} disabled={busy}>
-                  <Ionicons name={inList ? "star" : "star-outline"} size={13} color={colors.amber} />
-                  <Text style={styles.chipText}>
-                    {busy ? "Working…" : inList ? `In Watchlist ${listNumber} · remove` : `Add to Watchlist ${listNumber}`}
-                  </Text>
-                </TouchableOpacity>
-                {other && shown(cross?.ltp) !== null ? (
-                  <TouchableOpacity style={[styles.chip, styles.chipGhost]} onPress={() => setExchange(other)}>
-                    <Text style={[styles.chipText, styles.chipTextGhost]}>
-                      {`${other} ${formatNumber(cross?.ltp)} ${signed(cross?.changePct)}%`}
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-                {isFetching && quote ? <Text style={styles.meta}>refreshing</Text> : null}
-              </View>
-
-              <View style={styles.card}>
-                <View style={styles.ladderHead}>
-                  <Text style={styles.ladderHeadQty}>Qty</Text>
-                  <Text style={styles.ladderHeadPx}>Bid</Text>
-                  <Text style={styles.ladderHeadPx}>Offer</Text>
-                  <Text style={[styles.ladderHeadQty, { textAlign: "right" }]}>Qty</Text>
-                </View>
-                {depth === 0 ? (
-                  <Text style={[styles.stampText, { marginTop: 10 }]}>
-                    {quote?.depthMessage ?? "The broker has not sent a book for this symbol yet."}
-                  </Text>
-                ) : Array.from({ length: depth }, (_, index) => {
-                  const bid = book.bids[index];
-                  const ask = book.asks[index];
-                  return (
-                    <View key={index} style={styles.ladderRow}>
-                      <Text style={[styles.ladderQty, { color: colors.up }]}>{bid ? formatQuantity(bid.quantity) : ""}</Text>
-                      <Text style={[styles.ladderPx, { color: colors.up }]}>{bid ? formatNumber(bid.price) : ""}</Text>
-                      <Text style={[styles.ladderPx, { color: colors.down }]}>{ask ? formatNumber(ask.price) : ""}</Text>
-                      <Text style={[styles.ladderQty, { color: colors.down, textAlign: "right" }]}>{ask ? formatQuantity(ask.quantity) : ""}</Text>
-                    </View>
-                  );
-                })}
-
-                {book.bidShare !== null ? (
-                  <>
-                    <View style={styles.split}>
-                      <Text style={styles.splitText}>Bid</Text>
-                      <Text style={styles.splitText}>Offer</Text>
-                    </View>
-                    <View style={styles.meter}>
-                      <View style={[styles.meterBid, { flex: book.bidShare }]}>
-                        <Text style={styles.meterText}>{`${book.bidShare.toFixed(1)}%`}</Text>
-                      </View>
-                      <View style={[styles.meterAsk, { flex: 100 - book.bidShare }]}>
-                        <Text style={styles.meterText}>{`${(100 - book.bidShare).toFixed(1)}%`}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.totals}>
-                      <Text style={styles.totalsText}>{`TBQ ${formatQuantity(book.tbq)}`}</Text>
-                      <Text style={styles.totalsText}>{`${formatQuantity(book.tsq)} TSQ`}</Text>
-                    </View>
-                  </>
-                ) : null}
-
-                {stamp.time ? (
-                  <View style={styles.stamp}>
-                    <View style={[styles.dot, { backgroundColor: stamp.live ? colors.up : colors.amber }]} />
-                    <Text style={styles.stampText}>
-                      {`${stamp.live ? "Full book" : "Top of book only"} · stamped ${stamp.time} IST`}
-                    </Text>
-                  </View>
-                ) : null}
-                {stamp.reason ? <Text style={styles.reason}>{stamp.reason}</Text> : null}
-              </View>
-
-              <View style={styles.card}>
-                <View style={styles.grid2}>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>OPEN</Text>
-                    {figure(quote?.open)}
-                  </View>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>TODAY'S RANGE</Text>
-                    {range(quote?.ltp, quote?.low, quote?.high)}
-                  </View>
-                </View>
-                <View style={[styles.grid2, { marginTop: 14 }]}>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>PREV. CLOSE</Text>
-                    {figure(quote?.close)}
-                  </View>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>52 WEEK</Text>
-                    {range(quote?.ltp, quote?.low52, quote?.high52)}
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.card}>
-                <View style={styles.stats}>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>VOLUME</Text>
-                    <Text style={styles.smallVal}>{quote?.volume ? formatQuantity(quote.volume) : "Not sent"}</Text>
-                  </View>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>AVG. TRADED PRICE</Text>
-                    <Text style={styles.smallVal}>{shown(quote?.averagePrice) ?? "Not sent"}</Text>
-                  </View>
-                  <View style={styles.cell}>
-                    <Text style={styles.lab}>CHANGE</Text>
-                    <Text style={[styles.smallVal, { color: tone(quote?.changePct) }]}>
-                      {quote?.changePct === null || quote?.changePct === undefined
-                        ? "Not sent"
-                        : `${quote.changePct > 0 ? "+" : ""}${formatNumber(quote.changePct)}%`}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </ScrollView>
-          )}
-        </>
-      ) : null}
-
-      {/* The order footer belongs to the price, not to the derivatives or the candles: the chain and the chart
-          carry their own trade affordances, and a Buy box under them would place a cash order the trader
-          never asked for from a screen showing something else. */}
-      {body === "overview" ? (
-        <View style={styles.foot}>
-          <TouchableOpacity style={[styles.action, { backgroundColor: "#16a34a" }]} onPress={() => openTicket("BUY")}>
-            <Text style={styles.actionText}>Buy</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.action, { backgroundColor: "#dc2626" }]} onPress={() => openTicket("SELL")}>
-            <Text style={styles.actionText}>Sell</Text>
+      {waiting || priced ? null : (
+        <View style={styles.notice}>
+          <Text style={styles.noticeText}>No price on this read yet.</Text>
+          <Text style={styles.noticeReason}>
+            {refusal ?? "Neither the paced quote read nor this account's feed has priced this stock."}
+          </Text>
+          <TouchableOpacity style={styles.noticeAction} onPress={() => refetch()} disabled={isFetching}>
+            <Text style={styles.noticeActionText}>{isFetching ? "Trying…" : "Try again"}</Text>
           </TouchableOpacity>
         </View>
-      ) : null}
+      )}
+
+      {waiting ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.brand} />
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={styles.body}>
+          <View style={styles.chips}>
+            <TouchableOpacity style={styles.chip} onPress={toggleList} disabled={busy}>
+              <Ionicons name={inList ? "star" : "star-outline"} size={13} color={colors.amber} />
+              <Text style={styles.chipText}>
+                {busy ? "Working…" : inList ? `In Watchlist ${listNumber} · remove` : `Add to Watchlist ${listNumber}`}
+              </Text>
+            </TouchableOpacity>
+            {other && shown(cross?.ltp) !== null ? (
+              <TouchableOpacity style={[styles.chip, styles.chipGhost]} onPress={() => setExchange(other)}>
+                <Text style={[styles.chipText, styles.chipTextGhost]}>
+                  {`${other} ${formatNumber(cross?.ltp)} ${signed(cross?.changePct)}%`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {isFetching && quote ? <Text style={styles.meta}>refreshing</Text> : null}
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.ladderHead}>
+              <Text style={styles.ladderHeadQty}>Qty</Text>
+              <Text style={styles.ladderHeadPx}>Bid</Text>
+              <Text style={styles.ladderHeadPx}>Offer</Text>
+              <Text style={[styles.ladderHeadQty, { textAlign: "right" }]}>Qty</Text>
+            </View>
+            {depth === 0 ? (
+              <Text style={[styles.stampText, { marginTop: 10 }]}>
+                {quote?.depthMessage ?? "The broker has not sent a book for this symbol yet."}
+              </Text>
+            ) : Array.from({ length: depth }, (_, index) => {
+              const bid = book.bids[index];
+              const ask = book.asks[index];
+              return (
+                <View key={index} style={styles.ladderRow}>
+                  <Text style={[styles.ladderQty, { color: colors.up }]}>{bid ? formatQuantity(bid.quantity) : ""}</Text>
+                  <Text style={[styles.ladderPx, { color: colors.up }]}>{bid ? formatNumber(bid.price) : ""}</Text>
+                  <Text style={[styles.ladderPx, { color: colors.down }]}>{ask ? formatNumber(ask.price) : ""}</Text>
+                  <Text style={[styles.ladderQty, { color: colors.down, textAlign: "right" }]}>{ask ? formatQuantity(ask.quantity) : ""}</Text>
+                </View>
+              );
+            })}
+
+            {book.bidShare !== null ? (
+              <>
+                <View style={styles.split}>
+                  <Text style={styles.splitText}>Bid</Text>
+                  <Text style={styles.splitText}>Offer</Text>
+                </View>
+                <View style={styles.meter}>
+                  <View style={[styles.meterBid, { flex: book.bidShare }]}>
+                    <Text style={styles.meterText}>{`${book.bidShare.toFixed(1)}%`}</Text>
+                  </View>
+                  <View style={[styles.meterAsk, { flex: 100 - book.bidShare }]}>
+                    <Text style={styles.meterText}>{`${(100 - book.bidShare).toFixed(1)}%`}</Text>
+                  </View>
+                </View>
+                <View style={styles.totals}>
+                  <Text style={styles.totalsText}>{`TBQ ${formatQuantity(book.tbq)}`}</Text>
+                  <Text style={styles.totalsText}>{`${formatQuantity(book.tsq)} TSQ`}</Text>
+                </View>
+              </>
+            ) : null}
+
+            {stamp.time ? (
+              <View style={styles.stamp}>
+                <View style={[styles.dot, { backgroundColor: stamp.live ? colors.up : colors.amber }]} />
+                <Text style={styles.stampText}>
+                  {`${stamp.live ? "Full book" : "Top of book only"} · stamped ${stamp.time} IST`}
+                </Text>
+              </View>
+            ) : null}
+            {stamp.reason ? <Text style={styles.reason}>{stamp.reason}</Text> : null}
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.grid2}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>OPEN</Text>
+                {figure(quote?.open)}
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>TODAY'S RANGE</Text>
+                {range(quote?.ltp, quote?.low, quote?.high)}
+              </View>
+            </View>
+            <View style={[styles.grid2, { marginTop: 14 }]}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>PREV. CLOSE</Text>
+                {figure(quote?.close)}
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>52 WEEK</Text>
+                {range(quote?.ltp, quote?.low52, quote?.high52)}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.stats}>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>VOLUME</Text>
+                <Text style={styles.smallVal}>{quote?.volume ? formatQuantity(quote.volume) : "Not sent"}</Text>
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>AVG. TRADED PRICE</Text>
+                <Text style={styles.smallVal}>{shown(quote?.averagePrice) ?? "Not sent"}</Text>
+              </View>
+              <View style={styles.cell}>
+                <Text style={styles.lab}>CHANGE</Text>
+                <Text style={[styles.smallVal, { color: tone(quote?.changePct) }]}>
+                  {quote?.changePct === null || quote?.changePct === undefined
+                    ? "Not sent"
+                    : `${quote.changePct > 0 ? "+" : ""}${formatNumber(quote.changePct)}%`}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      )}
+
+      <View style={styles.foot}>
+        <TouchableOpacity style={[styles.action, { backgroundColor: "#16a34a" }]} onPress={() => openTicket("BUY")}>
+          <Text style={styles.actionText}>Buy</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.action, { backgroundColor: "#dc2626" }]} onPress={() => openTicket("SELL")}>
+          <Text style={styles.actionText}>Sell</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Mounted only while a ticket is open, as on the watchlist and portfolio, so every press seeds
           the sheet from this symbol instead of the previous one's half-typed quantity. */}

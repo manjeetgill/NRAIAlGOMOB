@@ -215,18 +215,14 @@ function noPages(key: string): { key: string; bars: Candle[]; more: boolean; non
   return { key, bars: [], more: false, nonce: 0 };
 }
 
-/**
- * `seed` lets the stock screen mount the desk as its own body: the route hands nothing and reads its params,
- * a caller that already knows the instrument passes `NSE:SYMBOL` and the desk opens on it directly.
- */
-export default function TerminalChartsScreen({ seed }: { seed?: string }) {
+export default function TerminalChartsScreen() {
   const { resolvedTheme } = useTheme();
   const { useTerminalChart, useChainUnderlyings, readOlderCandles } = useApi();
   const seeded = useLocalSearchParams<{ symbol?: string }>();
   // A press on a stock's "Chart" tab arrives with that symbol, so the desk opens on the instrument the
   // trader was just looking at instead of on the default index. The route takes `NSE:SYMBOL` for a cash
   // stock, which is what chartInstrument() on the shared side builds from it anyway.
-  const [symbol, setSymbol] = useState<string>(() => String(seed ?? seeded.symbol ?? "").trim().toUpperCase() || DEFAULT_SYMBOL);
+  const [symbol, setSymbol] = useState<string>(() => String(seeded.symbol ?? "").trim().toUpperCase() || DEFAULT_SYMBOL);
   const [interval, setInterval] = useState<IntervalId>(DEFAULT_INTERVAL);
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [search, setSearch] = useState("");

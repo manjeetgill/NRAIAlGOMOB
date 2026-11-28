@@ -52,5 +52,5 @@ it("renders the tab as an unpressable label and names the symbol it cannot chain
 });
 
 it("leaves the chart tab pressable, because every listed stock has candles", () => {
-  expect(screen).toContain('onPress={() => setSegment("charts")}');
+  expect(screen).toContain("onPress={() => router.push(`/terminal-charts?symbol=");
 });
