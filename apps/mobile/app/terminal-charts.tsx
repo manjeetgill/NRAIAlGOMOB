@@ -32,6 +32,7 @@ import {
   chartInstrument,
   chartPickerSections,
   mergeOlderCandles,
+  olderAhead,
   tickLabel,
   useLiveCandles,
   type Candle,
@@ -194,10 +195,9 @@ function formatSession(day: string): string {
   return new Date(year, month - 1, date).toLocaleDateString([], { day: "2-digit", month: "short" });
 }
 
-function axisLabel(timestamp: number, daily: boolean): string {
-  const date = new Date(timestamp);
-  if (daily) return date.toLocaleDateString([], { day: "2-digit", month: "short" });
-  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+/** A stamp read on the exchange's clock. The epoch is universal; the wall time printed beside it is not. */
+function istClock(at: number): string {
+  return new Date(at + IST_OFFSET_MS).toISOString().slice(11, 19);
 }
 
 /** The record's bars, ending with the candle the recorder is still building. */
@@ -511,9 +511,11 @@ export default function TerminalChartsScreen() {
 
   const availableDays = chartData?.availableDays;
 
-  // Only the session the route chose for itself pages backwards. A session picked from the list is answered
-  // whole, and asking the route for a page and a day at once is a question it refuses on purpose.
-  const pagesBack = !isDaily && day === null;
+  // Only the window the route chose for itself pages backwards. A session picked from the list is answered
+  // whole, and asking the route for a page and a day at once is a question it refuses on purpose. A daily
+  // chart has no session to pick: the archive is one long series and the page it served is the top of it, so
+  // the sessions beneath are always worth asking for.
+  const pagesBack = isDaily || day === null;
 
   // Switching the instrument, the bucket or the session is a different chart. The pages are keyed to the one
   // they were fetched for, so a scroll-back that was still in flight cannot put another chart's sessions on
@@ -527,12 +529,12 @@ export default function TerminalChartsScreen() {
   // Whether there is anything older than this window, in the server's own words rather than a guess. Nothing
   // is fetched on the strength of it until the trader scrolls or zooms towards the left edge.
   useEffect(() => {
-    const ahead = pagesBack && chartData?.moreHistory === true;
+    const ahead = pagesBack && olderAhead(chartData);
     setPaged(current => {
       const held = current.key === chartKey ? current : noPages(chartKey);
       return held.more === ahead ? held : { ...held, more: ahead, nonce: held.nonce + 1 };
     });
-  }, [chartKey, pagesBack, chartData?.moreHistory]);
+  }, [chartKey, pagesBack, chartData?.moreHistory, chartData?.hasMore]);
 
   const askOlder = useCallback((before: number) => {
     if (!pagesBack) {
@@ -547,7 +549,7 @@ export default function TerminalChartsScreen() {
       try {
         const page = await readOlderCandles(symbol, interval, before);
         bars = page.candles ?? [];
-        ahead = page.moreHistory === true;
+        ahead = olderAhead(page);
         answered = true;
       } catch {
         answered = false;
@@ -583,7 +585,7 @@ export default function TerminalChartsScreen() {
   const liveText = lookingBack
     ? `Stored session ${sessionDay}: the candles the recorder kept. Today's prices are not drawn on an earlier day.`
     : live.unavailable ?? tickLabel(live.tick, live.connected, live.reason);
-  const liveAt = lookingBack || live.at === null ? null : new Date(live.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const liveAt = lookingBack || live.at === null ? null : istClock(live.at);
   const liveColor = lookingBack ? colors.muted : live.tick?.fresh ? colors.up : live.reason || live.tick ? colors.down : colors.muted;
 
   const sessionCount = candles.length ? ` · ${candles.length} bars of ${interval}` : "";
@@ -591,9 +593,9 @@ export default function TerminalChartsScreen() {
   // A chart that quietly stops at its first loaded bar reads like a broken one.
   const pagedLine = !pagesBack ? "" : older.bars.length
     ? ` · ${older.bars.length} older bars paged in${older.more ? ", scroll left for more" : " · the record starts here"}`
-    : chartData?.moreHistory === true ? " · scroll or zoom out for older sessions" : "";
+    : olderAhead(chartData) ? " · scroll or zoom out for older sessions" : "";
   const sourceLine = isDaily
-    ? `${chartData?.source ?? "Stored daily history"}${chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}`
+    ? `${chartData?.source ?? "Stored daily history"}${chartDataPoints.length < candles.length ? ` · showing ${chartDataPoints.length} of ${candles.length} sessions` : ""}${pagedLine}`
     : `${chartData?.source ?? "Recorded session"} · ${sessionDay ?? today}${sessionCount}${pagedLine}`;
 
   // What the session control is worth showing: the trader should see which day is on screen, not assume it.
