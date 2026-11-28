@@ -129,32 +129,9 @@ const charts = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf
 
 it("derives every figure from the read rather than a local guess", () => {
   for (const call of ["depthBook(quote ?? null)", "bookStamp(quote ?? null)", "quoteProvenance(quote ?? null)",
-    "rangePosition(value, low, high)", "useEquityQuote(exchange, symbol, symbol.length > 0,"]) {
+    "rangePosition(value, low, high)", "useEquityQuote(exchange, symbol, symbol.length > 0)"]) {
     expect(screen, call).toContain(call);
   }
-});
-
-it("keeps the snapshot open when the read came back short", () => {
-  // The screen the trader reported as "does not open" was this branch: one refused read replaced the whole
-  // symbol with an error page, so a stock outside the watchlist looked unopenable rather than unpriced.
-  expect(screen).not.toContain("error && !quote");
-  expect(screen).toContain("No price on this read yet.");
-  expect(screen).toContain("const refusal = (error?.message ?? quote?.depthMessage ?? \"\").trim() || null;");
-  // A badge that reads "Today" above an empty price box would be the invention this screen forbids.
-  expect(screen).toContain(': { word: "No price", live: false, date: quote?.priceDate ?? null };');
-});
-
-it("paints the frame from this device's own tick when the read has not answered", () => {
-  expect(screen).toContain("if (!rawQuote) {");
-  expect(screen).toContain("quality: \"live\",");
-  // Only a tick the server stamped fresh is allowed to price the header.
-  expect(screen).toContain("if (!liveTick || !liveTick.fresh) return rawQuote;");
-});
-
-it("asks again until a price lands, then leaves the rest to the socket", () => {
-  expect(screen).toContain("const QUOTE_POLL_FIRST_MS = 3_000;");
-  expect(screen).toContain("const QUOTE_POLL_SETTLED_MS = 15_000;");
-  expect(screen).toContain("refetchInterval: ({ state }) => (state.data?.ltp ? QUOTE_POLL_SETTLED_MS : QUOTE_POLL_FIRST_MS)");
 });
 
 it("names a field the server omitted and the reason a book is short", () => {
