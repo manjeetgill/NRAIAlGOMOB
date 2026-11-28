@@ -286,7 +286,11 @@ const OptionRowItem = React.memo(
     prev.savedPut === next.savedPut
 );
 
-export default function OptionChainScreen() {
+/**
+ * `seed` lets the stock screen mount the chain as its own body: the route hands nothing and reads its params,
+ * a caller that already knows the symbol passes it and the chain opens on that underlying directly.
+ */
+export default function OptionChainScreen({ seed }: { seed?: string }) {
   const { useOptionChain, useOptionChains, useChainUnderlyings } = useApi();
   const { resolvedTheme } = useTheme();
   const underlying = useTradingStore((s) => s.optionChain.underlying);
@@ -343,7 +347,8 @@ export default function OptionChainScreen() {
    * same. It is applied once the saved selection has been read back, because that read lands a few
    * milliseconds later and would otherwise quietly replace the underlying the trader just chose.
    */
-  const seeded = String(useLocalSearchParams<{ symbol?: string }>().symbol ?? "").trim().toUpperCase();
+  const routeSeed = String(useLocalSearchParams<{ symbol?: string }>().symbol ?? "").trim().toUpperCase();
+  const seeded = String(seed ?? "").trim().toUpperCase() || routeSeed;
   const seedApplied = useRef(false);
   useEffect(() => {
     if (!resumed || !seeded || seedApplied.current) return;
