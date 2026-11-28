@@ -471,7 +471,8 @@ export function chartInstrument(name: string): string {
  * ignore it: the history route returns the whole stored series, so there is no session to choose.
  *
  * `before` is the oldest bar the chart is showing. The intraday route answers with whole sessions older than
- * that stamp, which is how scrolling left backwards loads the next page instead of the same session again.
+ * that stamp, and the daily route with the stored sessions older than it, which is how scrolling left backwards
+ * loads the next page instead of the same session again.
  */
 export function chartRequest(
   instrument: string,
@@ -489,9 +490,18 @@ export function chartRequest(
       instrument,
       interval,
       ...(day && !daily ? { day } : {}),
-      ...(before != null && !daily ? { before } : {}),
+      ...(before != null ? { before } : {}),
     },
   };
+}
+
+/**
+ * Whether a chart page says older bars exist. The intraday route names the sessions it holds (`moreHistory`);
+ * the daily archive flags that its page was cut (`hasMore`). A window trimmed on the phone is not the record
+ * running out, so the chart asks rather than stopping at its first bar.
+ */
+export function olderAhead(page: Pick<ChartData, "moreHistory" | "hasMore"> | null | undefined): boolean {
+  return page?.moreHistory === true || page?.hasMore === true;
 }
 
 /**
@@ -1292,7 +1302,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     exchange: string,
     symbol: string,
     enabled: boolean,
-    options?: UseQueryOptions<EquityQuote, ApiError>,
+    options?: Omit<UseQueryOptions<EquityQuote, ApiError>, "queryKey" | "queryFn">,
   ) => {
     return useQuery({
       queryKey: queryKeys.orders.quote(exchange, symbol),

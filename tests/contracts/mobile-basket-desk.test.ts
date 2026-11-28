@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -289,6 +289,48 @@ it("recognises a held contract by its token, not only by the broker's own code",
   expect(flat.emptied.map(basket => basket.id)).toEqual(["token"]);
 });
 
+it("keeps a basket the book cannot name rather than blanking the desk", () => {
+  // Breeze names an option position by its scrip in `stock_code` and by three further fields, and prod
+  // forwards one only where the broker's row actually carried it (backend services/portfolio.py:264-267).
+  // So a row that states the contract's strike and right but no date the phone can read is the book being
+  // silent about the leg, not the book proving it gone - and silence may only ever keep a card. The web
+  // desk already reads it that way (matchesBasketLeg compares expiries only when both sides state one),
+  // and a phone that hides instead shows an empty desk while the broker still holds the legs.
+  const token = deskBasket({ id: "token", legs: [brokerLeg({ symbol: "NIFTY_20261127_25600_CE" })] });
+  const undated = bookRow({ symbol: "NIFTY", strike: "25600.00", right: "Call", expiry: null });
+  const kept = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [undated] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(kept.listed.map(basket => basket.id)).toEqual(["token"]);
+  expect(kept.emptied).toEqual([]);
+
+  // The same row is still refused as a price, because a mark is a number and not a card.
+  const unpriced = withBookMarks(
+    [deskBasket({ legs: [brokerLeg({ symbol: "NIFTY_20261127_25600_CE", markPrice: null })] })] as Parameters<typeof withBookMarks>[0],
+    [undated] as Parameters<typeof withBookMarks>[1],
+  );
+  expect(unpriced.marked).toBe(0);
+  expect(unpriced.baskets[0].legs[0].markPrice).toBeNull();
+
+  // Being silent about the date is not the same as naming a different contract: the book holding the scrip
+  // at another strike is still the exit this rule was written for.
+  const otherStrike = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [bookRow({ symbol: "NIFTY", strike: "25800", right: "Call", expiry: null })] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(otherStrike.emptied.map(basket => basket.id)).toEqual(["token"]);
+  // Nor is a date the row does state and that disagrees with the leg.
+  const otherDate = deskList(
+    [token] as Parameters<typeof deskList>[0],
+    [bookRow({ symbol: "NIFTY", strike: "25600", right: "Call", expiry: "2026-12-31" })] as Parameters<typeof deskList>[1],
+    true,
+  );
+  expect(otherDate.emptied.map(basket => basket.id)).toEqual(["token"]);
+});
+
 it("keeps booked and total present even when the open half has no price", () => {
   const booked = basketPnl([brokerLeg({ quantity: 0, exitPrice: 44, bookedPnl: 2150 })], 2150);
   expect(booked.booked).toBe(2150);
@@ -419,6 +461,12 @@ it("builds the model body with exactly the keys the server allows", () => {
 });
 
 it("refuses the model with the leg named, rather than drawing a curve missing a wing", () => {
+  // The desk weighs each leg's expiry against today, so the clock here is pinned to the day every fixture
+  // in this file is stamped. On the live clock these legs roll past 2026-11-27 and the refusal silently
+  // changes reason, which is a date, not a defect.
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-24T10:00:00+05:30"));
+
   const noContracts = buildAnalysis(deskBasket(), [ladder()]);
   expect(noContracts.body).toBeNull();
   expect(noContracts.unpriced.join(" ")).toContain("contracts");
@@ -427,8 +475,17 @@ it("refuses the model with the leg named, rather than drawing a curve missing a 
   expect(noLadder.body).toBeNull();
   expect(noLadder.unpriced).toEqual(["no ladder read for NIFTY yet"]);
 
+  // The other half of that branch: a date the exchange no longer lists is named, not waited for.
+  const gone = buildAnalysis(deskBasket({ payoffLegs: [contract({ expiry: "2026-11-20" })] }), [undefined]);
+  expect(gone.body).toBeNull();
+  expect(gone.unpriced).toEqual(["these legs expired on 2026-11-20"]);
+
   const absentStrike = buildAnalysis(deskBasket({ payoffLegs: [contract({ strike: "26000" })] }), [ladder()]);
   expect(absentStrike.unpriced).toEqual(["NIFTY 26000 CE"]);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 it("sends a price the model can date, and none it cannot", () => {
@@ -692,6 +749,18 @@ it("names the baskets the book no longer backs instead of dropping them quietly"
   expect(desk).toContain("desk.emptied");
   // The empty desk says why it is empty when the book is the reason.
   expect(desk).toContain("Every basket this app recorded has been exited at the broker");
+});
+
+it("lets only a book that names the contract hide a card", () => {
+  const shared = readFileSync(resolve(root, "packages/shared/src/api/basket-desk.ts"), "utf8");
+  const desk = readFileSync(resolve(root, "apps/mobile/src/components/BasketDesk.tsx"), "utf8");
+  // Listing and pricing ask different questions: the list keeps a card the book cannot name, while a leg is
+  // still paid for only out of a row that names the exact contract.
+  expect(shared).toMatch(/deskList[\s\S]{0,900}?held\.some\(row => bookHolds\(row, leg\)\)/);
+  expect(shared).toMatch(/export function withBookMarks[\s\S]{0,900}?sameContract\(item, leg\)/);
+  // And a positions section that only partly answered is not a book that answered, so it hides nothing.
+  expect(desk).toContain('const answered = state.kind === "ready" || state.kind === "stale";');
+  expect(desk).not.toContain('state.kind === "degraded"');
 });
 
 it("puts the two tabs on the spread screen and hands the legs to the builder", () => {

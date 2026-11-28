@@ -173,3 +173,19 @@ export function quoteProvenance(quote: OverviewQuote | null | undefined): Proven
   if (quality === "unavailable") return { word: "No price", live: false, date };
   return { word: today ? "Today" : "Last close", live: today, date };
 }
+
+/**
+ * Whether the derivatives master names this symbol.
+ *
+ * The answer comes from the same `/v1/option-chain/underlyings` list that feeds the chain screen's own picker,
+ * so it is the closest thing to a cheap signal that a stock carries no contracts. It is a hint, not a verdict,
+ * and a caller must not take a screen away on it: the list is read separately and can arrive late, empty of a
+ * segment that failed to load, or a day behind the master the chain itself is built from -- HDFCBANK has been
+ * named by one and answered by the other on the same screen. A list that has not been read, or came back empty,
+ * is not an answer at all.
+ */
+export function offersChainTab(underlyings: { name: string }[] | null | undefined, symbol: string): boolean {
+  const needle = symbol.trim().toUpperCase();
+  if (!Array.isArray(underlyings) || underlyings.length === 0 || !needle) return true;
+  return underlyings.some(row => row.name.trim().toUpperCase() === needle);
+}

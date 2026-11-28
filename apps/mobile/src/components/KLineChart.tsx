@@ -184,6 +184,9 @@ export default function KLineChart({
               if (chart) chart.dispose();
 
               chart = klinecharts.init('chart', {
+                // NSE stamps its bars with exchange time. Left to the phone's clock, a daily bar opened at
+                // 00:00 IST is labelled the day before it traded and an intraday hour shifts by the offset.
+                timezone: "Asia/Kolkata",
                 styles: {
                   grid: { show: true, horizontal: { color: colors.grid }, vertical: { color: colors.grid } },
                   candle: {
@@ -242,6 +245,10 @@ export default function KLineChart({
             asking = false;
             lastHistoryNonce = 0;
             lastWindow = [];
+            // The levels belong to the instrument that was just wiped. Dropping them here is what stops the
+            // next candle load from re-applying the old chart's scan to the new chart's bars.
+            clearScan();
+            lastScan = null;
             try { chart.removeOverlay({ groupId: 'user' }); } catch (e) {}
             try {
               if (chart._chartStore && typeof chart._chartStore._addData === 'function') {
@@ -705,6 +712,9 @@ export default function KLineChart({
     // The chart forgot which pages it holds along with the candles, so the history is sent again even if the
     // screen has not fetched a new one since.
     postedHistoryRef.current = null;
+    // Its scan levels went with the bars too. The screen still holds them, so the same payload has to be
+    // posted again rather than skipped as already delivered.
+    postedScanRef.current = null;
     webViewRef.current.postMessage(symbolPayload);
   }, [symbolPayload]);
 

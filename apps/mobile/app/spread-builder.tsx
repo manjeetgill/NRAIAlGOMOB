@@ -35,6 +35,7 @@ import BasketDesk from "@/components/BasketDesk";
 import PayoffChart, { type PayoffChartLeg } from "@/components/PayoffChart";
 import { useApi } from "@/hooks/useApi";
 import { useScreenFocused } from "@/hooks/useScreenFocused";
+import { readChainSelection, rememberChainSelection } from "@/utils/chainSelection";
 
 /** One staged leg, as the trader left it. The contract prod resolves it into is not this screen's business. */
 interface Leg {
@@ -166,14 +167,38 @@ export default function SpreadBuilderScreen() {
   const {
     optionChain: { underlying, expiry },
     setOptionChainUnderlying,
+    setOptionChainFilters,
   } = useTradingStore();
 
   // The builder works on the contract the trader names here, and on whichever listed date they press:
   // prices are only ever read out of the chain for the date being staged, so a date change is its own
   // read rather than a re-labelled one.
   const [date, setDate] = useState("");
+  /**
+   * The store's contract is not remembered on the phone, so without this the builder opened NIFTY every
+   * launch and paid a broker read for a ladder nobody wanted. It reads the same device memory the Options
+   * tab writes, so a contract chosen anywhere is the one staged next, and waits for it before asking for
+   * a chain - the read costs milliseconds to defer and seconds to redo.
+   */
+  const [resumed, setResumed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    readChainSelection()
+      // A builder that cannot read its own memory stages the way it did before the memory existed.
+      .then((saved) => {
+        if (alive && saved) setOptionChainFilters(saved);
+      })
+      .finally(() => {
+        if (alive) setResumed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [setOptionChainFilters]);
   const focused = useScreenFocused();
-  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry, { enabled: focused && !!underlying });
+  const { data: chain, error: chainError } = useOptionChain(underlying, date || expiry, {
+    enabled: focused && resumed && !!underlying,
+  });
   useEffect(() => {
     setDate("");
   }, [underlying]);
@@ -217,6 +242,14 @@ export default function SpreadBuilderScreen() {
   const { data: outcome } = useOrderSnapshot(sentId, sentId !== "");
 
   const wanted = chain ? chain.expiry : "";
+
+  // What the builder last priced is what its next opening should price, and what the warm-up should have
+  // ready. Written from the chain that arrived so a date the server corrected is never remembered as the
+  // one that was asked for.
+  useEffect(() => {
+    if (!chain || chain.underlying !== underlying) return;
+    rememberChainSelection({ underlying: chain.underlying, expiry: chain.expiry });
+  }, [chain?.underlying, chain?.expiry, underlying]);
 
   /** The held legs the trader has marked to close, narrowed to rows still on the sheet. */
   const closing = useMemo(() => Object.keys(marked).filter(id => legs.some(leg => leg.id === id && leg.held)), [marked, legs]);
@@ -1091,7 +1124,9 @@ export default function SpreadBuilderScreen() {
           <Text style={styles.centerText}>
             {chainError
               ? `Chain read failed: ${chainError.message}. Pick another symbol to build on.`
-              : `Reading ${underlying}`}
+              : resumed
+                ? `Reading ${underlying}`
+                : "Restoring the contract you last built on"}
           </Text>
         </View>
         {picker}
