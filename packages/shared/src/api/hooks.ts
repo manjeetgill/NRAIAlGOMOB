@@ -1292,7 +1292,7 @@ export function createApiHooks(client: ApiClient, queryClient: QueryClient) {
     exchange: string,
     symbol: string,
     enabled: boolean,
-    options?: UseQueryOptions<EquityQuote, ApiError>,
+    options?: Omit<UseQueryOptions<EquityQuote, ApiError>, "queryKey" | "queryFn">,
   ) => {
     return useQuery({
       queryKey: queryKeys.orders.quote(exchange, symbol),
