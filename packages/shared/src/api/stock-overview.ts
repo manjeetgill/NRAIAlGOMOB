@@ -175,12 +175,14 @@ export function quoteProvenance(quote: OverviewQuote | null | undefined): Proven
 }
 
 /**
- * Whether the Option Chain tab may be offered for one symbol.
+ * Whether the derivatives master names this symbol.
  *
- * The answer comes from the same derivatives master `/v1/option-chain/underlyings` feeds the chain screen's own
- * picker with, so the Overview cannot offer a tab the chain then refuses. A list that has not been read - or came
- * back empty - is not an answer and leaves the tab pressable: hiding a working screen because a catalogue read is
- * missing is the worse of the two mistakes a trader can be shown.
+ * The answer comes from the same `/v1/option-chain/underlyings` list that feeds the chain screen's own picker,
+ * so it is the closest thing to a cheap signal that a stock carries no contracts. It is a hint, not a verdict,
+ * and a caller must not take a screen away on it: the list is read separately and can arrive late, empty of a
+ * segment that failed to load, or a day behind the master the chain itself is built from -- HDFCBANK has been
+ * named by one and answered by the other on the same screen. A list that has not been read, or came back empty,
+ * is not an answer at all.
  */
 export function offersChainTab(underlyings: { name: string }[] | null | undefined, symbol: string): boolean {
   const needle = symbol.trim().toUpperCase();

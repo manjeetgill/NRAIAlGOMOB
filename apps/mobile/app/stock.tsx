@@ -14,9 +14,10 @@
  * The Buy and Sell buttons hand off to the shared order ticket exactly as the watchlist row does, so the
  * ticket stays the one place an instruction is built and nothing places until its own button is pressed.
  *
- * A tab is only offered where it has a destination. Option chains exist for the underlyings the exchange lists
- * contracts on, so the tab is greyed for a stock the derivatives master does not name, with its reason printed
- * under the tabs, instead of opening a body that has no chain for that symbol.
+ * The three tabs are the three reads this instrument can carry, and every one of them stays pressable. The
+ * derivatives master is asked so a stock it does not name can be flagged under the tabs -- a hint about what
+ * the list holds, never a lock, because the list is a second read behind the screen and the chain answers
+ * from the same master without a broker read of its own.
  *
  * The tabs swap this screen's body rather than pushing a route, so the header keeps the stock the trader tapped
  * and Back still names the screen they came from. Each body is mounted on entry and unmounted on exit, which is
@@ -86,17 +87,17 @@ export default function StockScreen() {
     refetchInterval: ({ state }) => (state.data?.ltp ? QUOTE_POLL_SETTLED_MS : QUOTE_POLL_FIRST_MS),
   });
   /**
-   * The same derivatives master the chain screen's own picker reads, cached an hour, so the tab is greyed by the
-   * server's list of underlyings with contracts rather than by a guess about what a symbol's name looks like.
+   * Whether the derivatives master the chain picker is built from names this symbol.
+   *
+   * This is a hint, not a verdict. The master is a separate read that arrives a second after the screen and
+   * is built one segment at a time, so a symbol it has not reached -- or a segment that failed to load --
+   * says only that the list is missing the name, never that no contract exists. HDFCBANK was seen on this
+   * screen as "no listed options" while its own chain was serving a full ladder minutes earlier. The chain
+   * is the only thing that knows, and it answers from that same master without a broker read, so the press
+   * stays available and the line under the tabs reports what the list said instead of what it implies.
    */
   const { data: catalogue } = useChainUnderlyings({ queryKey: queryKeys.optionChain.underlyings() });
-  const chainTab = offersChainTab(catalogue?.underlyings, symbol);
-  /**
-   * The master answers a second after the screen opens, so a trader can already be reading the chain when it
-   * turns out this symbol has no contracts. The tab greys and the snapshot takes the body back, because a
-   * segment nobody can press cannot own the screen.
-   */
-  const body: Segment = segment === "chain" && !chainTab ? "overview" : segment;
+  const chainListed = offersChainTab(catalogue?.underlyings, symbol);
   const cashId = exchange === "NSE" && symbol.length > 0 ? streamId(symbol) : null;
   useQuoteSubscription(cashId ? [cashId] : [], !!cashId);
   const liveTick = useInstrumentTick(cashId);
@@ -360,33 +361,33 @@ export default function StockScreen() {
       </View>
 
       <View style={styles.tabs}>
-        <TouchableOpacity style={[styles.tab, body === "overview" && styles.tabOn]} onPress={() => setSegment("overview")}>
-          <Text style={[styles.tabLabel, body === "overview" && styles.tabLabelOn]}>Overview</Text>
+        <TouchableOpacity style={[styles.tab, segment === "overview" && styles.tabOn]} onPress={() => setSegment("overview")}>
+          <Text style={[styles.tabLabel, segment === "overview" && styles.tabLabelOn]}>Overview</Text>
         </TouchableOpacity>
-        {!chainTab ? (
-          <View style={styles.tab} accessibilityLabel={`Option Chain is not listed for ${symbol}`} accessibilityState={{ disabled: true }}>
-            <Text style={[styles.tabLabel, styles.tabLabelOff]}>Option Chain</Text>
-          </View>
-        ) : (
-          <TouchableOpacity style={[styles.tab, body === "chain" && styles.tabOn]} onPress={() => setSegment("chain")}>
-            <Text style={[styles.tabLabel, body === "chain" && styles.tabLabelOn]}>Option Chain</Text>
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity style={[styles.tab, body === "charts" && styles.tabOn]} onPress={() => setSegment("charts")}>
-          <Text style={[styles.tabLabel, body === "charts" && styles.tabLabelOn]}>Chart</Text>
+        <TouchableOpacity
+          style={[styles.tab, segment === "chain" && styles.tabOn]}
+          onPress={() => setSegment("chain")}
+          accessibilityState={{ selected: segment === "chain" }}
+        >
+          <Text style={[styles.tabLabel, segment === "chain" ? styles.tabLabelOn : !chainListed && styles.tabLabelOff]}>
+            Option Chain
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.tab, segment === "charts" && styles.tabOn]} onPress={() => setSegment("charts")}>
+          <Text style={[styles.tabLabel, segment === "charts" && styles.tabLabelOn]}>Chart</Text>
         </TouchableOpacity>
       </View>
 
-      {!chainTab ? (
+      {!chainListed ? (
         <Text style={styles.tabNote}>
-          {`No listed options for ${exchange}:${symbol}. Option chains cover F&O stocks and indices.`}
+          {`Not on the options list we have for ${exchange}:${symbol}. Open the chain to check.`}
         </Text>
       ) : null}
 
-      {body === "chain" ? <OptionChainScreen seed={symbol} /> : null}
-      {body === "charts" ? <TerminalChartsScreen seed={`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`} /> : null}
+      {segment === "chain" ? <OptionChainScreen seed={symbol} /> : null}
+      {segment === "charts" ? <TerminalChartsScreen seed={`${exchange === "BSE" ? "BSE" : "NSE"}:${symbol}`} /> : null}
 
-      {body === "overview" ? (
+      {segment === "overview" ? (
         <>
           {waiting || priced ? null : (
             <View style={styles.notice}>
@@ -530,7 +531,7 @@ export default function StockScreen() {
       {/* The order footer belongs to the price, not to the derivatives or the candles: the chain and the chart
           carry their own trade affordances, and a Buy box under them would place a cash order the trader
           never asked for from a screen showing something else. */}
-      {body === "overview" ? (
+      {segment === "overview" ? (
         <View style={styles.foot}>
           <TouchableOpacity style={[styles.action, { backgroundColor: "#16a34a" }]} onPress={() => openTicket("BUY")}>
             <Text style={styles.actionText}>Buy</Text>

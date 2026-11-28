@@ -26,20 +26,21 @@ it("selects the segment from the tab row and marks the body actually on screen",
   expect(stock).toContain('onPress={() => setSegment("overview")}');
   expect(stock).toContain('onPress={() => setSegment("chain")}');
   expect(stock).toContain('onPress={() => setSegment("charts")}');
-  expect(stock).toContain('body === "overview" && styles.tabLabelOn]}>Overview</Text>');
-  expect(stock).toContain('body === "chain" && styles.tabLabelOn]}>Option Chain</Text>');
-  expect(stock).toContain('body === "charts" && styles.tabLabelOn]}>Chart</Text>');
+  expect(stock).toContain('segment === "overview" && styles.tabLabelOn]}>Overview</Text>');
+  expect(stock).toContain('segment === "chain" ? styles.tabLabelOn : !chainListed && styles.tabLabelOff');
+  expect(stock).toContain('segment === "charts" && styles.tabLabelOn]}>Chart</Text>');
   expect(stock).toContain("styles.tabOn");
   expect(stock).toContain("styles.tabLabelOff");
 });
 
 /**
- * The derivatives master answers a second after the screen opens, so the chain can be on screen when the
- * answer says this symbol has no contracts. The tab greys and the snapshot takes the body back; a segment
- * nobody can press is left owning nothing.
+ * The derivatives master answers a second after the screen opens, so the chain can already be on screen when the
+ * list turns out not to name this symbol. It stays: the list is one read of one cache, and the chain answers from
+ * the same master, so the late answer is a note under the tabs and never a body taken back.
  */
-it("gives the snapshot back when the master refuses the chain it was showing", () => {
-  expect(stock).toContain('const body: Segment = segment === "chain" && !chainTab ? "overview" : segment;');
+it("leaves the chain body alone when the master arrives late and does not name the symbol", () => {
+  expect(stock).not.toMatch(/segment === "chain" && !chain/);
+  expect(stock).toContain('const [segment, setSegment] = useState<Segment>("overview")');
 });
 
 /**
@@ -47,10 +48,10 @@ it("gives the snapshot back when the master refuses the chain it was showing", (
  * candle window both run off a query the screen owns, so a body that is not rendered cannot be polling.
  */
 it("renders exactly one body and tears the others down", () => {
-  expect(stock).toContain('{body === "chain" ? <OptionChainScreen');
-  expect(stock).toContain("{body === \"charts\" ? <TerminalChartsScreen");
-  expect(stock).toContain('{body === "overview" ? (');
-  expect(stock.match(/body === "(chain|charts)" \? </g)).toHaveLength(2);
+  expect(stock).toContain('{segment === "chain" ? <OptionChainScreen');
+  expect(stock).toContain("{segment === \"charts\" ? <TerminalChartsScreen");
+  expect(stock).toContain('{segment === "overview" ? (');
+  expect(stock.match(/segment === "(chain|charts)" \? </g)).toHaveLength(2);
 });
 
 /** The seeds are what the pushed routes used to carry in their query strings, in the same shapes. */
@@ -74,6 +75,6 @@ it("leaves the route params in charge when nothing is seeded", () => {
 
 /** The Buy/Sell box prices the cash instrument, so it stays with the snapshot rather than following the header. */
 it("hides the order footer on the two bodies that are not the cash price", () => {
-  expect(stock).toMatch(/body === "overview" \? \(\s*<View style=\{styles\.foot\}>/);
+  expect(stock).toMatch(/segment === "overview" \? \(\s*<View style=\{styles\.foot\}>/);
   expect(stock).toContain("<BuySheet ticket={ticket} />");
 });
