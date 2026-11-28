@@ -173,17 +173,3 @@ export function quoteProvenance(quote: OverviewQuote | null | undefined): Proven
   if (quality === "unavailable") return { word: "No price", live: false, date };
   return { word: today ? "Today" : "Last close", live: today, date };
 }
-
-/**
- * Whether the Option Chain tab may be offered for one symbol.
- *
- * The answer comes from the same derivatives master `/v1/option-chain/underlyings` feeds the chain screen's own
- * picker with, so the Overview cannot offer a tab the chain then refuses. A list that has not been read - or came
- * back empty - is not an answer and leaves the tab pressable: hiding a working screen because a catalogue read is
- * missing is the worse of the two mistakes a trader can be shown.
- */
-export function offersChainTab(underlyings: { name: string }[] | null | undefined, symbol: string): boolean {
-  const needle = symbol.trim().toUpperCase();
-  if (!Array.isArray(underlyings) || underlyings.length === 0 || !needle) return true;
-  return underlyings.some(row => row.name.trim().toUpperCase() === needle);
-}

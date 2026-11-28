@@ -294,7 +294,6 @@ export {
   rangePosition,
   bookStamp,
   quoteProvenance,
-  offersChainTab,
   type QuoteLevel,
   type OverviewQuote,
   type Rung,
