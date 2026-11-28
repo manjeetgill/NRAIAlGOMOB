@@ -213,7 +213,7 @@ it("routes a stock link to the new screen with its venue", () => {
 it("hands the symbol to the two screens that already exist for it", () => {
   const chain = readFileSync(resolve("apps/mobile/app/(tabs)/option-chain.tsx"), "utf8");
   expect(chain).toContain("setOptionChainUnderlying(seeded)");
-  // The chart desk seeds from the link but still opens on NIFTY when nobody passed a symbol.
-  expect(charts).toContain("String(seeded.symbol ?? \"\")");
+  // The chart desk seeds from the caller or the link, but still opens on NIFTY when neither passed a symbol.
+  expect(charts).toContain("String(seed ?? seeded.symbol ?? \"\")");
   expect(charts).toContain("|| DEFAULT_SYMBOL");
 });
