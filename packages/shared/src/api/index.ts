@@ -44,6 +44,7 @@ export {
   chartFailureReason,
   chartPickerSections,
   mergeOlderCandles,
+  olderAhead,
   type User,
   type BrokerStatus,
   type LoginRequest,

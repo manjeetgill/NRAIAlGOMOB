@@ -7,6 +7,7 @@ import {
   chartPickerSections,
   chartRequest,
   mergeOlderCandles,
+  olderAhead,
 } from "../../packages/shared/src/api/hooks.ts";
 
 // Prod splits candles across two routes and takes the instrument as an exchange-prefixed key. The
@@ -181,15 +182,33 @@ it("charts a recorded session and leaves it alone once chosen", () => {
 // though the server holds NIFTY and BANKNIFTY at one-second resolution for months. The route now names the
 // oldest bar it returned and takes it back as `before` to hand over the sessions behind it. A picked session
 // is answered whole, so it is never asked for a page too.
-it("asks the intraday route for the sessions behind what is on screen", () => {
+it("asks the route for the bars behind what is on screen", () => {
   expect(chartRequest("NSE:NIFTY", "1h", null, 1_764_000_000_000).params).toEqual({
     instrument: "NSE:NIFTY",
     interval: "1h",
     before: 1_764_000_000_000,
   });
-  expect(chartRequest("NSE:NIFTY", "1d", null, 1_764_000_000_000).params).not.toHaveProperty("before");
+  // A daily page is the newest window the archive cut, not the whole record, so the sessions beneath it are
+  // asked for the same way. Without this a daily chart stopped at its first bar and said nothing more existed.
+  expect(chartRequest("NSE:NIFTY", "1d", null, 1_764_000_000_000).params).toEqual({
+    instrument: "NSE:NIFTY",
+    interval: "1d",
+    before: 1_764_000_000_000,
+  });
   expect(chartRequest("NSE:NIFTY", "1h", "2026-11-20").params).not.toHaveProperty("before");
   expect(chartRequest("NSE:NIFTY", "1h", null, 0).params.before).toBe(0);
+});
+
+// The two routes say "there is more behind this" in different words: the intraday one names the sessions it
+// holds, the daily archive flags that its page was cut. A chart that reads only one of them stops early.
+it("reads both routes' words for older bars", () => {
+  expect(olderAhead({ hasMore: true })).toBe(true);
+  expect(olderAhead({ moreHistory: true })).toBe(true);
+  expect(olderAhead({ hasMore: false, moreHistory: true })).toBe(true);
+  expect(olderAhead({ hasMore: false, moreHistory: false })).toBe(false);
+  expect(olderAhead({ hasMore: true, moreHistory: false })).toBe(true);
+  expect(olderAhead(null)).toBe(false);
+  expect(olderAhead(undefined)).toBe(false);
 });
 
 // KLineChart v10 has no applyNewData in the bundled build, but prepending with the store's own 'forward'
@@ -246,21 +265,52 @@ it("adds a closed candle to the end instead of redrawing the chart", () => {
 });
 
 // The screen holds the pages, not the chart: the window refetches every 30 seconds and would drop them. A
-// daily chart and a chosen session have nothing behind them, so neither is offered history, and a page
-// fetched for one chart is never put on another that the trader switched to mid-scroll.
+// chosen session is answered whole, so it is not offered history, and a page fetched for one chart is never
+// put on another that the trader switched to mid-scroll. A daily chart pages by default: its first window is
+// the newest sessions, and everything the archive holds sits behind them.
 it("pages the terminal chart and says what it loaded", () => {
   const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
   expect(screen).toContain("const { useTerminalChart, useChainUnderlyings, readOlderCandles } = useApi();");
-  expect(screen).toContain("const pagesBack = !isDaily && day === null;");
+  expect(screen).toContain("const pagesBack = isDaily || day === null;");
   expect(screen).toContain("await readOlderCandles(symbol, interval, before);");
   expect(screen).toContain('const chartKey = `${symbol}|${interval}|${day ?? ""}`;');
   expect(screen).toContain("const older = paged.key === chartKey ? paged : noPages(chartKey);");
   expect(screen).toContain("if (currentKey.current !== chartKey) return;");
   expect(screen).toContain("history={pagesBack ? older : undefined} onNeedMore={askOlder}");
-  // The trader is told the chart continues behind the first bar, and where the record actually stops.
+  // Both the page in hand and the page that came back are read the same way, so neither route's wording
+  // silently disables the scroll.
+  expect(screen).toContain("const ahead = pagesBack && olderAhead(chartData);");
+  expect(screen).toContain("ahead = olderAhead(page);");
+  // The trader is told the chart continues behind the first bar, and where the record actually stops — on
+  // the daily chart too, whose source line used to end at the window it was served.
   expect(screen).toContain('" · scroll or zoom out for older sessions"');
   expect(screen).toContain('" · the record starts here"');
-  expect(screen).toContain("${pagedLine}");
+  expect(screen).toContain('of ${candles.length} sessions` : ""}${pagedLine}`');
+  expect(screen).toContain("${sessionCount}${pagedLine}");
+});
+
+// Every bar stamp the screen prints is exchange time: the canvas is given the exchange's timezone, and the
+// tick clock beside it is read the same way, so one is never a day ahead of the other.
+it("prints the exchange's clock, not the phone's", () => {
+  const screen = readFileSync(resolve("apps/mobile/app/terminal-charts.tsx"), "utf8");
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  expect(chart).toContain('timezone: "Asia/Kolkata",');
+  expect(screen).toContain("const liveAt = lookingBack || live.at === null ? null : istClock(live.at);");
+  expect(screen).toContain("new Date(at + IST_OFFSET_MS).toISOString().slice(11, 19)");
+  // A label formatter that nothing calls is how a screen ends up with two clocks.
+  expect(screen).not.toContain("function axisLabel");
+});
+
+// The scan levels belong to the instrument they were drawn for. A symbol switch wipes the bars, so it wipes
+// them too, and the screen re-sends what it holds instead of skipping a payload it already posted.
+it("drops the previous instrument's scan when the canvas is wiped", () => {
+  const chart = readFileSync(resolve("apps/mobile/src/components/KLineChart.tsx"), "utf8");
+  const wipe = chart.slice(chart.indexOf("function paintSymbol()"), chart.indexOf("const LEAD_BARS"));
+  expect(wipe).toContain("clearScan();");
+  expect(wipe).toContain("lastScan = null;");
+  expect(chart.slice(chart.indexOf("const postSymbol"), chart.indexOf("const historyPayload"))).toContain(
+    "postedScanRef.current = null;",
+  );
 });
 
 // Two scrolls can land on the same session, and a chart scrolled far back must not grow without bound.
