@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -461,6 +461,12 @@ it("builds the model body with exactly the keys the server allows", () => {
 });
 
 it("refuses the model with the leg named, rather than drawing a curve missing a wing", () => {
+  // The desk weighs each leg's expiry against today, so the clock here is pinned to the day every fixture
+  // in this file is stamped. On the live clock these legs roll past 2026-11-27 and the refusal silently
+  // changes reason, which is a date, not a defect.
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-24T10:00:00+05:30"));
+
   const noContracts = buildAnalysis(deskBasket(), [ladder()]);
   expect(noContracts.body).toBeNull();
   expect(noContracts.unpriced.join(" ")).toContain("contracts");
@@ -469,8 +475,17 @@ it("refuses the model with the leg named, rather than drawing a curve missing a 
   expect(noLadder.body).toBeNull();
   expect(noLadder.unpriced).toEqual(["no ladder read for NIFTY yet"]);
 
+  // The other half of that branch: a date the exchange no longer lists is named, not waited for.
+  const gone = buildAnalysis(deskBasket({ payoffLegs: [contract({ expiry: "2026-11-20" })] }), [undefined]);
+  expect(gone.body).toBeNull();
+  expect(gone.unpriced).toEqual(["these legs expired on 2026-11-20"]);
+
   const absentStrike = buildAnalysis(deskBasket({ payoffLegs: [contract({ strike: "26000" })] }), [ladder()]);
   expect(absentStrike.unpriced).toEqual(["NIFTY 26000 CE"]);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 it("sends a price the model can date, and none it cannot", () => {
